@@ -1,5 +1,5 @@
 -- autoCraftUltimate.lua
--- Переписанная версия для OpenOS 1.6.1, Lua 5.2
+-- Переписанная версия для OpenOS 1.6.1, Lua 5.2 (без RTC)
 
 local component = require("component")
 local fs = require("filesystem")
@@ -11,8 +11,7 @@ local computer = require("computer")
 
 local g = component.gpu
 local me = component.me_interface
--- Попытка подключить RTC. Если модуля нет, rtc будет nil.
-local rtc = component.rtc
+-- Полностью убраны обращения к component.rtc
 
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
@@ -44,18 +43,11 @@ if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {}) -- Создаем пустой файл данных
 end
 
--------------------- Время UTC+3 (для OpenComputers) --------------------
--- Эта функция будет возвращать имитацию киевского времени.
--- Для реального времени нужен RTC модуль в компьютере OC.
--- Если RTC есть, она будет использовать его время.
--- Если RTC нет, она будет использовать время, которое предоставляет os.time() (обычно игровое).
+-------------------- Имитация времени UTC+3 (для OpenComputers) --------------------
+-- Эта функция будет возвращать имитацию киевского времени,
+-- основанную на системном времени OpenComputers (которое обычно синхронизируется с майнкрафтом).
 local function getKyivTime()
-    local currentTime
-    if rtc then
-        currentTime = rtc.getTime() -- Получаем реальное Unix время от RTC
-    else
-        currentTime = os.time() -- Используем системное время OC
-    end
+    local currentTime = os.time() -- Используем только системное время OC
     -- Смещение для UTC+3: 3 часа * 3600 секунд в часе
     local t = os.date("!*t", currentTime + 3 * 3600)
     return string.format("%02d:%02d", t.hour, t.min)
@@ -102,8 +94,8 @@ local tooltip = ""
 local tooltipTimeout = 0
 local lastDrawTime = 0 -- Для отслеживания времени между перерисовками (для производительности)
 
--------------------- Логгирование с реальным временем --------------------
-local function addLog(text, lvl) -- Убрал logs как аргумент, так как logs - глобальная
+-------------------- Логгирование с имитацией времени --------------------
+local function addLog(text, lvl)
     lvl = lvl or "INFO"
     local now = getKyivTime()
     local t = string.format("[%s][%s] %s", now, lvl, text)
@@ -113,7 +105,7 @@ local function addLog(text, lvl) -- Убрал logs как аргумент, т�
 end
 
 -------------------- Визуал --------------------
-local function clearScreen() -- Переименовал clear во избежание конфликтов (clear() часто используется в других библиотеках)
+local function clearScreen()
     g.setBackground(COLORS.bg)
     g.fill(1,1,WIDTH,HEIGHT," ")
     g.setForeground(COLORS.text)
@@ -361,6 +353,7 @@ local function reload()
     if ok_net then
         for _, stack in ipairs(network_items) do
             -- Используем уникальный ключ для каждого типа предмета (id + dmg)
+            -- В OpenComputers, stack.name - это уникальный ID предмета (например, "minecraft:iron_ingot")
             local key = stack.name .. (stack.damage and ":" .. stack.damage or "")
             me_network_items[key] = (me_network_items[key] or 0) + (stack.size or stack.qty or 0)
         end
