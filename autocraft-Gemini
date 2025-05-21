@@ -553,4 +553,175 @@ event.listen("touch", function(_,_,x,y,_,_)
         {idx=1, x=WIDTH-60, y=BUTTON_Y, w=12, h=3},
         {idx=2, x=WIDTH-45, y=BUTTON_Y, w=12, h=3},
         {idx=3, x=WIDTH-30, y=BUTTON_Y, w=12, h=3},
-        {idx=4, x=WIDTH-15, y=BUTTON_Y, w=1
+        {idx=4, x=WIDTH-15, y=BUTTON_Y, w=12, h=3},
+    }
+    for i,btn in ipairs(btns) do
+        if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
+            hoveredButton = btn.idx
+            if btn.idx==1 then removeItem()
+            elseif btn.idx==2 then editItem()
+            elseif btn.idx==3 then if isCrafting then stopCraft() else doCraft() end
+            elseif btn.idx==4 then addItem()
+            end
+            draw()
+            return
+        end
+    end
+
+    local searchBarX, searchBarY, searchBarW, searchBarH = 3, SEARCH_BAR_Y, WIDTH-6, SEARCH_BAR_HEIGHT
+    if x >= searchBarX and x <= searchBarX + searchBarW - 1 and y >= searchBarY and y <= searchBarY + searchBarH - 1 then
+        if x >= searchBarX + searchBarW - 3 and x <= searchBarX + searchBarW - 1 and search ~= "" then
+            search = ""
+            searchActive = false
+            addLog("Поиск очищен.", "INFO")
+        else
+            searchActive = true
+        end
+        draw()
+        return
+    else
+        searchActive = false
+    end
+
+    local itemsStartY = TABLE_Y_START + 3 -- Начало строк данных в таблице
+    local itemsEndY = itemsStartY + TABLE_VISIBLE_ROWS - 1 -- Конец строк данных в таблице
+
+    if y >= itemsStartY and y <= itemsEndY then
+        local idxInShowItems = (y-itemsStartY) + itemScroll
+        local showItems = {}
+        for i,item in ipairs(dataItems) do
+            if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+                table.insert(showItems, item)
+            end
+        end
+
+        if showItems[idxInShowItems] then
+            selectedItemIdx = nil
+            for k,v in ipairs(dataItems) do
+                if v == showItems[idxInShowItems] then
+                    selectedItemIdx = k
+                    break
+                end
+            end
+            addLog("Выбран предмет: " .. (dataItems[selectedItemIdx].name or "<??>"), "INFO")
+        end
+    else
+        selectedItemIdx = nil
+    end
+
+    draw()
+end)
+
+event.listen("drag", function(_,_,x,y,_,_)
+    if changeitem then return end
+    hoveredButton = nil
+    tooltip = ""
+
+    local btns = {
+        {idx=1, x=WIDTH-60, y=BUTTON_Y, w=12, h=3},
+        {idx=2, x=WIDTH-45, y=BUTTON_Y, w=12, h=3},
+        {idx=3, x=WIDTH-30, y=BUTTON_Y, w=12, h=3},
+        {idx=4, x=WIDTH-15, y=BUTTON_Y, w=12, h=3},
+    }
+    for i,btn in ipairs(btns) do
+        if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
+            hoveredButton = btn.idx
+            tooltipTimeout = os.time()
+            if btn.idx == 1 then tooltip = "Удалить выбранный предмет из списка"
+            elseif btn.idx == 2 then tooltip = "Изменить параметры выбранного предмета"
+            elseif btn.idx == 3 then tooltip = (isCrafting and "Остановить автокрафт" or "Запустить автокрафт")
+            elseif btn.idx == 4 then tooltip = "Добавить новый предмет (предмет в 1 слоте ME интерфейса)"
+            end
+            draw()
+            return
+        end
+    end
+    draw()
+end)
+
+event.listen("key_down", function(_,_,key,_,_)
+    if changeitem then return end
+
+    local showItems = {}
+    for i,item in ipairs(dataItems) do
+        if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+            table.insert(showItems, item)
+        end
+    end
+    local perPage = TABLE_VISIBLE_ROWS
+
+    if searchActive then
+        if key == 14 then
+            search = unicode.sub(search, 1, unicode.len(search)-1)
+        elseif key == 211 then
+            search = ""
+        elseif key == 28 then
+            searchActive = false
+        else
+            local char_code = key
+            if char_code >= 32 and char_code <= 126 then
+                if unicode.len(search) < WIDTH-15 then
+                    search = search .. unicode.char(char_code)
+                end
+            end
+        end
+        itemScroll = 1
+        selectedItemIdx = nil
+    else
+        if key == 200 then
+            itemScroll = math.max(1,itemScroll-1)
+        elseif key == 208 then
+            if #showItems > perPage then
+                itemScroll = math.min(#showItems-perPage+1,itemScroll+1)
+            end
+        end
+    end
+    draw()
+end)
+
+event.listen("key_press", function(_, char)
+    if changeitem then return end
+    if searchActive then
+        if not (char == '\n' or char == '\b' or char == '\r') then
+            if unicode.len(search) < WIDTH-15 then
+                search = search .. char
+            end
+        end
+        itemScroll = 1
+        selectedItemIdx = nil
+        draw()
+    end
+end)
+
+
+-------------------- Старт --------------------
+g.setResolution(WIDTH,HEIGHT)
+clearScreen()
+addLog("Программа запущена.", "INFO")
+reload()
+draw()
+
+local craftThread = coroutine.create(autoCraftLoop)
+
+while true do
+    local status, result = coroutine.resume(craftThread)
+    if not status then
+        addLog("Фатальная ошибка в цикле автокрафта: "..tostring(result), "ERROR")
+        draw()
+        os.sleep(5)
+        computer.shutdown(true)
+    end
+
+    local e = {event.pull(0.05)}
+    if e[1] == "touch" then
+        event.push("touch", e[2],e[3],e[4],e[5],e[6],e[7])
+    elseif e[1] == "drag" then
+        event.push("drag", e[2],e[3],e[4],e[5],e[6],e[7])
+    elseif e[1] == "key_down" then
+        event.push("key_down", e[2],e[3],e[4],e[5],e[6],e[7])
+    elseif e[1] == "key_press" then
+        event.push("key_press", e[2],e[3],e[4],e[5])
+    end
+
+    draw()
+end
