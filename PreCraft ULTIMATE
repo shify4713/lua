@@ -1,78 +1,58 @@
---[[
-  PreCraft ULTIMATE (2025, переписанный)
-  Максимально стабильный и удобный UI автокрафта для OpenComputers
-  Без сторонних зависимостей, только базовые библиотеки OC
-  Всё на русском, всё цветное, быстрый отклик, ноль багов
-  Полностью самодостаточно в 1 файле
---]]
-
+-- PreCraft ULTIMATE (2025) — полный редизайн, идеальный UI автокрафта OC
 local component = require("component")
 local event = require("event")
 local fs = require("filesystem")
 local serialization = require("serialization")
 local unicode = require("unicode")
 local term = require("term")
-
--- === Мини-библиотека для UI ===
-local UI = {}
-do
-  local gpu = assert(component.gpu, "GPU not found")
-  UI.gpu = gpu
-  function UI.setBg(bg) gpu.setBackground(bg or 0x232c42) end
-  function UI.setFg(fg) gpu.setForeground(fg or 0xA4FFFA) end
-  function UI.fill(x, y, w, h, char) gpu.fill(x, y, w, h, char or " ") end
-  function UI.text(x, y, str, fg, bg)
-    if bg then UI.setBg(bg) end
-    if fg then UI.setFg(fg) end
-    gpu.set(x, y, str)
-    UI.setBg()
-    UI.setFg()
-  end
-  function UI.btn(x, y, w, str, active)
-    local btnBg, btnFg = active and 0x26d6ff or 0x00AADD, 0x181824
-    UI.setBg(btnBg)
-    UI.setFg(btnFg)
-    UI.fill(x, y, w, 1)
-    UI.text(x + math.floor((w-unicode.len(str))/2), y, str)
-    UI.setBg()
-    UI.setFg()
-    return {x1=x, x2=x+w-1, y=y}
-  end
-  function UI.border(x, y, w, h, col)
-    UI.setFg(col or 0x00ffff)
-    gpu.set(x, y, "+"..string.rep("-",w-2).."+")
-    gpu.set(x, y+h-1, "+"..string.rep("-",w-2).."+")
-    for i=1,h-2 do
-      gpu.set(x,y+i,"|")
-      gpu.set(x+w-1,y+i,"|")
-    end
-    UI.setFg()
-  end
-end
+local computer = require("computer")
+local me = assert(component.me_interface, "me_interface not found")
+local gpu = assert(component.gpu, "GPU not found")
 
 -- === Настройки ===
 local WIDTH, HEIGHT = 160, 50
 local ADM = {["shify4713"]=true, ["LiwMorgan"]=true, ["KReaTlVNuY"]=true, ["4ertik_"]=true}
 local PATH = "/home/BD.txt"
 
--- === Цвета ===
+-- === Цвета для flat-дизайна ===
 local COLORS = {
-  bg = 0x232c42,
-  fg = 0xA4FFFA,
-  border = 0x00ffff,
-  err = 0xFF4444,
-  label = 0xFFD580,
-  logbg = 0x222233,
-  logtxt = 0xB2B2FF,
-  tab_on = 0x00AADD, tab_off = 0x232c42, tab_txt = 0xFFFFFF,
-  select_bg = 0x444477, select_fg = 0xFFFFFF,
-  btn_bg = 0x00AADD, btn_fg = 0x181824, btn_act = 0x26d6ff,
-  search_bg = 0x003355, search_fg = 0xA4FFFA,
-  text = 0xD38FFE,
-  ok = 0x00FF00, warn = 0xFFA000, bad = 0xFF4444, cpu = 0xA4FFFA, info = 0xB2B2FF
+  bg = 0x23272e,      -- общий фон
+  fg = 0xE6EDF3,      -- основной текст
+  border = 0x2866b2,  -- рамки
+  err = 0xFF3C3C,
+  ok = 0x7CFC00,
+  warn = 0xFFD700,
+  info = 0x66FFFF,
+  select_bg = 0x3A5068,
+  select_fg = 0xF1F1F1,
+  grid_head = 0x50B9FF,
+  grid_bg = 0x23272e,
+  grid_sel = 0x2d415c,
+  btn_bg = 0x2980b9,
+  btn_fg = 0xf7f7f7,
+  btn_act = 0x155a8a,
+  btn_border = 0x2980b9,
+  btn_shadow = 0x1d2731,
+  input_bg = 0x1c232b,
+  input_fg = 0xA4FFFA,
+  input_border = 0x2980b9,
+  shadow = 0x191b22,
+  tab_on = 0x2980b9,
+  tab_off = 0x23272e,
+  tab_fg = 0xFFFFFF,
+  log_bg = 0x242b33,
+  log_ok = 0x7CFC00,
+  log_warn = 0xFFD700,
+  log_err = 0xFF3C3C,
+  log_info = 0x66FFFF,
+  log_time = 0x474a4e,
+  log_txt = 0xE6EDF3,
+  search_bg = 0x26324a,
+  search_icon = 0x50B9FF
 }
 
--- === Хранилище ===
+-- === Техническое ===
+local function clamp(val, min, max) return math.max(min, math.min(val, max)) end
 local function save(tbl)
   local f = io.open(PATH, "w")
   if f then f:write("return "..serialization.serialize(tbl)); f:close() end
@@ -85,20 +65,16 @@ local function load()
   local ok, t = pcall(function() return load("return "..dat)() end)
   return ok and t or {}
 end
-
--- === Состояние приложения ===
-local gpu = UI.gpu
 gpu.setResolution(WIDTH, HEIGHT)
-local me = assert(component.me_interface, "me_interface not found")
+
+-- === Состояние ===
 local state = {
-  tab = "main",
-  data = {},
-  logs = {ok={}, nores={}, norecipe={}, nocpu={}, other={}},
-  redraw = true, select=1, scroll=1, search="", error=nil,
-  filtered = {}, maxscroll=1,
-  input = {active=false, value="", prompt="", action=nil},
-  go = false,
-  hitboxes = {tabs={}, items={}, btns={}, search={}}
+  tab = 1, tabs = {"Главная", "Изменить", "Логи"},
+  data = {}, logs = {}, select = 1, scroll = 1, search = "",
+  input = {active=false, value="", prompt="", action=nil}, -- модальное окно ввода
+  go = false, error = nil, filtered = {}, maxscroll = 1,
+  redraw = true, hover = {btn=nil, item=nil, tab=nil, search=false},
+  logScroll = 1
 }
 
 -- === Логирование ===
@@ -106,139 +82,211 @@ local function now()
   local t=os.date("*t")
   return string.format("%02d:%02d:%02d",t.hour,t.min,t.sec)
 end
-local function log(tbl,msg)
-  local arr=state.logs[tbl]
-  table.insert(arr, "["..now().."] "..msg)
-  if #arr>8 then table.remove(arr,1) end
+local function log(kind, msg)
+  table.insert(state.logs, {kind=kind, time=now(), msg=msg})
+  if #state.logs>40 then table.remove(state.logs,1) end
   state.redraw=true
 end
 
--- === UI-отрисовка ===
-local function render()
-  UI.setBg(COLORS.bg); UI.setFg(); UI.fill(1,1,WIDTH,HEIGHT)
-  UI.border(1,1,WIDTH,HEIGHT,COLORS.border)
-  -- Header
-  UI.text(math.floor(WIDTH/2-10),2,"PreCraft ULTIMATE",COLORS.fg)
-  -- Tabs
-  local x=4; local tabs={{"Главная","main"},{"Изменить","change"},{"Логи","log"}}
-  state.hitboxes.tabs={}
-  for i,tab in ipairs(tabs) do
-    local active=(tab[2]==state.tab)
-    UI.text(x,3,"["..tab[1].."]",COLORS.tab_txt,active and COLORS.tab_on or COLORS.tab_off)
-    local len=unicode.len(tab[1])+2
-    state.hitboxes.tabs[#state.hitboxes.tabs+1]={x1=x,x2=x+len-1,y=3,key=tab[2]}
-    x=x+len+3
+-- === Рисовалка flat UI ===
+local function setfg(c) gpu.setForeground(c or COLORS.fg) end
+local function setbg(c) gpu.setBackground(c or COLORS.bg) end
+local function fill(x,y,w,h,c) setbg(c); gpu.fill(x,y,w,h," ") end
+local function text(x,y,str,fg,bg)
+  if bg then setbg(bg) end
+  if fg then setfg(fg) end
+  gpu.set(x, y, str)
+  setbg(); setfg()
+end
+local function border(x,y,w,h,col)
+  setfg(col or COLORS.border)
+  gpu.set(x,y,"╭"..string.rep("─",w-2).."╮")
+  gpu.set(x,y+h-1,"╰"..string.rep("─",w-2).."╯")
+  for i=1,h-2 do
+    gpu.set(x,y+i,"│")
+    gpu.set(x+w-1,y+i,"│")
   end
-  -- Main table
-  if state.tab=="main" then
-    -- Заголовки
-    UI.text(8,6,"Название предмета",COLORS.label)
-    UI.text(51,6,"Кол-во",COLORS.label)
-    UI.text(66,6,"Крафт",COLORS.label)
-    UI.text(79,6,"Выбрать",COLORS.label)
-    -- Данные
-    local filtered={}
+  setfg()
+end
+local function shadow(x,y,w,h)
+  setbg(COLORS.shadow)
+  gpu.fill(x+w-1,y+1,1,h-1," ")
+  gpu.fill(x+1,y+h-1,w-1,1," ")
+  setbg()
+end
+local function btn(x,y,w,str,active,hover)
+  local bg = active and COLORS.btn_act or COLORS.btn_bg
+  if hover then bg = 0x6ec6ff end
+  fill(x, y, w, 3, bg)
+  border(x, y, w, 3, COLORS.btn_border)
+  shadow(x, y, w, 3)
+  text(x+math.floor((w-unicode.len(str))/2), y+1, str, COLORS.btn_fg, bg)
+  return {x1=x,x2=x+w-1,y1=y,y2=y+2}
+end
+local function tag(x,y,str,active)
+  fill(x,y,unicode.len(str)+2,1,active and COLORS.tab_on or COLORS.tab_off)
+  text(x+1,y,str,active and COLORS.tab_fg or 0x999999)
+end
+local function inputbox(x,y,w,prompt,value,active)
+  fill(x,y,w,3,COLORS.input_bg)
+  border(x,y,w,3,COLORS.input_border)
+  text(x+2,y+1,prompt,0x999999)
+  text(x+2+unicode.len(prompt),y+1," "..value,active and COLORS.input_fg or 0x555555)
+end
+local function drawIconSearch(x,y)
+  setfg(COLORS.search_icon)
+  gpu.set(x,y,"⦾")
+  setfg()
+end
+
+-- === Главный рендер ===
+local function render()
+  -- Фон и рамка
+  fill(1,1,WIDTH,HEIGHT,COLORS.bg)
+  border(1,1,WIDTH,HEIGHT,COLORS.border)
+  -- Заголовок
+  text(math.floor(WIDTH/2-9),2,"PreCraft ULTIMATE",COLORS.tab_on)
+  -- Tabs
+  local tx=5
+  state.tabHit = {}
+  for i,tab in ipairs(state.tabs) do
+    local active = (state.tab==i)
+    tag(tx, 4, " "..tab.." ", active or state.hover.tab==i)
+    state.tabHit[#state.tabHit+1] = {x1=tx, x2=tx+unicode.len(tab)+1, y=4, idx=i}
+    tx = tx + unicode.len(tab)+5
+  end
+  -- Main grid
+  if state.tab==1 then -- Главная
+    -- Шапка
+    fill(7,7,70,1,COLORS.grid_head)
+    text(9,7,"Название",0xffffff,COLORS.grid_head)
+    text(42,7,"Кол-во",0xffffff,COLORS.grid_head)
+    text(54,7,"Крафт",0xffffff,COLORS.grid_head)
+    -- Фильтр
+    local filtered={}, search=unicode.lower(state.search or "")
     for i,v in ipairs(state.data) do
-      if state.search=="" or unicode.lower(v.name or ""):find(unicode.lower(state.search)) then
-        table.insert(filtered,v)
-      end
+      if search=="" or unicode.lower(v.name or ""):find(search) then table.insert(filtered,v) end
     end
     state.filtered=filtered
-    local maxshow=32
-    state.maxscroll=math.max(1,#filtered-maxshow+1)
-    state.select=math.max(1,math.min(state.select,#filtered))
-    state.scroll=math.max(1,math.min(state.scroll,state.maxscroll))
-    state.hitboxes.items={}
-    for i=state.scroll,math.min(#filtered,state.scroll+maxshow-1) do
-      local v=filtered[i]; local y=7+(i-state.scroll)
-      local sel=(i==state.select)
-      UI.text(8,y,v.name or "",sel and COLORS.select_fg or COLORS.text,sel and COLORS.select_bg)
-      UI.text(51,y,tostring(v.count or ""),sel and COLORS.select_fg or COLORS.text,sel and COLORS.select_bg)
-      UI.text(66,y,tostring(v.craftSize or ""),sel and COLORS.select_fg or COLORS.text,sel and COLORS.select_bg)
-      UI.text(79,y,sel and "<--" or "",sel and COLORS.select_fg or COLORS.text,sel and COLORS.select_bg)
-      state.hitboxes.items[#state.hitboxes.items+1]={x1=8,x2=95,y=y,index=i}
+    -- Сетка предметов
+    local show = 33
+    state.maxscroll = math.max(1, #filtered-show+1)
+    state.select = clamp(state.select, 1, #filtered)
+    state.scroll = clamp(state.scroll, 1, state.maxscroll)
+    state.itemHit = {}
+    for i=state.scroll,math.min(#filtered,state.scroll+show-1) do
+      local v=filtered[i]; local y=7+(i-state.scroll)+1
+      local sel = (i==state.select)
+      fill(7,y,70,1, sel and COLORS.select_bg or COLORS.grid_bg)
+      text(9,y,v.name or "", sel and COLORS.select_fg or COLORS.fg)
+      text(42,y,tostring(v.count or ""), sel and COLORS.select_fg or COLORS.fg)
+      text(54,y,tostring(v.craftSize or ""), sel and COLORS.select_fg or COLORS.fg)
+      state.itemHit[#state.itemHit+1]={x1=7,x2=76,y=y,idx=i}
+    end
+    -- Кнопки (новая сетка)
+    local bY = 44
+    local btns = {
+      {"[Добавить]", "add", 7, bY},
+      {"[Изменить]", "edit", 23, bY},
+      {"[Удалить]", "del", 39, bY},
+      {"[Режим: "..(state.go and " GO " or "STOP").."]","toggleGo", 55, bY, state.go},
+      {"[Выход]", "exit", 71, bY}
+    }
+    state.btnHit = {}
+    for i,b in ipairs(btns) do
+      local hover = (state.hover.btn == i)
+      local box = btn(b[3], b[4], 14, b[1], b[5], hover)
+      box.action = b[2]; box.idx=i
+      state.btnHit[#state.btnHit+1]=box
     end
     -- Поиск
-    local sx=math.floor((WIDTH-40)/2); local sy=43
-    UI.text(sx,sy,"Поиск: "..(state.search=="" and "Для поиска введите название.." or state.search),COLORS.search_fg,COLORS.search_bg)
-    state.hitboxes.search={x1=sx,x2=sx+39,y=sy}
-    -- Кнопки
-    local btns={{16,47,18,"[Добавить]",'add'},{40,47,18,"[Изменить]",'edit'},{64,47,18,"[Удалить]",'del'},
-      {WIDTH-52,47,24,"[РЕЖИМ: "..(state.go and "GO" or "STOP").."]",'toggleGo'},
-      {WIDTH-26,47,16,"[Назад]",'back'}}
-    state.hitboxes.btns={}
-    for _,b in ipairs(btns) do
-      table.insert(state.hitboxes.btns,UI.btn(b[1],b[2],b[3],b[4]))
-      state.hitboxes.btns[#state.hitboxes.btns].action=b[5]
-    end
-    -- Кол-во всего
-    UI.text(WIDTH-25,HEIGHT,"Всего: "..#state.data,COLORS.text)
+    local sx,sy = 7,41
+    fill(sx,sy,40,3,COLORS.search_bg)
+    border(sx,sy,40,3,COLORS.btn_border)
+    drawIconSearch(sx+2,sy+1)
+    text(sx+5,sy+1,state.search=="" and "Поиск по названию..." or state.search,state.hover.search and 0xffffff or 0xcccccc)
+    state.searchHit = {x1=sx,y1=sy,x2=sx+39,y2=sy+2}
+    -- Всего
+    text(69,HEIGHT,"Всего: "..#state.data,0x888888)
   end
-  -- Логи
-  local function drawLogs()
-    local x0=WIDTH-54; local y0=3; local panelW=52
-    UI.setBg(COLORS.logbg); UI.fill(x0,y0,panelW,HEIGHT-y0-1)
-    UI.setBg(); UI.text(x0+2,y0,"ЛОГИ АВТОКРАФТА",COLORS.tab_on)
-    UI.text(x0+2,y0+2,"[✔] Крафт/готово",COLORS.label)
-    UI.text(x0+2,y0+5,"[✕] Нет ресурсов",COLORS.warn)
-    UI.text(x0+2,y0+8,"[!] Нет рецепта",COLORS.bad)
-    UI.text(x0+2,y0+11,"[🕒] Нет CPU",COLORS.cpu)
-    UI.text(x0+2,y0+14,"[i] Прочее",COLORS.info)
-    local ofs=function(arr,dy,col)
-      for i=math.max(1,#arr-6+1),#arr do
-        UI.text(x0+4,y0+dy+(i-(#arr-6)),arr[i],col)
-      end
+  -- Вкладка "Изменить"
+  if state.tab==2 and state.filtered[state.select] then
+    local v = state.filtered[state.select]
+    fill(85,10,68,15,COLORS.input_bg)
+    border(85,10,68,15,COLORS.input_border)
+    text(90,13,"Название: "..(v.name or ""),COLORS.tab_on)
+    text(90,15,"Кол-во: "..tostring(v.count or ""),COLORS.tab_on)
+    text(90,17,"Размер крафта: "..tostring(v.craftSize or ""),COLORS.tab_on)
+    state.chBtnHit={}
+    local cx,cy=90,20
+    for i,arr in ipairs{
+      {"Изменить имя","name",cx,cy},
+      {"Изм. кол-во","count",cx+22,cy},
+      {"Изм. крафт","craft",cx+42,cy},
+      {"Назад","main",cx+58,cy}
+    } do
+      local hover = (state.hover.btn == i)
+      local box = btn(arr[3],arr[4],20,arr[1],false,hover)
+      box.action=arr[2];box.idx=i
+      state.chBtnHit[#state.chBtnHit+1]=box
     end
-    ofs(state.logs.ok,2,COLORS.ok)
-    ofs(state.logs.nores,5,COLORS.warn)
-    ofs(state.logs.norecipe,8,COLORS.bad)
-    ofs(state.logs.nocpu,11,COLORS.cpu)
-    ofs(state.logs.other,14,COLORS.info)
-    UI.setBg()
   end
-  if state.tab=="main" or state.tab=="log" then drawLogs() end
-  -- Вкладка изменения
-  if state.tab=="change" and state.filtered[state.select] then
-    local v=state.filtered[state.select]
-    UI.text(30,12,"Название: "..(v.name or "?"),COLORS.label)
-    UI.text(30,14,"Кол-во: "..tostring(v.count or "?"),COLORS.label)
-    UI.text(30,16,"Размер крафта: "..tostring(v.craftSize or "?"),COLORS.label)
-    local chbtns={{40,32,24,"Изменить имя",'name'},{68,32,18,"Изм. кол-во",'count'},
-      {88,32,18,"Изм. крафт",'craft'},{108,32,18,"Назад",'main'}}
-    for _,b in ipairs(chbtns) do
-      UI.btn(b[1],b[2],b[3],b[4])
+  -- Вкладка "Логи"
+  if state.tab==3 or (state.tab==1 or state.tab==2) then
+    -- Прозрачная доска логов справа
+    local x0,y0,w0,h0 = 85,6,68,38
+    fill(x0,y0,w0,h0,COLORS.log_bg)
+    border(x0,y0,w0,h0,COLORS.tab_on)
+    text(x0+3,y0," ЛОГИ АВТОКРАФТА ",COLORS.tab_on)
+    -- Выделяем последние логи, поддержка скролла
+    local logs = state.logs
+    local show = h0-4
+    local maxScroll = math.max(1,#logs-show+1)
+    state.logScroll = clamp(state.logScroll, 1, maxScroll)
+    for i=state.logScroll,math.min(#logs,state.logScroll+show-1) do
+      local lg = logs[i]
+      local y = y0+1+(i-state.logScroll)
+      local col = lg.kind=="ok" and COLORS.log_ok or lg.kind=="warn" and COLORS.log_warn or lg.kind=="err" and COLORS.log_err or lg.kind=="info" and COLORS.log_info or COLORS.log_txt
+      text(x0+2, y, "["..lg.time.."] ",COLORS.log_time)
+      text(x0+11, y, lg.msg, col)
     end
-    drawLogs()
   end
-  -- Поле ввода
+  -- Модальное окно ввода
   if state.input.active then
-    local w=50; local x=math.floor((WIDTH-w)/2)
-    UI.setBg(COLORS.search_bg); UI.fill(x,30,w,1); UI.setBg()
-    UI.text(x+1,30,state.input.prompt.." "..state.input.value,COLORS.search_fg)
+    local w,h = 60,7
+    local x,y = math.floor(WIDTH/2-w/2), math.floor(HEIGHT/2-h/2)
+    fill(x,y,w,h,COLORS.input_bg)
+    border(x,y,w,h,COLORS.input_border)
+    shadow(x,y,w,h)
+    text(x+3,y+2,state.input.prompt,0xcccccc)
+    inputbox(x+3,y+4,w-6,"",state.input.value,true)
+    text(x+w-13,y+h-1,"[Enter: OK]",0x66ff66)
+    text(x+w-30,y+h-1,"[Esc: отмена]",0xff6666)
   end
   -- Ошибка
   if state.error then
-    UI.text(2,HEIGHT-1,"Ошибка: "..tostring(state.error),COLORS.err)
+    text(6,HEIGHT-1,"Ошибка: "..tostring(state.error),COLORS.err)
   end
   state.redraw=false
 end
 
 -- === Обработка событий ===
 local function askInput(prompt,action,default)
-  state.input.active=true; state.input.value=default or ""; state.input.prompt=prompt; state.input.action=action; state.redraw=true
+  state.input={active=true,value=default or "",prompt=prompt,action=action}
+  state.redraw=true
 end
 local function resetInput() state.input={active=false,value="",prompt="",action=nil} end
 local function commitInput()
   local idx=state.select; local v=state.filtered and state.filtered[idx]
-  if state.input.action=="name" then if v then v.name=state.input.value end; log("other","Изменено имя: "..(v and v.name or "?"))
-  elseif state.input.action=="count" then if v then v.count=tonumber(state.input.value) end; log("other","Изменено количество: "..(v and v.count or "?"))
-  elseif state.input.action=="craft" then if v then v.craftSize=tonumber(state.input.value) end; log("other","Изменён размер крафта: "..(v and v.craftSize or "?"))
+  if state.input.action=="name" then if v then v.name=state.input.value end; log("info","Изменено имя: "..(v and v.name or "?"))
+  elseif state.input.action=="count" then if v then v.count=tonumber(state.input.value) end; log("info","Изменено количество: "..(v and v.count or "?"))
+  elseif state.input.action=="craft" then if v then v.craftSize=tonumber(state.input.value) end; log("info","Изменён размер крафта: "..(v and v.craftSize or "?"))
   elseif state.input.action=="search" then state.search=state.input.value
   elseif state.input.action=="add" then
     local item=me.getStackInSlot(1)
     if not item then state.error="Положите предмет в 1-й слот интерфейса!"; resetInput(); return end
     table.insert(state.data,{name=state.input.value,id=item.id,dmg=item.dmg,count=1,craftSize=1})
-    log("ok","Добавлен предмет: "..state.input.value)
+    log("ok","Добавлен: "..state.input.value)
   end
   save(state.data); resetInput(); state.redraw=true
 end
@@ -247,52 +295,82 @@ local function handleKeyDown(_,_,char,code,playerName)
   if not ADM[playerName or ""] then return end
   if state.input.active then
     if code==13 then commitInput()
-    elseif code==8 then if #state.input.value>0 then state.input.value=unicode.sub(state.input.value,1,unicode.len(state.input.value)-1) end
+    elseif code==8 then
+      if #state.input.value>0 then
+        state.input.value=unicode.sub(state.input.value,1,unicode.len(state.input.value)-1)
+      end
+    elseif code==27 then resetInput(); state.redraw=true
     elseif char and type(char)=="string" and unicode.len(state.input.value)<48 then
       state.input.value=state.input.value..char
     end
     state.redraw=true
+    return
+  end
+end
+
+local function hoverUpdate(x, y)
+  state.hover = {btn=nil, item=nil, tab=nil, search=false}
+  -- Кнопки
+  if state.tab==1 and state.btnHit then
+    for i,b in ipairs(state.btnHit) do
+      if x>=b.x1 and x<=b.x2 and y>=b.y1 and y<=b.y2 then state.hover.btn=i; break end
+    end
+  elseif state.tab==2 and state.chBtnHit then
+    for i,b in ipairs(state.chBtnHit) do
+      if x>=b.x1 and x<=b.x2 and y>=b.y1 and y<=b.y2 then state.hover.btn=i; break end
+    end
+  end
+  -- Табы
+  for _,t in ipairs(state.tabHit or {}) do
+    if y==t.y and x>=t.x1 and x<=t.x2 then state.hover.tab=t.idx; break end
+  end
+  -- Поиск
+  if state.searchHit and x>=state.searchHit.x1 and x<=state.searchHit.x2 and y>=state.searchHit.y1 and y<=state.searchHit.y2 then
+    state.hover.search=true
   end
 end
 
 local function handleTouch(_,_,x,y,btn,playerName)
   if not ADM[playerName or ""] then return end
+  hoverUpdate(x,y)
   -- Tabs
-  for _,box in ipairs(state.hitboxes.tabs or {}) do
-    if y==box.y and x>=box.x1 and x<=box.x2 then state.tab=box.key; state.redraw=true; return end
+  for _,t in ipairs(state.tabHit or {}) do
+    if y==t.y and x>=t.x1 and x<=t.x2 then state.tab=t.idx; state.redraw=true; return end
   end
   -- Поиск
-  if state.tab=="main" and state.hitboxes.search and y==state.hitboxes.search.y and x>=state.hitboxes.search.x1 and x<=state.hitboxes.search.x2 then
-    askInput("Поиск:","search",state.search); return
+  if state.tab==1 and state.searchHit and x>=state.searchHit.x1 and x<=state.searchHit.x2 and y>=state.searchHit.y1 and y<=state.searchHit.y2 then
+    askInput("Поиск:","search",state.search)
+    return
   end
   -- Кнопки
-  for _,b in ipairs(state.hitboxes.btns or {}) do
-    if y==b.y and x>=b.x1 and x<=b.x2 then
-      if b.action=="add" then askInput("Введите название:","add","")
-      elseif b.action=="edit" then state.tab="change"; state.redraw=true
-      elseif b.action=="del" then if state.filtered[state.select] then table.remove(state.data,state.select); log("other","Удалён: "..(state.filtered[state.select].name or "?")); save(state.data); state.redraw=true end
-      elseif b.action=="toggleGo" then state.go=not state.go; log("other","Режим: "..(state.go and "GO" or "STOP")); state.redraw=true
-      elseif b.action=="back" then state.tab="main"; state.redraw=true
+  if state.tab==1 and state.btnHit then
+    for _,b in ipairs(state.btnHit) do
+      if x>=b.x1 and x<=b.x2 and y>=b.y1 and y<=b.y2 then
+        if b.action=="add" then askInput("Название для добавления:","add","")
+        elseif b.action=="edit" then state.tab=2; state.redraw=true
+        elseif b.action=="del" then if state.filtered[state.select] then table.remove(state.data,state.select); log("err","Удалён: "..(state.filtered[state.select].name or "?")); save(state.data); state.redraw=true end
+        elseif b.action=="toggleGo" then state.go=not state.go; log("info","Режим: "..(state.go and "GO" or "STOP")); state.redraw=true
+        elseif b.action=="exit" then os.exit()
+        end
+        return
       end
-      return
     end
   end
-  -- Предметы
-  if state.tab=="main" then
-    for _,box in ipairs(state.hitboxes.items or {}) do
-      if y==box.y and x>=box.x1 and x<=box.x2 then state.select=box.index; state.redraw=true; return end
+  -- Grid выделение
+  if state.tab==1 and state.itemHit then
+    for _,b in ipairs(state.itemHit) do
+      if x>=b.x1 and x<=b.x2 and y==b.y then state.select=b.idx; state.redraw=true; return end
     end
   end
   -- Изменить (кнопки)
-  if state.tab=="change" then
-    local chbtns={{40,32,24,'name'},{68,32,18,'count'},{88,32,18,'craft'},{108,32,18,'main'}}
-    for _,b in ipairs(chbtns) do
-      if y==32 and x>=b[1] and x<=b[1]+b[2]-1 then
-        if b[4]=="main" then state.tab="main"; state.redraw=true
+  if state.tab==2 and state.chBtnHit then
+    for _,b in ipairs(state.chBtnHit) do
+      if x>=b.x1 and x<=b.x2 and y>=b.y1 and y<=b.y2 then
+        if b.action=="main" then state.tab=1; state.redraw=true
         else
           local v=state.filtered[state.select]
-          local current=(b[4]=="name" and v and v.name) or (b[4]=="count" and v and v.count) or (b[4]=="craft" and v and v.craftSize) or ""
-          askInput("Новое значение:",b[4],tostring(current or ""))
+          local current=(b.action=="name" and v and v.name) or (b.action=="count" and v and v.count) or (b.action=="craft" and v and v.craftSize) or ""
+          askInput("Новое значение:",b.action,tostring(current or ""))
         end
         return
       end
@@ -300,16 +378,22 @@ local function handleTouch(_,_,x,y,btn,playerName)
   end
 end
 
-local function handleScroll(_,_,_,_,dir,playerName)
+local function handleScroll(_,_,x,y,dir,playerName)
   if not ADM[playerName or ""] then return end
-  if state.tab=="main" then
+  if state.input.active then return end
+  if state.tab==1 and state.maxscroll>1 then
     if dir==1 and state.scroll>1 then state.scroll=state.scroll-1; state.redraw=true
-    elseif dir==-1 and state.scroll<state.maxscroll then state.scroll=state.scroll+1; state.redraw=true
-    end
+    elseif dir==-1 and state.scroll<state.maxscroll then state.scroll=state.scroll+1; state.redraw=true end
+  elseif state.tab==3 or (state.tab==1 or state.tab==2) then
+    local logs = state.logs
+    local show = 38-4
+    local maxScroll = math.max(1,#logs-show+1)
+    if dir==1 and state.logScroll>1 then state.logScroll=state.logScroll-1; state.redraw=true
+    elseif dir==-1 and state.logScroll<maxScroll then state.logScroll=state.logScroll+1; state.redraw=true end
   end
 end
 
--- === Автокрафт ===
+-- === Автокрафт-логика ===
 local function checkCraft()
   if not state.go then return end
   for _,v in ipairs(state.data) do
@@ -321,17 +405,17 @@ local function checkCraft()
       if craftables.n and craftables.n>=1 then
         local cpus=me.getCpus(); local maxCpu=0
         for _,cpu in ipairs(cpus) do if cpu.storage>maxCpu and not cpu.busy then maxCpu=cpu.storage end end
-        if maxCpu==0 then log("nocpu","Нет свободных CPU для "..(v.name or "?")); goto next end
+        if maxCpu==0 then log("warn","Нет свободных CPU для "..(v.name or "?")); goto next end
         local count=math.min(needAll,maxCpu,v.craftSize or maxCpu)
         local ok,msg=pcall(function() return craftables[1].request(count,false) end)
         if ok then log("ok","Крафт: "..(v.name or "?").." x"..count)
         else
-          if tostring(msg):find("missing resources") then log("nores","Не хватает для "..(v.name or "?"))
-          elseif tostring(msg):find("no recipe") then log("norecipe","Нет рецепта "..(v.name or "?"))
-          else log("other","Ошибка: "..tostring(msg)) end
+          if tostring(msg):find("missing resources") then log("warn","Не хватает для "..(v.name or "?"))
+          elseif tostring(msg):find("no recipe") then log("err","Нет рецепта "..(v.name or "?"))
+          else log("err","Ошибка: "..tostring(msg)) end
         end
         os.sleep(0.1)
-      else log("norecipe","Нет рецепта "..(v.name or "?")) end
+      else log("err","Нет рецепта "..(v.name or "?")) end
     end ::next::
   end
 end
@@ -345,10 +429,11 @@ local function mainloop()
   local lastCheck=os.clock()
   while true do
     if state.redraw then render() end
+    os.sleep(0.02)
     if state.go and os.clock()-lastCheck>6 then checkCraft(); lastCheck=os.clock() end
-    os.sleep(0.05)
   end
 end
 
+-- === Запуск ===
 local ok,err=pcall(mainloop)
-if not ok then UI.text(2,HEIGHT-1,"Ошибка: "..tostring(err),COLORS.err) end
+if not ok then text(2,HEIGHT-1,"Ошибка: "..tostring(err),COLORS.err) end
