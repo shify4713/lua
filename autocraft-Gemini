@@ -2,6 +2,7 @@
 -- Основная программа для OpenComputers.
 -- Исправлены мерцания логов, наложение элементов, визуал таблицы и ошибки.
 -- Поддержка поиска на кириллице.
+-- Оптимизирована проверка предметов в ME-сети: теперь проверяются только предметы из таблицы.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -291,10 +292,16 @@ local function drawSearchBar()
     end
     g.set(x+2, y+1, display)
     if searchActive then
-        term.setCursor(x + 2 + unicode.len(search), y + 1) -- Устанавливаем курсор для ввода
-        term.showCursor(true)
+        if type(term) == "table" and term.setCursor then -- Проверка на доступность term
+            term.setCursor(x + 2 + unicode.len(search), y + 1) -- Устанавливаем курсор для ввода
+            term.showCursor(true)
+        else
+            addLog("Терминал недоступен для установки курсора.", "ERROR")
+        end
     else
-        term.showCursor(false)
+        if type(term) == "table" and term.showCursor then -- Проверка на доступность term
+            term.showCursor(false)
+        end
     end
     g.setForeground(COLORS.search_cross)
     g.set(x+w-3, y+1, (search ~= "" and "×" or " ")) -- Кнопка сброса поиска
@@ -377,23 +384,16 @@ local function reload()
     local ok, res = pcall(uoc.loadf, DATA_FILE)
     dataItems = ok and res or {}
 
-    local me_network_items = {}
-    local ok_net, network_items = pcall(me.getItemsInNetwork)
-    if ok_net then
-        addLog("Получение предметов из ME сети...", "DEBUG") -- Отладка
-        for _, stack in ipairs(network_items) do
-            local key = stack.name .. (stack.damage and ":" .. stack.damage or "")
-            me_network_items[key] = (me_network_items[key] or 0) + (stack.size or stack.qty or 0)
-            addLog(string.format("ME: %s (dmg:%s) size:%s -> key: %s", stack.name, tostring(stack.damage), tostring(stack.size or stack.qty), key), "DEBUG") -- Отладка
+    addLog("Обновление количества предметов из ME сети...", "INFO") -- Отладка
+    for i,item in ipairs(dataItems) do
+        local ok_details, item_details = pcall(me.getItemDetails, {name=item.id, damage=item.dmg})
+        if ok_details and item_details then
+            item.current = item_details.size or item_details.qty or 0
+            addLog(string.format("ME-Детали: %s (id:%s dmg:%s) -> Найдено: %s", item.name, item.id, tostring(item.dmg), tostring(item.current)), "DEBUG") -- Отладка
+        else
+            item.current = 0 -- Предмет не найден в ME сети или ошибка получения деталей
+            addLog(string.format("ME-Детали: %s (id:%s dmg:%s) -> НЕ НАЙДЕНО или ОШИБКА: %s", item.name, item.id, tostring(item.dmg), tostring(item_details)), "WARN") -- Отладка
         end
-    else
-        addLog("Не удалось получить список предметов из ME сети: " .. tostring(network_items), "ERROR")
-    end
-
-    for _,item in ipairs(dataItems) do
-        local key = item.id .. (item.dmg and ":" .. item.dmg or "")
-        item.current = me_network_items[key] or 0
-        addLog(string.format("Data: %s (id:%s dmg:%s) current: %s", item.name, item.id, tostring(item.dmg), tostring(item.current)), "DEBUG") -- Отладка
     end
     addLog("Данные и количество предметов обновлены.", "INFO")
 end
@@ -412,7 +412,7 @@ end
 local function addItem()
     changeitem = true
     hoveredButton = nil -- Сбрасываем состояние наведенной кнопки
-    term.showCursor(true) -- Показываем курсор для ввода
+    if type(term) == "table" and term.showCursor then term.showCursor(true) end -- Показываем курсор для ввода
 
     -- Очищаем экран и рисуем только подсказки для ввода
     clearScreen()
@@ -455,7 +455,7 @@ local function addItem()
         addLog("Ошибка: нет предмета в слоте 1 ME интерфейса!","ERROR")
     end
     changeitem = false
-    term.showCursor(false) -- Скрываем курсор
+    if type(term) == "table" and term.showCursor then term.showCursor(false) end -- Скрываем курсор
     resetSelection()
     reload()
     draw() -- Обновляем экран после добавления
@@ -468,7 +468,7 @@ local function editItem()
 
     changeitem = true
     hoveredButton = nil -- Сбрасываем состояние наведенной кнопки
-    term.showCursor(true) -- Показываем курсор для ввода
+    if type(term) == "table" and term.showCursor then term.showCursor(true) end -- Показываем курсор для ввода
 
     -- Очищаем экран и рисуем только подсказки для ввода
     clearScreen()
@@ -508,7 +508,7 @@ local function editItem()
     save()
     addLog("Изменено: "..item.name,"INFO")
     changeitem = false
-    term.showCursor(false) -- Скрываем курсор
+    if type(term) == "table" and term.showCursor then term.showCursor(false) end -- Скрываем курсор
     resetSelection()
     reload()
     draw() -- Обновляем экран после изменения
