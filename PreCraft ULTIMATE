@@ -10,12 +10,10 @@ local gpu = assert(component.gpu, "GPU not found")
 local me = assert(component.me_interface, "ME interface not found")
 
 -- === SETTINGS ===
-local ADM = {['shify4713']=true} -- your Minecraft nick here!
+local ADM = {['LiwMorgan']=true} -- Ваш ник!
 local WIDTH, HEIGHT = 160, 50
 local DATA_PATH = "/home/BD.txt"
 local LOG_PATH = "/home/PCU.log"
-local LIB_OC = "/lib/oc.lua"
-local LIB_OC_URL = "https://www.dropbox.com/s/cgfytt8g174a6vs/libPrecraft.lua?dl=1"
 
 -- === COLORS ===
 local COLOR = {
@@ -28,10 +26,6 @@ local COLOR = {
 }
 
 -- === FILES AND INIT ===
-if not fs.exists(LIB_OC) then
-    shell.execute("wget " .. LIB_OC_URL .. " " .. LIB_OC)
-end
-local oc = require("oc")
 if not fs.exists(DATA_PATH) then
     local f = io.open(DATA_PATH, "w") f:write("return {}") f:close() end
 if not fs.exists(LOG_PATH) then
@@ -56,9 +50,12 @@ local state = {
     buttons = {},
     tabHitboxes = {},
     itemHitboxes = {},
-    log1 = {}, -- нехватка ресурсов
-    log2 = {}, -- нет рецепта
-    currentCraft = {},
+
+    logsSuccess = {},
+    logsNoRes = {},
+    logsNoRecipe = {},
+    logsNoCPU = {},
+    logsOther = {}
 }
 
 -- === UTILS ===
@@ -79,35 +76,37 @@ local function loadTable(path)
     return ok and t or {}
 end
 
-local function getMoscowTime()
-    local t = os.time()
-    local utc = os.date("!*t", t)
-    local hour = (utc.hour + 3) % 24
-    return string.format("%02d:%02d:%02d", hour, utc.min, utc.sec)
-end
-
-local function addLog(msg, logtype)
-    local line = ("[%s] %s"):format(getMoscowTime(), tostring(msg))
-    table.insert(state.logs, line)
-    if #state.logs > 120 then table.remove(state.logs, 1) end
-    saveTable(LOG_PATH, state.logs)
-    if logtype == "ore" then
-        table.insert(state.log1, line)
-        if #state.log1 > 20 then table.remove(state.log1, 1) end
-    elseif logtype == "recipe" then
-        table.insert(state.log2, line)
-        if #state.log2 > 20 then table.remove(state.log2, 1) end
-    end
-end
-
 local function clamp(val, min, max)
     if val < min then return min end
     if val > max then return max end
     return val
 end
 
-local function shallowcopy(t)
-    local r = {}; for k,v in pairs(t) do r[k]=v end; return r
+-- === LOGGING ===
+local function logSuccess(msg)
+    table.insert(state.logsSuccess, "["..os.date("%H:%M:%S").."] "..msg)
+    if #state.logsSuccess > 8 then table.remove(state.logsSuccess, 1) end
+    state.redraw = true
+end
+local function logNoRes(msg)
+    table.insert(state.logsNoRes, "["..os.date("%H:%M:%S").."] "..msg)
+    if #state.logsNoRes > 8 then table.remove(state.logsNoRes, 1) end
+    state.redraw = true
+end
+local function logNoRecipe(msg)
+    table.insert(state.logsNoRecipe, "["..os.date("%H:%M:%S").."] "..msg)
+    if #state.logsNoRecipe > 8 then table.remove(state.logsNoRecipe, 1) end
+    state.redraw = true
+end
+local function logNoCPU(msg)
+    table.insert(state.logsNoCPU, "["..os.date("%H:%M:%S").."] "..msg)
+    if #state.logsNoCPU > 8 then table.remove(state.logsNoCPU, 1) end
+    state.redraw = true
+end
+local function logOther(msg)
+    table.insert(state.logsOther, "["..os.date("%H:%M:%S").."] "..msg)
+    if #state.logsOther > 8 then table.remove(state.logsOther, 1) end
+    state.redraw = true
 end
 
 -- === GUI DRAW ===
@@ -115,7 +114,6 @@ local function clear()
     gpu.setBackground(COLOR.BG)
     gpu.fill(1, 1, WIDTH, HEIGHT, " ")
 end
-
 local function drawBorder()
     gpu.setForeground(COLOR.BORDER)
     gpu.set(1, 1, "+"..string.rep("-", WIDTH-2).."+")
@@ -125,7 +123,6 @@ local function drawBorder()
         gpu.set(WIDTH,y,"|")
     end
 end
-
 local function drawTabs()
     local x = 5
     local tabs = {{"Главная","main"},{"Изменить","change"},{"Логи","log"}}
@@ -141,14 +138,12 @@ local function drawTabs()
     end
     gpu.setBackground(COLOR.BG)
 end
-
 local function drawHeader()
     gpu.setBackground(COLOR.BG)
     gpu.setForeground(COLOR.FG)
     local title = "PreCraft ULTIMATE"
     gpu.set(math.floor(WIDTH/2-unicode.len(title)/2),2,title)
 end
-
 local function drawMainTable()
     local xName, wName = 8, 40
     local xCount, wCount = xName + wName + 3, 10
@@ -180,5 +175,399 @@ local function drawMainTable()
         gpu.set(xName, y, v.name or "")
         gpu.set(xCount, y, tostring(v.count or ""))
         gpu.set(xCraft, y, tostring(v.craftSize or ""))
-        gpu.set(xSel, y,
-
+        gpu.set(xSel, y, i==state.select and "<--" or "")
+        state.itemHitboxes[#state.itemHitboxes+1] = {x1=xName, x2=xSel+8, y=y, index=i}
+    end
+    gpu.setBackground(COLOR.BG)
+    gpu.setForeground(COLOR.TEXT)
+end
+local function drawSearch()
+    local w = 40
+    local x = math.floor((WIDTH-w)/2)
+    local y = 43
+    gpu.setBackground(COLOR.SEARCH_BG)
+    gpu.setForeground(COLOR.SEARCH_TXT)
+    gpu.fill(x, y, w, 1, " ")
+    local msg = "Поиск: "..(state.search=="" and "Для поиска введите название.." or state.search)
+    if unicode.len(msg) > w-2 then msg = unicode.sub(msg, 1, w-2) end
+    gpu.set(x+1, y, msg)
+    state.searchBox = {x1=x, x2=x+w-1, y=y}
+    gpu.setBackground(COLOR.BG)
+end
+local function drawButtons()
+    local btns = {
+        {x=16, w=18, label="[Добавить]", action="add"},
+        {x=40, w=18, label="[Изменить]", action="edit"},
+        {x=64, w=18, label="[Удалить]", action="del"},
+        {x=WIDTH-52, w=24, label="[РЕЖИМ: "..(state.go and "GO" or "STOP").."]", action="toggleGo"},
+        {x=WIDTH-26, w=16, label="[Назад]", action="back"},
+    }
+    state.buttons = btns
+    for _,btn in ipairs(btns) do
+        gpu.setBackground(COLOR.BTN_BG)
+        gpu.setForeground(COLOR.BTN_TXT)
+        gpu.fill(btn.x, 46, btn.w, 1, " ")
+        gpu.set(btn.x+math.floor((btn.w-unicode.len(btn.label))/2), 46, btn.label)
+        btn.y = 46
+        btn.x2 = btn.x + btn.w - 1
+    end
+    gpu.setBackground(COLOR.BG)
+end
+local function drawInput()
+    if not state.input.active then return end
+    local w = 50
+    local x = math.floor((WIDTH-w)/2)
+    local y = 30
+    gpu.setBackground(COLOR.SEARCH_BG)
+    gpu.fill(x, y, w, 1, " ")
+    gpu.setForeground(COLOR.SEARCH_TXT)
+    local msg = state.input.prompt .. " " .. state.input.value
+    if unicode.len(msg) > w-2 then msg = unicode.sub(msg, 1, w-2) end
+    gpu.set(x+1, y, msg)
+    gpu.setBackground(COLOR.BG)
+end
+local function drawRightPanel()
+    local x0 = WIDTH - 54
+    local y0 = 3
+    local panelW = 52
+    local panelH = HEIGHT - 5
+    gpu.setBackground(0x222233)
+    gpu.fill(x0, y0, panelW, panelH, " ")
+    gpu.setBackground(COLOR.BG)
+    gpu.setForeground(0x00AADD)
+    gpu.set(x0 + 2, y0, "ЛОГИ АВТОКРАФТА")
+    gpu.setForeground(COLOR.LABEL)
+    gpu.set(x0 + 2, y0 + 2, "[✔] Крафт/готово")
+    gpu.setForeground(0xFFA000)
+    gpu.set(x0 + 2, y0 + 5, "[✕] Нет ресурсов")
+    gpu.setForeground(0xFF4444)
+    gpu.set(x0 + 2, y0 + 8, "[!] Нет рецепта")
+    gpu.setForeground(0xA4FFFA)
+    gpu.set(x0 + 2, y0 + 11, "[🕒] Нет CPU")
+    gpu.setForeground(0xB2B2FF)
+    gpu.set(x0 + 2, y0 + 14, "[i] Прочее")
+    gpu.setForeground(COLOR.TEXT)
+    -- Вывод логов по категориям
+    local idx
+    idx = 0
+    for i = math.max(1, #state.logsSuccess - 6 + 1), #state.logsSuccess do
+        idx = idx + 1
+        gpu.setForeground(0x00FF00)
+        gpu.set(x0 + 4, y0 + 2 + idx, state.logsSuccess[i])
+    end
+    idx = 0
+    for i = math.max(1, #state.logsNoRes - 6 + 1), #state.logsNoRes do
+        idx = idx + 1
+        gpu.setForeground(0xFFA000)
+        gpu.set(x0 + 4, y0 + 5 + idx, state.logsNoRes[i])
+    end
+    idx = 0
+    for i = math.max(1, #state.logsNoRecipe - 6 + 1), #state.logsNoRecipe do
+        idx = idx + 1
+        gpu.setForeground(0xFF4444)
+        gpu.set(x0 + 4, y0 + 8 + idx, state.logsNoRecipe[i])
+    end
+    idx = 0
+    for i = math.max(1, #state.logsNoCPU - 6 + 1), #state.logsNoCPU do
+        idx = idx + 1
+        gpu.setForeground(0xA4FFFA)
+        gpu.set(x0 + 4, y0 + 11 + idx, state.logsNoCPU[i])
+    end
+    idx = 0
+    for i = math.max(1, #state.logsOther - 6 + 1), #state.logsOther do
+        idx = idx + 1
+        gpu.setForeground(0xB2B2FF)
+        gpu.set(x0 + 4, y0 + 14 + idx, state.logsOther[i])
+    end
+    gpu.setForeground(COLOR.TEXT)
+end
+local function drawError()
+    if state.error then
+        local w = math.floor(WIDTH*0.8)
+        local x = math.floor((WIDTH-w)/2)
+        local y = 48
+        gpu.setBackground(COLOR.BG)
+        gpu.setForeground(COLOR.ERROR)
+        gpu.fill(x, y, w, 1, " ")
+        gpu.set(x+1, y, tostring(state.error))
+        gpu.setForeground(COLOR.TEXT)
+    end
+end
+local function render()
+    clear()
+    drawBorder()
+    drawHeader()
+    drawTabs()
+    if state.tab=="main" then
+        drawMainTable()
+        drawSearch()
+        drawButtons()
+        drawError()
+        drawRightPanel()
+        gpu.set(WIDTH-25,HEIGHT,"Всего: "..#state.data)
+    elseif state.tab == "log" then
+        drawRightPanel()
+    elseif state.tab == "change" and state.filtered[state.select] then
+        local v = state.filtered[state.select]
+        gpu.setForeground(COLOR.LABEL)
+        gpu.set(30,12,"Название: "..(v.name or "?"))
+        gpu.set(30,14,"Кол-во: "..tostring(v.count or "?"))
+        gpu.set(30,16,"Размер крафта: "..tostring(v.craftSize or "?"))
+        gpu.setForeground(COLOR.TEXT)
+        local btns = {
+            {x=40,w=24,label="Изменить имя",action="name"},
+            {x=68,w=18,label="Изм. кол-во",action="count"},
+            {x=88,w=18,label="Изм. крафт",action="craft"},
+            {x=108,w=18,label="Назад",action="main"}
+        }
+        for _,btn in ipairs(btns) do
+            gpu.setBackground(COLOR.BTN_BG)
+            gpu.setForeground(COLOR.BTN_TXT)
+            gpu.fill(btn.x,32,btn.w,1," ")
+            gpu.set(btn.x+math.floor((btn.w-unicode.len(btn.label))/2),32,btn.label)
+        end
+        drawRightPanel()
+    end
+    drawInput()
+    state.redraw = false
+end
+
+-- === EVENTS ===
+local function resetInput()
+    state.input = {active=false, value="", prompt="", action=nil}
+end
+local function askInput(prompt, action, default)
+    state.input.active = true
+    state.input.value = default or ""
+    state.input.prompt = prompt
+    state.input.action = action
+end
+local function commitInput()
+    if not state.input.action then resetInput() return end
+    local idx = state.select
+    local v = state.filtered and state.filtered[idx]
+    if state.input.action=="name" then
+        if v then v.name = state.input.value end
+        logOther("Изменено имя: "..(v and v.name or "?"))
+    elseif state.input.action=="count" then
+        if v then v.count = tonumber(state.input.value) end
+        logOther("Изменено количество: "..(v and v.count or "?"))
+    elseif state.input.action=="craft" then
+        if v then v.craftSize = tonumber(state.input.value) end
+        logOther("Изменён размер крафта: "..(v and v.craftSize or "?"))
+    elseif state.input.action=="search" then
+        state.search = state.input.value
+    elseif state.input.action=="add" then
+        local item = me.getStackInSlot(1)
+        if not item then state.error="Положите предмет в 1-й слот интерфейса!"; resetInput(); return end
+        table.insert(state.data, {name=state.input.value, id=item.id, dmg=item.dmg, count=1, craftSize=1})
+        logSuccess("Добавлен предмет: "..state.input.value)
+    end
+    saveTable(DATA_PATH, state.data)
+    resetInput()
+    state.redraw = true
+end
+local function handleKeyDown(_, _, char, code, playerName)
+    if not ADM[playerName or ""] then return end
+    if state.input.active then
+        if code==13 then commitInput()
+        elseif code==8 then
+            if #state.input.value > 0 then
+                state.input.value = unicode.sub(state.input.value,1,unicode.len(state.input.value)-1)
+            end
+        elseif char and type(char)=="string" and unicode.len(state.input.value)<48 then
+            state.input.value = state.input.value .. char
+        end
+        state.redraw = true
+        return
+    end
+    if state.tab=="main" then
+        if code==200 then state.select=clamp(state.select-1,1,#state.filtered) state.redraw=true end
+        if code==208 then state.select=clamp(state.select+1,1,#state.filtered) state.redraw=true end
+        if code==203 and state.scroll>1 then state.scroll=state.scroll-1 state.redraw=true end
+        if code==205 and state.scroll<state.maxscroll then state.scroll=state.scroll+1 state.redraw=true end
+        if code==8 and #state.search > 0 then
+            state.search = unicode.sub(state.search,1,unicode.len(state.search)-1)
+            state.redraw=true
+        elseif char and type(char)=="string" then
+            state.search = state.search .. char
+            state.redraw=true
+        end
+        if code==13 then state.tab="change" state.redraw=true end
+    end
+    if code==27 then
+        if state.tab~="main" then state.tab="main" state.redraw=true end
+        resetInput()
+    end
+end
+local function handleTouch(_, _, x, y, button, playerName)
+    if not ADM[playerName or ""] then return end
+    -- вкладки
+    for _,tab in ipairs(state.tabHitboxes or {}) do
+        if y == tab.y and x >= tab.x1 and x <= tab.x2 then
+            state.tab = tab.key
+            state.redraw = true
+            return
+        end
+    end
+    -- поиск
+    if state.tab == "main" and state.searchBox and y == state.searchBox.y and x >= state.searchBox.x1 and x <= state.searchBox.x2 then
+        askInput("Поиск:", "search", state.search)
+        state.redraw = true
+        return
+    end
+    -- кнопки
+    for _,btn in ipairs(state.buttons or {}) do
+        if y == btn.y and x >= btn.x and x <= btn.x2 then
+            if btn.action=="add" then
+                askInput("Введите название:", "add", "")
+            elseif btn.action=="edit" then
+                state.tab="change"; state.redraw=true
+            elseif btn.action=="del" then
+                if state.filtered[state.select] then
+                    table.remove(state.data, state.select)
+                    logOther("Удалён: "..(state.filtered[state.select].name or "?"))
+                    saveTable(DATA_PATH, state.data)
+                    state.redraw=true
+                end
+            elseif btn.action=="toggleGo" then
+                state.go = not state.go
+                logOther("Режим: "..(state.go and "GO" or "STOP"))
+                state.redraw=true
+            elseif btn.action=="back" then
+                state.tab="main"; state.redraw=true
+            end
+            return
+        end
+    end
+    -- предметы
+    if state.tab == "main" then
+        for _,box in ipairs(state.itemHitboxes or {}) do
+            if y == box.y and x >= box.x1 and x <= box.x2 then
+                state.select = box.index
+                state.redraw = true
+                return
+            end
+        end
+    end
+    -- кнопки в вкладке изменения
+    if state.tab == "change" then
+        local btns = {
+            {x=40,w=24,action="name"},
+            {x=68,w=18,action="count"},
+            {x=88,w=18,action="craft"},
+            {x=108,w=18,action="main"}
+        }
+        for _,btn in ipairs(btns) do
+            if y==32 and x>=btn.x and x<=btn.x+btn.w-1 then
+                if btn.action=="main" then state.tab="main"; state.redraw=true
+                else askInput("Новое значение:", btn.action, tostring(state.filtered[state.select][btn.action]=="name" and state.filtered[state.select].name or state.filtered[state.select][btn.action]))
+                end
+                return
+            end
+        end
+    end
+end
+local function handleScroll(_, _, x, y, dir, playerName)
+    if not ADM[playerName or ""] then return end
+    if state.tab=="main" then
+        if dir == 1 and state.scroll > 1 then
+            state.scroll = state.scroll - 1
+            state.redraw = true
+        elseif dir == -1 and state.scroll < state.maxscroll then
+            state.scroll = state.scroll + 1
+            state.redraw = true
+        end
+    end
+end
+
+-- === AUTOCRAFT, НЕЗАВИСИМО ОТ CPU ===
+local function findFreeCpu(cpus, needed)
+    for _,cpu in ipairs(cpus) do
+        if not cpu.busy and cpu.coprocessors then -- AE2/EC2
+            if cpu.storage >= needed then
+                return cpu
+            end
+        end
+    end
+    -- Если нет cpu, возвращаем самый большой свободный
+    local maxsize, maxcpu = 0, nil
+    for _,cpu in ipairs(cpus) do
+        if not cpu.busy and cpu.coprocessors then
+            if cpu.storage > maxsize then
+                maxsize = cpu.storage
+                maxcpu = cpu
+            end
+        end
+    end
+    return maxcpu
+end
+
+local function checkCraft()
+    if not state.go then return end
+    for _,v in ipairs(state.data) do
+        local itemsMe = me.getItemDetail({id=v.id,dmg=v.dmg})
+        local qty = itemsMe and itemsMe.basic().qty or 0
+        local needAll = (v.count or 0) - qty
+        if needAll>0 then
+            local craftables = me.getCraftables({name=v.id,damage=v.dmg})
+            if craftables.n and craftables.n>=1 then
+                local cpus = me.getCpus()
+                local attempts, maxTry = 0, 16
+                while needAll>0 and attempts<maxTry do
+                    attempts = attempts + 1
+                    local maxCpu = 0
+                    for _,cpu in ipairs(cpus) do if cpu.storage>maxCpu and not cpu.busy then maxCpu=cpu.storage end end
+                    if maxCpu==0 then
+                        logNoCPU("Нет свободных CPU для "..(v.name or "?"))
+                        break
+                    end
+                    local count = math.min(needAll, maxCpu, v.craftSize or maxCpu)
+                    local r, msg = pcall(function() return craftables[1].request(count, false) end)
+                    if r then
+                        logSuccess("Крафт: "..(v.name or "?").." x"..count)
+                        needAll = needAll-count
+                    else
+                        if tostring(msg):find("missing resources") then
+                            logNoRes("Не хватает для "..(v.name or "?"))
+                            break
+                        elseif tostring(msg):find("no recipe") then
+                            logNoRecipe("Нет рецепта "..(v.name or "?"))
+                            break
+                        else
+                            logOther("Ошибка: "..tostring(msg))
+                            break
+                        end
+                    end
+                    os.sleep(0.1)
+                end
+            else
+                logNoRecipe("Нет рецепта "..(v.name or "?"))
+            end
+        end
+    end
+end
+
+-- === MAIN LOOP ===
+local function mainloop()
+    state.data = loadTable(DATA_PATH)
+    event.listen("key_down", handleKeyDown)
+    event.listen("touch", handleTouch)
+    event.listen("scroll", handleScroll)
+    local lastCheck = os.clock()
+    while true do
+        if state.redraw then render() end
+        if state.go and os.clock()-lastCheck>6 then
+            checkCraft()
+            lastCheck = os.clock()
+        end
+        os.sleep(0.05)
+    end
+end
+
+local ok, err = pcall(mainloop)
+if not ok then
+    gpu.setBackground(COLOR.BG)
+    gpu.setForeground(COLOR.ERROR)
+    gpu.set(2, HEIGHT-1, "Ошибка: "..tostring(err))
+end
