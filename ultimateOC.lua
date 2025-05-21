@@ -1,3 +1,5 @@
+--wget -f https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua /lib/ultimateOC.lua
+--wget -f https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/autoCraftUltimate.lua /home/autoCraftUltimate.lua
 -- ultimateOC.lua - Улучшенная библиотека для визуала OpenComputers
 local fs = require("filesystem")
 local unicode = require("unicode")
