@@ -3,12 +3,13 @@ local event = require("event")
 local unicode = require("unicode")
 local fs = require("filesystem")
 local serialization = require("serialization")
+local term = require("term")
 
 local gpu = assert(component.gpu, "GPU not found")
 local me = assert(component.me_interface, "ME interface not found")
 
 -- === SETTINGS ===
-local ADM = {['LiwMorgan']=true}
+local ADM = {['LiwMorgan']=true, ['KReaTlVNuY']=true, ['4ertik_']=true}
 local WIDTH, HEIGHT = 160, 50
 local DATA_PATH = "/home/BD.txt"
 
@@ -25,30 +26,20 @@ local COLOR = {
 if not fs.exists(DATA_PATH) then
     local f = io.open(DATA_PATH, "w") f:write("return {}") f:close()
 end
-
 gpu.setResolution(WIDTH, HEIGHT)
 
 -- === STATE ===
 local state = {
     tab = "main",
     data = {},
-    logsSuccess = {},
-    logsNoRes = {},
-    logsNoRecipe = {},
-    logsNoCPU = {},
-    logsOther = {},
+    logs = {success={}, nores={}, norecipe={}, nocpu={}, other={}},
     redraw = true,
-    select = 1,
-    scroll = 1,
-    filtered = {},
-    maxscroll = 1,
+    select = 1, scroll = 1, filtered = {},
+    maxscroll = 1, search = "",
     input = {active=false, value="", prompt="", action=nil},
-    search = "",
-    go = false,
-    error = nil,
-    buttons = {},
-    tabHitboxes = {},
-    itemHitboxes = {}
+    go = false, error = nil,
+    buttons = {}, tabHitboxes = {}, itemHitboxes = {},
+    searchBox = {}
 }
 
 -- === UTILS ===
@@ -58,67 +49,36 @@ local function saveTable(path, tbl)
     f:write("return " .. serialization.serialize(tbl))
     f:close()
 end
-
 local function loadTable(path)
     if not fs.exists(path) then return {} end
     local f = io.open(path, "r")
     if not f then return {} end
     local data = f:read("*a")
     f:close()
-    local ok, t = pcall(function() return load("return " .. data)() end)
+    local ok, t = pcall(function() return load("return "..data)() end)
     return ok and t or {}
 end
-
 local function clamp(val, min, max)
-    if val < min then return min end
-    if val > max then return max end
-    return val
+    return math.max(min, math.min(val, max))
 end
-
--- === LOGGING ===
 local function now()
     local t = os.date("*t")
     return string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
 end
-local function logSuccess(msg)
-    table.insert(state.logsSuccess, "["..now().."] "..msg)
-    if #state.logsSuccess > 8 then table.remove(state.logsSuccess, 1) end
-    state.redraw = true
-end
-local function logNoRes(msg)
-    table.insert(state.logsNoRes, "["..now().."] "..msg)
-    if #state.logsNoRes > 8 then table.remove(state.logsNoRes, 1) end
-    state.redraw = true
-end
-local function logNoRecipe(msg)
-    table.insert(state.logsNoRecipe, "["..now().."] "..msg)
-    if #state.logsNoRecipe > 8 then table.remove(state.logsNoRecipe, 1) end
-    state.redraw = true
-end
-local function logNoCPU(msg)
-    table.insert(state.logsNoCPU, "["..now().."] "..msg)
-    if #state.logsNoCPU > 8 then table.remove(state.logsNoCPU, 1) end
-    state.redraw = true
-end
-local function logOther(msg)
-    table.insert(state.logsOther, "["..now().."] "..msg)
-    if #state.logsOther > 8 then table.remove(state.logsOther, 1) end
+local function log(tbl, msg)
+    local arr = state.logs[tbl]
+    table.insert(arr, "["..now().."] "..msg)
+    if #arr > 8 then table.remove(arr, 1) end
     state.redraw = true
 end
 
 -- === GUI DRAW ===
-local function clear()
-    gpu.setBackground(COLOR.BG)
-    gpu.fill(1, 1, WIDTH, HEIGHT, " ")
-end
+local function clear() gpu.setBackground(COLOR.BG) gpu.fill(1,1,WIDTH,HEIGHT," ") end
 local function drawBorder()
     gpu.setForeground(COLOR.BORDER)
-    gpu.set(1, 1, "+"..string.rep("-", WIDTH-2).."+")
-    gpu.set(1, HEIGHT, "+"..string.rep("-", WIDTH-2).."+")
-    for y=2,HEIGHT-1 do
-        gpu.set(1,y,"|")
-        gpu.set(WIDTH,y,"|")
-    end
+    gpu.set(1,1,"+"..string.rep("-",WIDTH-2).."+")
+    gpu.set(1,HEIGHT,"+"..string.rep("-",WIDTH-2).."+")
+    for y=2,HEIGHT-1 do gpu.set(1,y,"|") gpu.set(WIDTH,y,"|") end
 end
 local function drawTabs()
     local x = 5
@@ -143,9 +103,9 @@ local function drawHeader()
 end
 local function drawMainTable()
     local xName, wName = 8, 40
-    local xCount, wCount = xName + wName + 3, 10
-    local xCraft, wCraft = xCount + wCount + 3, 10
-    local xSel = xCraft + wCraft + 3
+    local xCount, wCount = xName+wName+3, 10
+    local xCraft, wCraft = xCount+wCount+3, 10
+    local xSel = xCraft+wCraft+3
     gpu.setForeground(COLOR.LABEL)
     gpu.set(xName,6,"Название предмета")
     gpu.set(xCount,6,"Кол-во")
@@ -246,34 +206,34 @@ local function drawRightPanel()
     gpu.setForeground(COLOR.TEXT)
     local idx
     idx = 0
-    for i = math.max(1, #state.logsSuccess - 6 + 1), #state.logsSuccess do
+    for i = math.max(1, #state.logs.success - 6 + 1), #state.logs.success do
         idx = idx + 1
         gpu.setForeground(0x00FF00)
-        gpu.set(x0 + 4, y0 + 2 + idx, state.logsSuccess[i])
+        gpu.set(x0 + 4, y0 + 2 + idx, state.logs.success[i])
     end
     idx = 0
-    for i = math.max(1, #state.logsNoRes - 6 + 1), #state.logsNoRes do
+    for i = math.max(1, #state.logs.nores - 6 + 1), #state.logs.nores do
         idx = idx + 1
         gpu.setForeground(0xFFA000)
-        gpu.set(x0 + 4, y0 + 5 + idx, state.logsNoRes[i])
+        gpu.set(x0 + 4, y0 + 5 + idx, state.logs.nores[i])
     end
     idx = 0
-    for i = math.max(1, #state.logsNoRecipe - 6 + 1), #state.logsNoRecipe do
+    for i = math.max(1, #state.logs.norecipe - 6 + 1), #state.logs.norecipe do
         idx = idx + 1
         gpu.setForeground(0xFF4444)
-        gpu.set(x0 + 4, y0 + 8 + idx, state.logsNoRecipe[i])
+        gpu.set(x0 + 4, y0 + 8 + idx, state.logs.norecipe[i])
     end
     idx = 0
-    for i = math.max(1, #state.logsNoCPU - 6 + 1), #state.logsNoCPU do
+    for i = math.max(1, #state.logs.nocpu - 6 + 1), #state.logs.nocpu do
         idx = idx + 1
         gpu.setForeground(0xA4FFFA)
-        gpu.set(x0 + 4, y0 + 11 + idx, state.logsNoCPU[i])
+        gpu.set(x0 + 4, y0 + 11 + idx, state.logs.nocpu[i])
     end
     idx = 0
-    for i = math.max(1, #state.logsOther - 6 + 1), #state.logsOther do
+    for i = math.max(1, #state.logs.other - 6 + 1), #state.logs.other do
         idx = idx + 1
         gpu.setForeground(0xB2B2FF)
-        gpu.set(x0 + 4, y0 + 14 + idx, state.logsOther[i])
+        gpu.set(x0 + 4, y0 + 14 + idx, state.logs.other[i])
     end
     gpu.setForeground(COLOR.TEXT)
 end
@@ -328,10 +288,8 @@ local function render()
     state.redraw = false
 end
 
--- === EVENTS: только ВВОД текста с клавы (поиск/добавление/редакт) ===
-local function resetInput()
-    state.input = {active=false, value="", prompt="", action=nil}
-end
+-- === EVENTS ===
+local function resetInput() state.input = {active=false, value="", prompt="", action=nil} end
 local function askInput(prompt, action, default)
     state.input.active = true
     state.input.value = default or ""
@@ -345,27 +303,26 @@ local function commitInput()
     local v = state.filtered and state.filtered[idx]
     if state.input.action=="name" then
         if v then v.name = state.input.value end
-        logOther("Изменено имя: "..(v and v.name or "?"))
+        log("other","Изменено имя: "..(v and v.name or "?"))
     elseif state.input.action=="count" then
         if v then v.count = tonumber(state.input.value) end
-        logOther("Изменено количество: "..(v and v.count or "?"))
+        log("other","Изменено количество: "..(v and v.count or "?"))
     elseif state.input.action=="craft" then
         if v then v.craftSize = tonumber(state.input.value) end
-        logOther("Изменён размер крафта: "..(v and v.craftSize or "?"))
+        log("other","Изменён размер крафта: "..(v and v.craftSize or "?"))
     elseif state.input.action=="search" then
         state.search = state.input.value
     elseif state.input.action=="add" then
         local item = me.getStackInSlot(1)
         if not item then state.error="Положите предмет в 1-й слот интерфейса!"; resetInput(); return end
         table.insert(state.data, {name=state.input.value, id=item.id, dmg=item.dmg, count=1, craftSize=1})
-        logSuccess("Добавлен предмет: "..state.input.value)
+        log("success","Добавлен предмет: "..state.input.value)
     end
     saveTable(DATA_PATH, state.data)
     resetInput()
     state.redraw = true
 end
 
--- Только ввод букв и цифр — никаких стрелок, Enter, Esc вне поля ввода
 local function handleKeyDown(_, _, char, code, playerName)
     if not ADM[playerName or ""] then return end
     if state.input.active then
@@ -407,13 +364,13 @@ local function handleTouch(_, _, x, y, button, playerName)
             elseif btn.action=="del" then
                 if state.filtered[state.select] then
                     table.remove(state.data, state.select)
-                    logOther("Удалён: "..(state.filtered[state.select].name or "?"))
+                    log("other","Удалён: "..(state.filtered[state.select].name or "?"))
                     saveTable(DATA_PATH, state.data)
                     state.redraw=true
                 end
             elseif btn.action=="toggleGo" then
                 state.go = not state.go
-                logOther("Режим: "..(state.go and "GO" or "STOP"))
+                log("other","Режим: "..(state.go and "GO" or "STOP"))
                 state.redraw=true
             elseif btn.action=="back" then
                 state.tab="main"; state.redraw=true
@@ -442,7 +399,10 @@ local function handleTouch(_, _, x, y, button, playerName)
         for _,btn in ipairs(btns) do
             if y==32 and x>=btn.x and x<=btn.x+btn.w-1 then
                 if btn.action=="main" then state.tab="main"; state.redraw=true
-                else askInput("Новое значение:", btn.action, tostring(state.filtered[state.select][btn.action]=="name" and state.filtered[state.select].name or state.filtered[state.select][btn.action]))
+                else
+                    local v = state.filtered[state.select]
+                    local current = (btn.action=="name" and v and v.name) or (btn.action=="count" and v and v.count) or (btn.action=="craft" and v and v.craftSize) or ""
+                    askInput("Новое значение:", btn.action, tostring(current or ""))
                 end
                 return
             end
@@ -462,7 +422,7 @@ local function handleScroll(_, _, x, y, dir, playerName)
     end
 end
 
--- === AUTOCRAFT, НЕЗАВИСИМО ОТ CPU ===
+-- === AUTOCRAFT ===
 local function checkCraft()
     if not state.go then return end
     for _,v in ipairs(state.data) do
@@ -479,30 +439,30 @@ local function checkCraft()
                     local maxCpu = 0
                     for _,cpu in ipairs(cpus) do if cpu.storage>maxCpu and not cpu.busy then maxCpu=cpu.storage end end
                     if maxCpu==0 then
-                        logNoCPU("Нет свободных CPU для "..(v.name or "?"))
+                        log("nocpu","Нет свободных CPU для "..(v.name or "?"))
                         break
                     end
                     local count = math.min(needAll, maxCpu, v.craftSize or maxCpu)
                     local r, msg = pcall(function() return craftables[1].request(count, false) end)
                     if r then
-                        logSuccess("Крафт: "..(v.name or "?").." x"..count)
+                        log("success","Крафт: "..(v.name or "?").." x"..count)
                         needAll = needAll-count
                     else
                         if tostring(msg):find("missing resources") then
-                            logNoRes("Не хватает для "..(v.name or "?"))
+                            log("nores","Не хватает для "..(v.name or "?"))
                             break
                         elseif tostring(msg):find("no recipe") then
-                            logNoRecipe("Нет рецепта "..(v.name or "?"))
+                            log("norecipe","Нет рецепта "..(v.name or "?"))
                             break
                         else
-                            logOther("Ошибка: "..tostring(msg))
+                            log("other","Ошибка: "..tostring(msg))
                             break
                         end
                     end
                     os.sleep(0.1)
                 end
             else
-                logNoRecipe("Нет рецепта "..(v.name or "?"))
+                log("norecipe","Нет рецепта "..(v.name or "?"))
             end
         end
     end
