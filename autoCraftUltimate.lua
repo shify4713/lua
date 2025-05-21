@@ -26,12 +26,22 @@ if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {})
 end
 
--------------------- Время UTC+3 (без секунд, для OpenComputers) --------------------
--- ЛОКАЛЬНОЕ время ОС OpenComputers (без RTC оно будет идти по "майнкрафту", иначе — по железу)
--- Для максимально точного реального времени нужен RTC модуль в компьютере OC.
+-------------------- Реальное UTC+3 (по Киеву) --------------------
+-- UTC + 3 часа: всегда актуальное время по Киеву без зависимости от OpenOS RTC (всегда по мировым стандартам)
 local function getKyivTime()
+    -- Текущее "реальное" мировое время через API worldtimeapi (если есть интернет)
+    local handle = io.popen("wget -qO- https://worldtimeapi.org/api/timezone/Europe/Kyiv.txt 2>/dev/null")
+    if handle then
+        local text = handle:read("*a")
+        handle:close()
+        local h, m, s = text:match("datetime:%s*%d+%-%d+%-%d+T(%d+):(%d+):(%d+)")
+        if h and m and s then
+            return string.format("%02d:%02d:%02d", tonumber(h), tonumber(m), tonumber(s))
+        end
+    end
+    -- Если нет интернета, fallback: просто UTC+3, не майнкрафт-время, а по настоящему времени
     local t = os.date("!*t", os.time() + 3*3600)
-    return string.format("%02d:%02d", t.hour, t.min)
+    return string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
 end
 
 -------------------- Настройки --------------------
@@ -109,31 +119,17 @@ local function drawHeader()
 end
 
 local function drawLogs()
-    -- Логи в самом низу, 3 строки
-    local lines = 3
-    local y = HEIGHT - lines + 1
-    local start = math.max(1, #logs - lines + 1)
-    g.setBackground(COLORS.bg)
-    for i = 1, lines do
-        g.fill(1, y + i - 1, WIDTH, 1, " ")
-    end
-    for i = 1, lines do
-        local idx = start + i - 1
-        if logs[idx] then
-            g.setForeground(COLORS.log)
-            g.set(3, y + i - 1, logs[idx])
-        end
-    end
-    g.setForeground(COLORS.text)
+    -- Сдвигаем логи ниже таблицы
+    uoc.drawLogs(3, HEIGHT-17, logs, 4, COLORS.log)
 end
 
 local function drawItems()
-    -- Таблица — максимально растянута, но правая граница не выходит за экран, цифры не выходят за край!
-    local x, y = 2, 8
-    local totalWidth = WIDTH - 6
-    local col_name = math.floor(totalWidth * 0.44)
-    local col_now = math.floor(totalWidth * 0.18)
-    local col_hold = math.floor(totalWidth * 0.18)
+    -- Динамически растянутая таблица
+    local x, y = 2, 8 -- чуть ниже
+    local totalWidth = WIDTH-4
+    local col_name = math.floor(totalWidth * 0.45)
+    local col_now = math.floor(totalWidth * 0.17)
+    local col_hold = math.floor(totalWidth * 0.17)
     local col_once = totalWidth - col_name - col_now - col_hold
 
     -- Верх рамки
@@ -167,26 +163,23 @@ local function drawItems()
             table.insert(showItems, item)
         end
     end
-    local perPage = HEIGHT-21
+    local perPage = HEIGHT-24
     for i = itemScroll, math.min(#showItems, itemScroll+perPage-1) do
         local it = showItems[i]
         local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem])
         local row = y+2+(i-itemScroll)+1
         g.setBackground(isSel and COLORS.select_active or COLORS.bg)
         g.setForeground(COLORS.text)
-        -- Строго обрезаем строки чтобы не было вылета вправо
+        -- аккуратно обрезаем строку если длинная
         local nameStr = unicode.sub((it.name or "<??>"), 1, col_name)
-        local nowStr  = string.format("%"..col_now.."s", tostring(it.current or 0)):sub(-col_now)
-        local holdStr = string.format("%"..col_hold.."s", tostring(it.count or 0)):sub(-col_hold)
-        local onceStr = string.format("%"..col_once.."s", tostring(it.craftSize or 0)):sub(-col_once)
         g.set(x, row, "│")
         g.set(x+1, row, string.format("%-"..col_name.."s",nameStr))
         g.set(x+col_name+1, row, "│")
-        g.set(x+col_name+2, row, nowStr)
+        g.set(x+col_name+2, row, string.format("%"..col_now.."s",tonumber(it.current) or 0))
         g.set(x+col_name+col_now+2, row, "│")
-        g.set(x+col_name+col_now+3, row, holdStr)
+        g.set(x+col_name+col_now+3, row, string.format("%"..col_hold.."s",tonumber(it.count) or 0))
         g.set(x+col_name+col_now+col_hold+3, row, "│")
-        g.set(x+col_name+col_now+col_hold+4, row, onceStr)
+        g.set(x+col_name+col_now+col_hold+4, row, string.format("%"..col_once.."s",tonumber(it.craftSize) or 0))
         g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
         g.setBackground(COLORS.bg)
     end
@@ -215,7 +208,7 @@ local function drawItems()
 end
 
 local function drawSearchBar()
-    local x, y, w, h = 3, HEIGHT-17, WIDTH-6, 3
+    local x, y, w, h = 3, HEIGHT-13, WIDTH-6, 3
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
     g.fill(x+1, y+1, w-2, h-2, " ")
@@ -251,20 +244,27 @@ local function drawButtons()
     end
 end
 
-local function drawTimeFooter()
-    g.setForeground(COLORS.search_hint)
-    g.set(2, HEIGHT, "Время (Киев): "..getKyivTime())
-    g.setForeground(COLORS.text)
+local function drawTooltip()
+    if tooltip ~= "" and os.time() - tooltipTimeout < 3 then
+        local txt = " "..tooltip.." "
+        local w = unicode.len(txt)
+        local x, y = WIDTH-w-3, HEIGHT-7
+        g.setBackground(COLORS.tooltip_bg)
+        g.setForeground(COLORS.tooltip_text)
+        g.fill(x, y, w+2, 3, " ")
+        g.set(x+1, y+1, txt)
+        g.setBackground(COLORS.bg)
+        g.setForeground(COLORS.text)
+    end
 end
 
 local function draw()
     clear()
     drawHeader()
     drawItems()
+    drawLogs()
     drawSearchBar()
     drawButtons()
-    drawLogs()
-    drawTimeFooter()
     drawTooltip()
 end
 
@@ -307,15 +307,15 @@ end
 local function addItem()
     changeitem = true
     clear()
-    uoc.drawText(10,HEIGHT-9,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
-    uoc.drawText(10,HEIGHT-8,"Название: ",COLORS.text)
-    term.setCursor(20,HEIGHT-8)
+    uoc.drawText(10,HEIGHT-7,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
+    uoc.drawText(10,HEIGHT-6,"Название: ",COLORS.text)
+    term.setCursor(20,HEIGHT-6)
     local name = tostring(io.read())
-    uoc.drawText(10,HEIGHT-7,"Держать (число): ",COLORS.text)
-    term.setCursor(29,HEIGHT-7)
+    uoc.drawText(10,HEIGHT-5,"Держать (число): ",COLORS.text)
+    term.setCursor(29,HEIGHT-5)
     local count = tonumber(io.read()) or 0
-    uoc.drawText(10,HEIGHT-6,"Крафт за раз (число): ",COLORS.text)
-    term.setCursor(32,HEIGHT-6)
+    uoc.drawText(10,HEIGHT-4,"Крафт за раз (число): ",COLORS.text)
+    term.setCursor(32,HEIGHT-4)
     local craftSize = tonumber(io.read()) or 1
     local stack = nil
     local ok, res = pcall(me.getStackInSlot, 1)
@@ -337,23 +337,23 @@ local function editItem()
     local item = dataItems[selectedItem]
     changeitem = true
     clear()
-    uoc.drawText(10,HEIGHT-9,"Изменение: "..(item.name or "<??>"),COLORS.ok)
+    uoc.drawText(10,HEIGHT-7,"Изменение: "..(item.name or "<??>"),COLORS.ok)
     -- Имя
-    uoc.drawText(10,HEIGHT-8,"Новое имя (Enter пропустить): ",COLORS.text)
-    term.setCursor(40,HEIGHT-8)
+    uoc.drawText(10,HEIGHT-6,"Новое имя (Enter пропустить): ",COLORS.text)
+    term.setCursor(40,HEIGHT-6)
     local name = tostring(io.read())
     if name and name ~= "" then
         item.name = name
     end
     -- Количество
-    uoc.drawText(10,HEIGHT-7,"Новое держать (число, Enter пропустить): ",COLORS.text)
-    term.setCursor(54,HEIGHT-7)
+    uoc.drawText(10,HEIGHT-5,"Новое держать (число, Enter пропустить): ",COLORS.text)
+    term.setCursor(54,HEIGHT-5)
     local countstr = tostring(io.read())
     local count = tonumber(countstr)
     if countstr ~= "" and count then item.count = count end
     -- Крафт за раз
-    uoc.drawText(10,HEIGHT-6,"Новый крафт за раз (число, Enter пропустить): ",COLORS.text)
-    term.setCursor(55,HEIGHT-6)
+    uoc.drawText(10,HEIGHT-4,"Новый крафт за раз (число, Enter пропустить): ",COLORS.text)
+    term.setCursor(55,HEIGHT-4)
     local csstr = tostring(io.read())
     local cs = tonumber(csstr)
     if csstr ~= "" and cs then item.craftSize = cs end
@@ -462,9 +462,8 @@ event.listen("touch", function(_,_,x,y,_,_)
             return
         end
     end
-    -- Поле поиска
-    local searchBarY = HEIGHT-17
-    if y >= searchBarY and y <= searchBarY+2 then
+    -- Поле поиска (WIDTH-6 x 3, левый верхний угол 3,HEIGHT-13)
+    if y >= HEIGHT-13 and y <= HEIGHT-11 then
         searchActive = false
         if x >= 3+(WIDTH-6)-3 and x <= 3+(WIDTH-6)-1 and search ~= "" then
             search = ""
@@ -486,7 +485,7 @@ event.listen("touch", function(_,_,x,y,_,_)
             table.insert(showItems, item)
         end
     end
-    local perPage = HEIGHT-21
+    local perPage = HEIGHT-24
     local itemsStartY = 11
     local itemsEndY = itemsStartY + perPage - 1
     if y >= itemsStartY and y <= itemsEndY then
@@ -531,7 +530,7 @@ event.listen("key_down", function(_,_,key,_,_)
             table.insert(showItems, item)
         end
     end
-    local perPage = HEIGHT-21
+    local perPage = HEIGHT-24
     if searchActive then
         if key == 14 then -- backspace
             search = search:sub(1,-2)
