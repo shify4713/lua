@@ -1,4 +1,5 @@
--- PreCraft ULTIMATE (2025) — финальная версия, все востребованные функции, совместим с Lua 5.2 + OpenOS 1.6.1
+-- PreCraft ULTIMATE (2025, Lua 5.2, OpenOS 1.6.1) — полный рабочий код с фиксами и всеми востребованными функциями
+
 local component = require("component")
 local event = require("event")
 local fs = require("filesystem")
@@ -53,6 +54,7 @@ local state = {
 
 -- === Логирование (время по МСК) ===
 local function now_msk()
+  -- UTC + 3 часа, OpenComputers не всегда синхронизирует время!
   local utc = os.time(os.date("!*t"))
   local msk = utc + 3*3600
   local t = os.date("*t", msk)
@@ -85,24 +87,6 @@ local function btn(x,y,w,h,str,active,hover,pressed)
   return {x1=x,x2=x+w-1,y1=y,y2=y+h-1}
 end
 
-local function renderButtons()
-  local y = 44
-  local btns = {
-    {"Добавить", "add", 7, y, false},
-    {"Изменить", "edit", 27, y, false},
-    {"Удалить", "del", 47, y, false},
-    {(state.go and "⏸ Остановить" or "▶ Запуск"), "toggleGo", 67, y, state.go},
-  }
-  state.btns = {}
-  for i,b in ipairs(btns) do
-    local hover = (state.hover.btn == i)
-    local pressed = (state.hover.pressed and state.hover.btn == i)
-    local box = btn(b[3], b[4], 18, 3, b[1], b[5], hover, pressed)
-    box.action = b[2]; box.idx=i
-    state.btns[#state.btns+1]=box
-  end
-end
-
 local function border(x,y,w,h,col)
   gpu.setForeground(col or COLORS.border)
   gpu.set(x,y,"╭"..string.rep("─",w-2).."╮")
@@ -125,6 +109,25 @@ local function drawTabs()
     gpu.set(tx,4," "..tab.." ")
     state.tabHit[#state.tabHit+1] = {x1=tx, x2=tx+unicode.len(tab)+1, y=4, idx=i}
     tx = tx + unicode.len(tab)+5
+  end
+end
+
+local function renderButtons()
+  local y = 44
+  local btns = {
+    {"Добавить", "add", 7, y, false},
+    {"Изменить", "edit", 27, y, false},
+    {"Удалить", "del", 47, y, false},
+    {(state.go and "⏸ Остановить" or "▶ Запуск"), "toggleGo", 67, y, state.go},
+  }
+  state.btns = {}
+  local i
+  for i,b in ipairs(btns) do
+    local hover = (state.hover.btn == i)
+    local pressed = (state.hover.pressed and state.hover.btn == i)
+    local box = btn(b[3], b[4], 18, 3, b[1], b[5], hover, pressed)
+    box.action = b[2]; box.idx=i
+    state.btns[#state.btns+1]=box
   end
 end
 
@@ -167,6 +170,7 @@ local function renderGrid()
   gpu.setForeground(COLORS.fg)
   -- Фильтрация
   local filtered={}, search=unicode.lower(state.search or "")
+  local i
   for i,v in ipairs(state.data) do
     if search=="" or unicode.lower(v.name or ""):find(search) then table.insert(filtered,v) end
   end
@@ -177,7 +181,6 @@ local function renderGrid()
   state.select = clamp(state.select, 1, #filtered)
   state.scroll = clamp(state.scroll, 1, state.maxscroll)
   state.itemHit = {}
-  local i
   for i=state.scroll,math.min(#filtered,state.scroll+show-1) do
     local v=filtered[i]; local y=7+(i-state.scroll)+1
     local sel = (i==state.select)
@@ -381,6 +384,7 @@ end
 
 local function hoverUpdate(x, y)
   state.hover = {btn=nil, item=nil, tab=nil, search=false}
+  local i
   for i,b in ipairs(state.btns) do
     if x>=b.x1 and x<=b.x2 and y>=b.y1 and y<=b.y2 then state.hover.btn=i; break end
   end
