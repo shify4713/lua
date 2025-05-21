@@ -2,18 +2,15 @@ local component = require("component")
 local event = require("event")
 local unicode = require("unicode")
 local fs = require("filesystem")
-local shell = require("shell")
-local term = require("term")
 local serialization = require("serialization")
 
 local gpu = assert(component.gpu, "GPU not found")
 local me = assert(component.me_interface, "ME interface not found")
 
 -- === SETTINGS ===
-local ADM = {['LiwMorgan']=true} -- Ваш ник!
+local ADM = {['LiwMorgan']=true}
 local WIDTH, HEIGHT = 160, 50
 local DATA_PATH = "/home/BD.txt"
-local LOG_PATH = "/home/PCU.log"
 
 -- === COLORS ===
 local COLOR = {
@@ -25,19 +22,21 @@ local COLOR = {
     SEARCH_BG = 0x003355, SEARCH_TXT = 0xA4FFFA
 }
 
--- === FILES AND INIT ===
 if not fs.exists(DATA_PATH) then
-    local f = io.open(DATA_PATH, "w") f:write("return {}") f:close() end
-if not fs.exists(LOG_PATH) then
-    local f = io.open(LOG_PATH, "w") f:write("return {}") f:close() end
+    local f = io.open(DATA_PATH, "w") f:write("return {}") f:close()
+end
 
 gpu.setResolution(WIDTH, HEIGHT)
 
 -- === STATE ===
 local state = {
-    tab = "main", -- main/change/log
-    data = {}, -- крафты
-    logs = {}, -- события
+    tab = "main",
+    data = {},
+    logsSuccess = {},
+    logsNoRes = {},
+    logsNoRecipe = {},
+    logsNoCPU = {},
+    logsOther = {},
     redraw = true,
     select = 1,
     scroll = 1,
@@ -49,13 +48,7 @@ local state = {
     error = nil,
     buttons = {},
     tabHitboxes = {},
-    itemHitboxes = {},
-
-    logsSuccess = {},
-    logsNoRes = {},
-    logsNoRecipe = {},
-    logsNoCPU = {},
-    logsOther = {}
+    itemHitboxes = {}
 }
 
 -- === UTILS ===
@@ -83,28 +76,32 @@ local function clamp(val, min, max)
 end
 
 -- === LOGGING ===
+local function now()
+    local t = os.date("*t")
+    return string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
+end
 local function logSuccess(msg)
-    table.insert(state.logsSuccess, "["..os.date("%H:%M:%S").."] "..msg)
+    table.insert(state.logsSuccess, "["..now().."] "..msg)
     if #state.logsSuccess > 8 then table.remove(state.logsSuccess, 1) end
     state.redraw = true
 end
 local function logNoRes(msg)
-    table.insert(state.logsNoRes, "["..os.date("%H:%M:%S").."] "..msg)
+    table.insert(state.logsNoRes, "["..now().."] "..msg)
     if #state.logsNoRes > 8 then table.remove(state.logsNoRes, 1) end
     state.redraw = true
 end
 local function logNoRecipe(msg)
-    table.insert(state.logsNoRecipe, "["..os.date("%H:%M:%S").."] "..msg)
+    table.insert(state.logsNoRecipe, "["..now().."] "..msg)
     if #state.logsNoRecipe > 8 then table.remove(state.logsNoRecipe, 1) end
     state.redraw = true
 end
 local function logNoCPU(msg)
-    table.insert(state.logsNoCPU, "["..os.date("%H:%M:%S").."] "..msg)
+    table.insert(state.logsNoCPU, "["..now().."] "..msg)
     if #state.logsNoCPU > 8 then table.remove(state.logsNoCPU, 1) end
     state.redraw = true
 end
 local function logOther(msg)
-    table.insert(state.logsOther, "["..os.date("%H:%M:%S").."] "..msg)
+    table.insert(state.logsOther, "["..now().."] "..msg)
     if #state.logsOther > 8 then table.remove(state.logsOther, 1) end
     state.redraw = true
 end
@@ -247,7 +244,6 @@ local function drawRightPanel()
     gpu.setForeground(0xB2B2FF)
     gpu.set(x0 + 2, y0 + 14, "[i] Прочее")
     gpu.setForeground(COLOR.TEXT)
-    -- Вывод логов по категориям
     local idx
     idx = 0
     for i = math.max(1, #state.logsSuccess - 6 + 1), #state.logsSuccess do
@@ -332,7 +328,7 @@ local function render()
     state.redraw = false
 end
 
--- === EVENTS ===
+-- === EVENTS: только ВВОД текста с клавы (поиск/добавление/редакт) ===
 local function resetInput()
     state.input = {active=false, value="", prompt="", action=nil}
 end
@@ -341,6 +337,7 @@ local function askInput(prompt, action, default)
     state.input.value = default or ""
     state.input.prompt = prompt
     state.input.action = action
+    state.redraw = true
 end
 local function commitInput()
     if not state.input.action then resetInput() return end
@@ -367,6 +364,8 @@ local function commitInput()
     resetInput()
     state.redraw = true
 end
+
+-- Только ввод букв и цифр — никаких стрелок, Enter, Esc вне поля ввода
 local function handleKeyDown(_, _, char, code, playerName)
     if not ADM[playerName or ""] then return end
     if state.input.active then
@@ -381,25 +380,8 @@ local function handleKeyDown(_, _, char, code, playerName)
         state.redraw = true
         return
     end
-    if state.tab=="main" then
-        if code==200 then state.select=clamp(state.select-1,1,#state.filtered) state.redraw=true end
-        if code==208 then state.select=clamp(state.select+1,1,#state.filtered) state.redraw=true end
-        if code==203 and state.scroll>1 then state.scroll=state.scroll-1 state.redraw=true end
-        if code==205 and state.scroll<state.maxscroll then state.scroll=state.scroll+1 state.redraw=true end
-        if code==8 and #state.search > 0 then
-            state.search = unicode.sub(state.search,1,unicode.len(state.search)-1)
-            state.redraw=true
-        elseif char and type(char)=="string" then
-            state.search = state.search .. char
-            state.redraw=true
-        end
-        if code==13 then state.tab="change" state.redraw=true end
-    end
-    if code==27 then
-        if state.tab~="main" then state.tab="main" state.redraw=true end
-        resetInput()
-    end
 end
+
 local function handleTouch(_, _, x, y, button, playerName)
     if not ADM[playerName or ""] then return end
     -- вкладки
@@ -413,7 +395,6 @@ local function handleTouch(_, _, x, y, button, playerName)
     -- поиск
     if state.tab == "main" and state.searchBox and y == state.searchBox.y and x >= state.searchBox.x1 and x <= state.searchBox.x2 then
         askInput("Поиск:", "search", state.search)
-        state.redraw = true
         return
     end
     -- кнопки
@@ -482,27 +463,6 @@ local function handleScroll(_, _, x, y, dir, playerName)
 end
 
 -- === AUTOCRAFT, НЕЗАВИСИМО ОТ CPU ===
-local function findFreeCpu(cpus, needed)
-    for _,cpu in ipairs(cpus) do
-        if not cpu.busy and cpu.coprocessors then -- AE2/EC2
-            if cpu.storage >= needed then
-                return cpu
-            end
-        end
-    end
-    -- Если нет cpu, возвращаем самый большой свободный
-    local maxsize, maxcpu = 0, nil
-    for _,cpu in ipairs(cpus) do
-        if not cpu.busy and cpu.coprocessors then
-            if cpu.storage > maxsize then
-                maxsize = cpu.storage
-                maxcpu = cpu
-            end
-        end
-    end
-    return maxcpu
-end
-
 local function checkCraft()
     if not state.go then return end
     for _,v in ipairs(state.data) do
