@@ -29,6 +29,23 @@ if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {})
 end
 
+-------------------- Время по МСК --------------------
+local function getMSKTime()
+    -- Получаем текущее время UTC с сервера времени
+    local handle = io.popen("wget -qO- https://worldtimeapi.org/api/timezone/Europe/Moscow.txt 2>/dev/null")
+    if handle then
+        local text = handle:read("*a")
+        handle:close()
+        local h, m, s = text:match("datetime:%s*%d+%-%d+%-%d+T(%d+):(%d+):(%d+)")
+        if h and m and s then
+            return string.format("%02d:%02d:%02d", tonumber(h), tonumber(m), tonumber(s))
+        end
+    end
+    -- Если не получилось, fallback: берём локальное время и делаем +3 часа (UTC->MSK)
+    local t = os.date("!*t", os.time() + 3*3600)
+    return string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
+end
+
 -------------------- Настройки --------------------
 local COLORS = {
     button = 0x00BFFF,
@@ -36,18 +53,21 @@ local COLORS = {
     border = 0x44475a,
     text = 0xF8F8F2,
     shadow = 0x282A36,
-    bg = 0x1B1D23,
+    bg = 0x22232B,
     error = 0xFF5555,
     ok = 0x50FA7B,
     log = 0x8BE9FD,
     progress_bg = 0x44475a,
     progress_fg = 0x50FA7B,
-    select = 0x23262E,
+    select = 0x272A34,
     select_active = 0x44B3FF,
-    search_bg = 0x23262E,
+    search_bg = 0x282B36,
     search_border = 0x00BFFF,
     search_cross = 0xFF5555,
     search_hint = 0x888888,
+    bar_shadow = 0x181920,
+    tooltip_bg = 0x44475a,
+    tooltip_text = 0xF8F8F2,
 }
 local WIDTH, HEIGHT = 110, 40
 local craftStatus = "Ожидание..."
@@ -62,6 +82,18 @@ local selectedItem = nil
 local itemScroll = 1
 local changeitem = false
 local searchActive = false -- для фокуса на поле поиска
+local hoveredButton = nil
+local tooltip = ""
+local tooltipTimeout = 0
+
+-------------------- Логгирование с реальным временем --------------------
+local function addLog(logs, text, lvl)
+    lvl = lvl or "INFO"
+    local now = getMSKTime()
+    local t = string.format("[%s][%s] %s", now, lvl, text)
+    table.insert(logs, t)
+    while #logs > 50 do table.remove(logs, 1) end
+end
 
 -------------------- Визуал --------------------
 local function clear()
@@ -70,56 +102,72 @@ local function clear()
     g.setForeground(COLORS.text)
 end
 
+local function shadowRect(x, y, w, h)
+    g.setBackground(COLORS.bar_shadow)
+    g.fill(x+1, y+h, w, 1, " ")
+    g.fill(x+w, y, 1, h, " ")
+    g.setBackground(COLORS.bg)
+end
+
 local function drawHeader()
     uoc.drawText(3,2,"Ultimate AutoCraft",COLORS.ok,true)
+    -- Декоративная линия и подсветка
+    g.setBackground(COLORS.progress_fg)
+    g.fill(2,3,WIDTH-2,1," ")
+    shadowRect(2,3,WIDTH-2,1)
+    g.setBackground(COLORS.bg)
     uoc.drawText(WIDTH-34,2,"Статус: "..craftStatus,
         (craftStatus:find("Ошибка") and COLORS.error) or COLORS.ok)
     uoc.progressBar(3,4,WIDTH-6, isCrafting and 0.9 or 0)
 end
 
 local function drawLogs()
-    uoc.drawLogs(3, HEIGHT-8, logs, 8, COLORS.log)
+    -- 4 строки логов над поиском
+    uoc.drawLogs(3, HEIGHT-14, logs, 4, COLORS.log)
 end
 
 local function drawItems()
-    uoc.drawText(3,6,"Название",COLORS.text)
-    uoc.drawText(40,6,"Текущее",COLORS.text)
-    uoc.drawText(55,6,"Держать",COLORS.text)
-    uoc.drawText(70,6,"За раз",COLORS.text)
+    -- Шапка таблицы
+    g.setForeground(COLORS.select_active)
+    g.setBackground(COLORS.bg)
+    g.set(3,6,"┌"..string.rep("─",36).."┬"..string.rep("─",13).."┬"..string.rep("─",13).."┬"..string.rep("─",13).."┐")
+    g.set(3,7,"│".."Название"..string.rep(" ",29).."│Текущее │Держать  │За раз    │")
+    g.set(3,8,"├"..string.rep("─",36).."┼"..string.rep("─",13).."┼"..string.rep("─",13).."┼"..string.rep("─",13).."┤")
+    g.setForeground(COLORS.text)
+
+    -- Список
     local showItems = uoc.filterItems(dataItems, search)
-    local perPage = 24
-    local y = 7
+    local perPage = 20
+    local y = 9
     for i = itemScroll, math.min(#showItems, itemScroll+perPage-1) do
         local it = showItems[i]
         local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem])
-        uoc.selectLine(3, y, 100, (it.name or "<?>"), isSel, COLORS.select, COLORS.select_active, COLORS.text)
+        -- С красивым прямоугольником
+        uoc.selectLine(3, y, 76, (it.name or "<?>"), isSel, COLORS.select, COLORS.select_active, COLORS.text)
         g.setForeground(COLORS.text)
         g.set(40, y, tostring(tonumber(it.current) or 0))
         g.set(55, y, tostring(tonumber(it.count) or 0))
         g.set(70, y, tostring(tonumber(it.craftSize) or 0))
         y = y + 1
     end
+    -- Низ таблицы
+    g.setForeground(COLORS.select_active)
+    g.set(3,y,"└"..string.rep("─",36).."┴"..string.rep("─",13).."┴"..string.rep("─",13).."┴"..string.rep("─",13).."┘")
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
 end
 
 local function drawSearchBar()
     local x, y, w, h = 3, HEIGHT-10, 60, 3
-    -- Рамка и фон
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
     g.fill(x+1, y+1, w-2, h-2, " ")
-    -- Крестик для сброса
     g.setForeground(COLORS.search_cross)
     g.set(x+w-3, y+1, (search ~= "" and "×" or " "))
-    -- Само поле
     g.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
     local display = search
     if display=="" then display = "Поиск: введите часть названия..." end
-    -- Отрисовка курсора если поиск активен
-    if searchActive then
-        display = display .. "_"
-    end
+    if searchActive then display = display .. "_" end
     local maxlen = w-7
     if unicode.len(display) > maxlen then
         display = unicode.sub(display, unicode.len(display)-maxlen+2)
@@ -130,19 +178,45 @@ local function drawSearchBar()
 end
 
 local function drawButtons()
-    uoc.animatedButton(WIDTH-30, HEIGHT-4, 12, 3, isCrafting and "Остановить" or "Автокрафт", isCrafting, COLORS.button, COLORS.buttonActive)
-    uoc.animatedButton(WIDTH-15, HEIGHT-4, 12, 3, "Добавить", false, COLORS.button, COLORS.buttonActive)
-    uoc.animatedButton(WIDTH-45, HEIGHT-4, 12, 3, "Изменить", false, COLORS.button, COLORS.buttonActive)
-    uoc.animatedButton(WIDTH-60, HEIGHT-4, 12, 3, "Удалить", false, COLORS.button, COLORS.buttonActive)
+    -- Кнопки, теперь с подсветкой при наведении и подсказками
+    local btns = {
+        {name="Удалить", x=WIDTH-60, tip="Удалить выбранный предмет из списка"},
+        {name="Изменить", x=WIDTH-45, tip="Изменить параметры предмета"},
+        {name=isCrafting and "Остановить" or "Автокрафт", x=WIDTH-30, tip=isCrafting and "Остановить автокрафт" or "Запустить автокрафт"},
+        {name="Добавить", x=WIDTH-15, tip="Добавить новый предмет (предмет в 1 слоте интерфейса ME)"},
+    }
+    for i,v in ipairs(btns) do
+        local hover = hoveredButton == i
+        uoc.animatedButton(v.x, HEIGHT-4, 12, 3, v.name, hover, COLORS.button, COLORS.buttonActive, COLORS.text)
+        if hover then
+            tooltip = v.tip
+            tooltipTimeout = os.time()
+        end
+    end
+end
+
+local function drawTooltip()
+    if tooltip ~= "" and os.time() - tooltipTimeout < 3 then
+        local txt = " "..tooltip.." "
+        local w = unicode.len(txt)
+        local x, y = WIDTH-w-3, HEIGHT-7
+        g.setBackground(COLORS.tooltip_bg)
+        g.setForeground(COLORS.tooltip_text)
+        g.fill(x, y, w+2, 3, " ")
+        g.set(x+1, y+1, txt)
+        g.setBackground(COLORS.bg)
+        g.setForeground(COLORS.text)
+    end
 end
 
 local function draw()
     clear()
     drawHeader()
     drawItems()
+    drawLogs()
     drawSearchBar()
     drawButtons()
-    drawLogs()
+    drawTooltip()
 end
 
 -------------------- IO и действия --------------------
@@ -157,7 +231,7 @@ end
 
 local function save()
     local ok, err = pcall(uoc.savef, DATA_FILE, dataItems)
-    if not ok then uoc.addLog(logs, "Ошибка сохранения: "..tostring(err), "ERROR") end
+    if not ok then addLog(logs, "Ошибка сохранения: "..tostring(err), "ERROR") end
 end
 
 local function resetSelection()
@@ -185,56 +259,73 @@ local function addItem()
     if stack then
         table.insert(dataItems, {name=name, id=stack.id, dmg=stack.dmg, count=count, craftSize=craftSize})
         save()
-        uoc.addLog(logs, "Добавлен предмет: "..name,"INFO")
+        addLog(logs, "Добавлен предмет: "..name,"INFO")
     else
-        uoc.addLog(logs, "Ошибка: нет предмета в слоте 1!","ERROR")
+        addLog(logs, "Ошибка: нет предмета в слоте 1!","ERROR")
     end
     changeitem = false
     resetSelection()
+    draw()
 end
 
 local function editItem()
-    if not selectedItem then return uoc.addLog(logs,"Не выбран предмет!","ERROR") end
+    if not selectedItem then return addLog(logs,"Не выбран предмет!","ERROR") end
     local item = dataItems[selectedItem]
+    changeitem = true
     clear()
     uoc.drawText(10,HEIGHT-7,"Изменение: "..(item.name or "<??>"),COLORS.ok)
+    -- Имя
     uoc.drawText(10,HEIGHT-6,"Новое имя (Enter пропустить): ",COLORS.text)
     term.setCursor(40,HEIGHT-6)
     local name = tostring(io.read())
-    if name and name ~= "" then item.name = name end
+    if not name or name == "" then
+        changeitem = false
+        resetSelection()
+        draw()
+        return
+    end
+    item.name = name
+    -- Количество
     uoc.drawText(10,HEIGHT-5,"Новое держать (число, Enter пропустить): ",COLORS.text)
     term.setCursor(54,HEIGHT-5)
-    local count = tonumber(io.read())
-    if count then item.count = count end
+    local countstr = tostring(io.read())
+    local count = tonumber(countstr)
+    if countstr ~= "" and count then item.count = count end
+    -- Крафт за раз
     uoc.drawText(10,HEIGHT-4,"Новый крафт за раз (число, Enter пропустить): ",COLORS.text)
     term.setCursor(55,HEIGHT-4)
-    local cs = tonumber(io.read())
-    if cs then item.craftSize = cs end
+    local csstr = tostring(io.read())
+    local cs = tonumber(csstr)
+    if csstr ~= "" and cs then item.craftSize = cs end
     save()
-    uoc.addLog(logs, "Изменено: "..item.name,"INFO")
+    addLog(logs, "Изменено: "..item.name,"INFO")
     changeitem = false
     resetSelection()
+    draw()
 end
 
 local function removeItem()
-    if not selectedItem then return uoc.addLog(logs,"Не выбран предмет!","ERROR") end
-    uoc.addLog(logs, "Удалён: "..(dataItems[selectedItem].name or "<??>"),"WARN")
+    if not selectedItem then return addLog(logs,"Не выбран предмет!","ERROR") end
+    addLog(logs, "Удалён: "..(dataItems[selectedItem].name or "<??>"),"WARN")
     table.remove(dataItems,selectedItem)
     selectedItem = nil
     save()
+    draw()
 end
 
 local function doCraft()
     isCrafting = true
     craftStatus = "Автокрафт..."
     save()
-    uoc.addLog(logs,"Запущен автокрафт","INFO")
+    addLog(logs,"Запущен автокрафт","INFO")
+    draw()
 end
 
 local function stopCraft()
     isCrafting = false
     craftStatus = "Остановлено"
-    uoc.addLog(logs, "Остановлен автокрафт","WARN")
+    addLog(logs, "Остановлен автокрафт","WARN")
+    draw()
 end
 
 -------------------- Основной цикл автокрафта --------------------
@@ -265,19 +356,19 @@ local function autoCraftLoop()
                                     local succ, req = pcall(function() return craftables[1].request(delta, false, freeCpu) end)
                                     if succ and req then
                                         craftStatus = "Крафт: "..(item.name or "<??>")
-                                        uoc.addLog(logs, "Крафт "..delta.."x "..(item.name or "<??>").." на CPU "..tostring(freeCpu),"INFO")
+                                        addLog(logs, "Крафт "..delta.."x "..(item.name or "<??>").." на CPU "..tostring(freeCpu),"INFO")
                                     else
                                         craftStatus = "Ошибка: запрос крафта"
-                                        uoc.addLog(logs, "Ошибка: не удалось отправить крафт "..(item.name or "<??>"),"ERROR")
+                                        addLog(logs, "Ошибка: не удалось отправить крафт "..(item.name or "<??>"),"ERROR")
                                     end
                                 end
                             else
                                 craftStatus = "Ошибка: нет рецепта "..(item.name or "<??>")
-                                uoc.addLog(logs, "Ошибка: нет рецепта "..(item.name or "<??>"),"ERROR")
+                                addLog(logs, "Ошибка: нет рецепта "..(item.name or "<??>"),"ERROR")
                             end
                         else
                             craftStatus = "Ошибка: нет свободных CPU"
-                            uoc.addLog(logs, "Ошибка: нет свободных CPU","ERROR")
+                            addLog(logs, "Ошибка: нет свободных CPU","ERROR")
                         end
                     end
                 end
@@ -293,16 +384,24 @@ end
 -------------------- События --------------------
 event.listen("touch", function(_,_,x,y,_,_)
     if changeitem then return end
+    hoveredButton = nil
     -- Кнопки
-    if y >= HEIGHT-4 and y <= HEIGHT-2 then
-        if x >= WIDTH-30 and x <= WIDTH-19 then
-            if isCrafting then stopCraft() else doCraft() end
-        elseif x >= WIDTH-15 and x <= WIDTH-4 then
-            addItem()
-        elseif x >= WIDTH-45 and x <= WIDTH-34 then
-            editItem()
-        elseif x >= WIDTH-60 and x <= WIDTH-49 then
-            removeItem()
+    local btns = {
+        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
+        {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
+        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3},
+        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3},
+    }
+    for i,btn in ipairs(btns) do
+        if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
+            hoveredButton = i
+            if i==1 then removeItem()
+            elseif i==2 then editItem()
+            elseif i==3 then if isCrafting then stopCraft() else doCraft() end
+            elseif i==4 then addItem()
+            end
+            draw()
+            return
         end
     end
     -- Поле поиска (60x3, левый верхний угол 3,HEIGHT-10)
@@ -324,15 +423,39 @@ event.listen("touch", function(_,_,x,y,_,_)
         searchActive = false
     end
     -- Список предметов (выбор)
-    if y >= 7 and y <= 30 then
+    if y >= 9 and y <= 28 then
         local showItems = uoc.filterItems(dataItems, search)
-        local idx = itemScroll + (y-7)
+        local idx = itemScroll + (y-9)
         if showItems[idx] then
             for k,v in ipairs(dataItems) do
                 if v == showItems[idx] then selectedItem = k break end
             end
         end
+        draw()
+        return
     end
+    draw()
+end)
+
+event.listen("drag", function(_,_,x,y,_,_)
+    -- Подсветка кнопок при наведении
+    local btns = {
+        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
+        {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
+        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3},
+        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3},
+    }
+    for i,btn in ipairs(btns) do
+        if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
+            hoveredButton = i
+            tooltipTimeout = os.time()
+            tooltip = ({"Удалить выбранный предмет из списка","Изменить параметры предмета",(isCrafting and "Остановить автокрафт" or "Запустить автокрафт"),"Добавить новый предмет"})[i]
+            draw()
+            return
+        end
+    end
+    hoveredButton = nil
+    tooltip = ""
     draw()
 end)
 
@@ -353,7 +476,7 @@ event.listen("key_down", function(_,_,key,_,_)
         if key == 200 then -- up
             itemScroll = math.max(1,itemScroll-1)
         elseif key == 208 then -- down
-            itemScroll = math.min(math.max(1,#showItems-23),itemScroll+1)
+            itemScroll = math.min(math.max(1,#showItems-19),itemScroll+1)
         end
     end
     draw()
@@ -365,7 +488,7 @@ reload()
 draw()
 local ok, err = pcall(autoCraftLoop)
 if not ok then
-    uoc.addLog(logs, "Фатальная ошибка: "..tostring(err), "ERROR")
+    addLog(logs, "Фатальная ошибка: "..tostring(err), "ERROR")
     draw()
     os.sleep(3)
     computer.shutdown(true)
