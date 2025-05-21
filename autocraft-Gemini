@@ -1,7 +1,6 @@
 -- autoCraftUltimate.lua
--- Полностью исправленная версия для OpenOS 1.6.1, Lua 5.2
--- Без функционала времени, логи с префиксом [!]
--- Исправлены мерцания логов, наложение элементов, визуал таблицы и ошибка 'drawTooltip'.
+-- Основная программа для OpenComputers.
+-- Исправлены мерцания логов, наложение элементов, визуал таблицы и ошибки.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -31,12 +30,17 @@ if not fs.exists(LIB_PATH) then
     end
 end
 
+-- Загружаем библиотеку ultimateOC.lua
 local ok, uoc = pcall(require, "ultimateOC")
 if not ok then
     io.stderr:write("Не удалось загрузить ultimateOC.lua: " .. tostring(uoc) .. "\n")
     io.stderr:write("Убедитесь, что ultimateOC.lua существует по пути " .. LIB_PATH .. " и не содержит синтаксических ошибок.\n")
     os.exit(1)
 end
+
+-- Передаем ссылку на GPU в библиотеку, чтобы она могла использовать g
+-- Это важно, если uoc.lua использует 'gpu' напрямую, а не 'g'
+uoc.gpu = g
 
 -- Проверка существования файла данных
 if not fs.exists(DATA_FILE) then
@@ -89,7 +93,7 @@ local SEARCH_BAR_Y = BUTTON_Y - SEARCH_BAR_HEIGHT - 1 -- Поиск над кн�
 -- Начало и конец области таблицы
 local TABLE_Y_START = HEADER_HEIGHT + 2 -- Таблица начинается после хедера, с отступом в 2 строки
 -- TABLE_VISIBLE_ROWS = Y_поиска - Y_начала_таблицы - 3 строки (заголовки таблицы) - 1 отступ
-local TABLE_VISIBLE_ROWS = SEARCH_BAR_Y - TABLE_Y_START - 3 -1
+local TABLE_VISIBLE_ROWS = SEARCH_BAR_Y - TABLE_Y_START - 3 - 1
 
 
 -------------------- Переменные --------------------
@@ -119,17 +123,19 @@ function addLog(text, lvl)
     lvl = lvl or "INFO"
     local t = string.format("[!] [%s] %s", lvl, text)
     table.insert(logs, t)
-    while #logs > LOG_LINES * 2 do table.remove(logs, 1) end -- Ограничиваем количество логов
+    while #logs > LOG_LINES do table.remove(logs, 1) end -- Ограничиваем количество логов до LOG_LINES
     drawLogs() -- Перерисовываем только логи, это помогает уменьшить мерцание
 end
 
 -------------------- Визуал --------------------
+-- Функция очистки экрана (используется только при полной перерисовке)
 local function clearScreen()
     g.setBackground(COLORS.bg)
     g.fill(1,1,WIDTH,HEIGHT," ")
     g.setForeground(COLORS.text)
 end
 
+-- Отрисовка тени (без изменений)
 local function shadowRect(x, y, w, h)
     g.setBackground(COLORS.bar_shadow)
     g.fill(x+1, y+h, w, 1, " ")
@@ -137,6 +143,7 @@ local function shadowRect(x, y, w, h)
     g.setBackground(COLORS.bg)
 end
 
+-- Отрисовка хедера
 local function drawHeader()
     g.setBackground(COLORS.bg)
     g.fill(1, 1, WIDTH, HEADER_HEIGHT, " ") -- Очищаем область хедера
@@ -150,10 +157,11 @@ local function drawHeader()
     uoc.progressBar(3,5,WIDTH-6, isCrafting and 0.9 or 0)
 end
 
+-- Отрисовка логов
 function drawLogs()
     local start = math.max(1, #logs - LOG_LINES + 1)
     g.setBackground(COLORS.bg)
-    -- Очищаем только область логов
+    -- Очищаем всю область логов, чтобы избежать остаточных символов и мерцания
     g.fill(1, LOG_Y_START, WIDTH, LOG_HEIGHT, " ")
     for i = 1, LOG_LINES do
         local idx = start + i - 1
@@ -165,6 +173,7 @@ function drawLogs()
     g.setForeground(COLORS.text)
 end
 
+-- Отрисовка таблицы предметов
 local function drawItems()
     local x, y = 2, TABLE_Y_START
     local totalWidth = WIDTH - 6
@@ -175,7 +184,8 @@ local function drawItems()
 
     -- Очищаем всю область таблицы перед отрисовкой
     g.setBackground(COLORS.bg)
-    g.fill(x, y, totalWidth + 6, TABLE_VISIBLE_ROWS + 4, " ") -- +4 для заголовков и нижней рамки
+    -- Высота области для очистки: 3 строки заголовков + TABLE_VISIBLE_ROWS строк данных + 1 строка для нижней рамки
+    g.fill(x, y, totalWidth + 6, 3 + TABLE_VISIBLE_ROWS + 1, " ")
 
     -- Верх рамки
     g.setForeground(COLORS.select_active)
@@ -213,6 +223,10 @@ local function drawItems()
         local it = showItems[i]
         local isSel = (selectedItemIdx and dataItems[selectedItemIdx] == it)
         local row = y + 2 + (i - itemScroll) + 1
+
+        -- Очищаем строку перед отрисовкой, чтобы избежать артефактов выделения
+        g.setBackground(COLORS.bg)
+        g.fill(x, row, totalWidth + 6, 1, " ")
 
         g.setBackground(isSel and COLORS.select_active or COLORS.bg)
         g.setForeground(COLORS.text)
@@ -308,7 +322,6 @@ function drawTooltip()
     if tooltip and tooltip ~= "" and os.time() - tooltipTimeout >= 0.5 then
         local tipWidth = unicode.len(tooltip) + 4
         local tipHeight = 3
-        -- Позиционируем подсказку в правом верхнем углу, чтобы не перекрывать основные элементы
         local tipX = math.max(1, WIDTH - tipWidth - 1)
         local tipY = 1
 
@@ -324,9 +337,9 @@ function drawTooltip()
         g.setBackground(COLORS.bg)
         g.setForeground(COLORS.text)
     else
-        -- Очищаем область, где была подсказка, если она исчезла
+        -- Очищаем только ту область, где могла быть подсказка
         g.setBackground(COLORS.bg)
-        g.fill(WIDTH - 20, 1, 20, 3, " ") -- Примерная область для очистки подсказки
+        g.fill(WIDTH - 20, 1, 20, 3, " ")
     end
 end
 
@@ -335,7 +348,7 @@ function draw()
     if computer.uptime() - lastDrawTime < 0.1 then return end
     lastDrawTime = computer.uptime()
 
-    clearScreen() -- Полная очистка экрана
+    clearScreen() -- Полная очистка экрана при каждой полной перерисовке
     drawHeader()
     drawItems()
     drawSearchBar()
