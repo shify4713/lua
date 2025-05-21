@@ -29,21 +29,28 @@ if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {})
 end
 
--------------------- Время по МСК --------------------
+-------------------- Время по МСК с кэшем --------------------
+local lastTime, lastTimeUpdate = "", 0
 local function getMSKTime()
-    -- Получаем текущее время UTC с сервера времени
+    -- Кэшируем на 10 секунд
+    if computer.uptime() - lastTimeUpdate < 10 and lastTime ~= "" then
+        return lastTime
+    end
     local handle = io.popen("wget -qO- https://worldtimeapi.org/api/timezone/Europe/Moscow.txt 2>/dev/null")
     if handle then
         local text = handle:read("*a")
         handle:close()
         local h, m, s = text:match("datetime:%s*%d+%-%d+%-%d+T(%d+):(%d+):(%d+)")
         if h and m and s then
-            return string.format("%02d:%02d:%02d", tonumber(h), tonumber(m), tonumber(s))
+            lastTime = string.format("%02d:%02d:%02d", tonumber(h), tonumber(m), tonumber(s))
+            lastTimeUpdate = computer.uptime()
+            return lastTime
         end
     end
-    -- Если не получилось, fallback: берём локальное время и делаем +3 часа (UTC->MSK)
     local t = os.date("!*t", os.time() + 3*3600)
-    return string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
+    lastTime = string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
+    lastTimeUpdate = computer.uptime()
+    return lastTime
 end
 
 -------------------- Настройки --------------------
@@ -53,13 +60,13 @@ local COLORS = {
     border = 0x44475a,
     text = 0xF8F8F2,
     shadow = 0x282A36,
-    bg = 0x22232B,
+    bg = 0x23242b,
     error = 0xFF5555,
     ok = 0x50FA7B,
     log = 0x8BE9FD,
     progress_bg = 0x44475a,
     progress_fg = 0x50FA7B,
-    select = 0x272A34,
+    select = 0x31313A,
     select_active = 0x44B3FF,
     search_bg = 0x282B36,
     search_border = 0x00BFFF,
@@ -81,7 +88,7 @@ local search = ""
 local selectedItem = nil
 local itemScroll = 1
 local changeitem = false
-local searchActive = false -- для фокуса на поле поиска
+local searchActive = false
 local hoveredButton = nil
 local tooltip = ""
 local tooltipTimeout = 0
@@ -127,33 +134,63 @@ local function drawLogs()
 end
 
 local function drawItems()
-    -- Шапка таблицы
-    g.setForeground(COLORS.select_active)
-    g.setBackground(COLORS.bg)
-    g.set(3,6,"┌"..string.rep("─",36).."┬"..string.rep("─",13).."┬"..string.rep("─",13).."┬"..string.rep("─",13).."┐")
-    g.set(3,7,"│".."Название"..string.rep(" ",29).."│Текущее │Держать  │За раз    │")
-    g.set(3,8,"├"..string.rep("─",36).."┼"..string.rep("─",13).."┼"..string.rep("─",13).."┼"..string.rep("─",13).."┤")
-    g.setForeground(COLORS.text)
+    -- Размеры столбцов
+    local x, y = 4, 7
+    local col_name = 36
+    local col_now = 12
+    local col_hold = 14
+    local col_once = 14
+    local width = col_name + col_now + col_hold + col_once + 5
 
-    -- Список
+    -- Верх рамки
+    g.setForeground(COLORS.select_active)
+    g.set(x, y,      "┌"..string.rep("─",col_name).."┬"..string.rep("─",col_now).."┬"..string.rep("─",col_hold).."┬"..string.rep("─",col_once).."┐")
+    -- Заголовки
+    g.set(x, y+1,    "│")
+    g.setForeground(COLORS.ok)
+    g.set(x+1, y+1,  string.format("%-"..col_name.."s"," Название"))
+    g.setForeground(COLORS.select_active)
+    g.set(x+col_name+1, y+1, "│")
+    g.setForeground(COLORS.ok)
+    g.set(x+col_name+2, y+1, string.format("%-"..(col_now).."s"," В наличии"))
+    g.setForeground(COLORS.select_active)
+    g.set(x+col_name+col_now+2, y+1, "│")
+    g.setForeground(COLORS.ok)
+    g.set(x+col_name+col_now+3, y+1, string.format("%-"..(col_hold).."s"," Держать"))
+    g.setForeground(COLORS.select_active)
+    g.set(x+col_name+col_now+col_hold+3, y+1, "│")
+    g.setForeground(COLORS.ok)
+    g.set(x+col_name+col_now+col_hold+4, y+1, string.format("%-"..(col_once).."s"," За раз"))
+    g.setForeground(COLORS.select_active)
+    g.set(x+col_name+col_now+col_hold+col_once+4, y+1, "│")
+    -- Разделитель
+    g.set(x, y+2, "├"..string.rep("─",col_name).."┼"..string.rep("─",col_now).."┼"..string.rep("─",col_hold).."┼"..string.rep("─",col_once).."┤")
+
+    -- Строки предметов
     local showItems = uoc.filterItems(dataItems, search)
-    local perPage = 20
-    local y = 9
+    local perPage = 18
     for i = itemScroll, math.min(#showItems, itemScroll+perPage-1) do
         local it = showItems[i]
         local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem])
-        -- С красивым прямоугольником
-        uoc.selectLine(3, y, 76, (it.name or "<?>"), isSel, COLORS.select, COLORS.select_active, COLORS.text)
+        local row = y+2+(i-itemScroll)+1
+        g.setBackground(isSel and COLORS.select_active or COLORS.bg)
         g.setForeground(COLORS.text)
-        g.set(40, y, tostring(tonumber(it.current) or 0))
-        g.set(55, y, tostring(tonumber(it.count) or 0))
-        g.set(70, y, tostring(tonumber(it.craftSize) or 0))
-        y = y + 1
+        g.set(x, row, "│")
+        g.set(x+1, row, string.format("%-"..col_name.."s",it.name or "<?>"))
+        g.set(x+col_name+1, row, "│")
+        g.set(x+col_name+2, row, string.format("%"..col_now.."s",tonumber(it.current) or 0))
+        g.set(x+col_name+col_now+2, row, "│")
+        g.set(x+col_name+col_now+3, row, string.format("%"..col_hold.."s",tonumber(it.count) or 0))
+        g.set(x+col_name+col_now+col_hold+3, row, "│")
+        g.set(x+col_name+col_now+col_hold+4, row, string.format("%"..col_once.."s",tonumber(it.craftSize) or 0))
+        g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
+        g.setBackground(COLORS.bg)
     end
-    -- Низ таблицы
+
+    -- Низ рамки
+    local lastRow = y+perPage+3
     g.setForeground(COLORS.select_active)
-    g.set(3,y,"└"..string.rep("─",36).."┴"..string.rep("─",13).."┴"..string.rep("─",13).."┴"..string.rep("─",13).."┘")
-    g.setBackground(COLORS.bg)
+    g.set(x, lastRow, "└"..string.rep("─",col_name).."┴"..string.rep("─",col_now).."┴"..string.rep("─",col_hold).."┴"..string.rep("─",col_once).."┘")
     g.setForeground(COLORS.text)
 end
 
@@ -178,7 +215,6 @@ local function drawSearchBar()
 end
 
 local function drawButtons()
-    -- Кнопки, теперь с подсветкой при наведении и подсказками
     local btns = {
         {name="Удалить", x=WIDTH-60, tip="Удалить выбранный предмет из списка"},
         {name="Изменить", x=WIDTH-45, tip="Изменить параметры предмета"},
@@ -223,9 +259,30 @@ end
 local function reload()
     local ok, res = pcall(uoc.loadf, DATA_FILE)
     dataItems = ok and res or {}
+    -- Получаем ТЕКУЩЕЕ значение для каждого предмета (в наличии)
     for _,item in ipairs(dataItems) do
-        local ok2, d = pcall(me.getItemDetail, {id = item.id, dmg = item.dmg})
-        item.current = (ok2 and d and tonumber(d.qty)) or 0
+        local qty = 0
+        -- Получаем список всех предметов в сети
+        local found = false
+        local stackList = {}
+        pcall(function() stackList = me.getItemsInNetwork({id = item.id, damage = item.dmg}) end)
+        if stackList and stackList.n and stackList.n > 0 then
+            for _,stack in ipairs(stackList) do
+                if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
+                    qty = stack.size or stack.qty or 0
+                    found = true
+                    break
+                end
+            end
+        end
+        if not found then
+            -- Иногда getItemDetail даёт правильный qty
+            local ok2, d = pcall(me.getItemDetail, {id = item.id, dmg = item.dmg})
+            if ok2 and d then
+                qty = d.qty or d.size or 0
+            end
+        end
+        item.current = qty
     end
 end
 
@@ -340,7 +397,6 @@ local function autoCraftLoop()
                     local craftSize = tonumber(item.craftSize) or 1
                     local current = tonumber(item.current) or 0
                     if current < count then
-                        -- Автоматический выбор свободного CPU
                         local ok2, cpus = pcall(me.getCpus)
                         cpus = ok2 and cpus or {}
                         local freeCpu = nil
@@ -385,7 +441,6 @@ end
 event.listen("touch", function(_,_,x,y,_,_)
     if changeitem then return end
     hoveredButton = nil
-    -- Кнопки
     local btns = {
         {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
         {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
@@ -423,9 +478,9 @@ event.listen("touch", function(_,_,x,y,_,_)
         searchActive = false
     end
     -- Список предметов (выбор)
-    if y >= 9 and y <= 28 then
+    if y >= 10 and y <= 29 then
         local showItems = uoc.filterItems(dataItems, search)
-        local idx = itemScroll + (y-9)
+        local idx = itemScroll + (y-10)
         if showItems[idx] then
             for k,v in ipairs(dataItems) do
                 if v == showItems[idx] then selectedItem = k break end
@@ -438,7 +493,6 @@ event.listen("touch", function(_,_,x,y,_,_)
 end)
 
 event.listen("drag", function(_,_,x,y,_,_)
-    -- Подсветка кнопок при наведении
     local btns = {
         {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
         {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
@@ -476,7 +530,7 @@ event.listen("key_down", function(_,_,key,_,_)
         if key == 200 then -- up
             itemScroll = math.max(1,itemScroll-1)
         elseif key == 208 then -- down
-            itemScroll = math.min(math.max(1,#showItems-19),itemScroll+1)
+            itemScroll = math.min(math.max(1,#showItems-17),itemScroll+1)
         end
     end
     draw()
