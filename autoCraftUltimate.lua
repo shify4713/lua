@@ -11,11 +11,17 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
+-- Подгрузка библиотеки
 if not fs.exists(LIB_PATH) then
-    shell.execute("wget -f https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua " .. LIB_PATH)
+    shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
 end
-local uoc = require("ultimateOC")
+local ok, uoc = pcall(require, "ultimateOC")
+if not ok then
+    io.stderr:write("Не удалось загрузить ultimateOC.lua: ", tostring(uoc), "\n")
+    os.exit(1)
+end
 
 if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {})
@@ -34,7 +40,7 @@ local COLORS = {
     log = 0x8BE9FD,
     progress_bg = 0x44475a,
     progress_fg = 0x50FA7B,
-    select = 0x222245,
+    select = 0x23262E,
     select_active = 0x44B3FF,
 }
 local WIDTH, HEIGHT = 110, 40
@@ -43,12 +49,10 @@ local nextCraftUpdate = 0
 local isCrafting = false
 
 -------------------- Переменные --------------------
-local guiPath = {"main"}
-local scroll = 1
-local search = ""
 local logs = {}
-local selectedItem = nil
 local dataItems = {}
+local search = ""
+local selectedItem = nil
 local itemScroll = 1
 local changeitem = false
 
@@ -111,15 +115,17 @@ end
 
 -------------------- IO и действия --------------------
 local function reload()
-    dataItems = uoc.loadf(DATA_FILE)
+    local ok, res = pcall(uoc.loadf, DATA_FILE)
+    dataItems = ok and res or {}
     for _,item in ipairs(dataItems) do
-        local d = me.getItemDetail({id = item.id, dmg = item.dmg})
-        item.current = d and d.qty or 0
+        local ok2, d = pcall(me.getItemDetail, {id = item.id, dmg = item.dmg})
+        item.current = (ok2 and d and d.qty) or 0
     end
 end
 
 local function save()
-    uoc.savef(DATA_FILE, dataItems)
+    local ok, err = pcall(uoc.savef, DATA_FILE, dataItems)
+    if not ok then uoc.addLog(logs, "Ошибка сохранения: "..tostring(err), "ERROR") end
 end
 
 local function addItem()
@@ -135,7 +141,9 @@ local function addItem()
     uoc.drawText(10,HEIGHT-4,"Крафт за раз (число): ",COLORS.text)
     term.setCursor(32,HEIGHT-4)
     local craftSize = tonumber(io.read())
-    local stack = me.getStackInSlot(1)
+    local stack = nil
+    local ok, res = pcall(me.getStackInSlot, 1)
+    if ok then stack = res end
     if stack then
         table.insert(dataItems, {name=name, id=stack.id, dmg=stack.dmg, count=count, craftSize=craftSize})
         save()
@@ -196,22 +204,30 @@ local function autoCraftLoop()
             if now >= nextCraftUpdate then
                 reload()
                 for i, item in ipairs(dataItems) do
-                    local details = me.getItemDetail({id=item.id, dmg=item.dmg}) or {qty=0}
-                    item.current = details.qty
-                    if details.qty < (item.count or 0) then
+                    local ok, details = pcall(me.getItemDetail, {id=item.id, dmg=item.dmg})
+                    details = ok and details or {qty=0}
+                    item.current = details.qty or 0
+                    if item.current < (item.count or 0) then
                         -- Автоматический выбор свободного CPU
-                        local cpus = me.getCpus()
+                        local ok2, cpus = pcall(me.getCpus)
+                        cpus = ok2 and cpus or {}
                         local freeCpu = nil
                         for _,cpu in ipairs(cpus) do
                             if not cpu.busy then freeCpu = cpu.name break end
                         end
                         if freeCpu then
-                            local craftables = me.getCraftables({name=item.id, damage=item.dmg})
-                            if craftables.n >= 1 then
-                                local delta = math.min(item.craftSize or 1, item.count-details.qty)
-                                local request = craftables[1].request(delta, false, freeCpu)
-                                craftStatus = "Крафт: "..item.name
-                                uoc.addLog(logs, "Крафт "..delta.."x "..item.name.." на CPU "..tostring(freeCpu),"INFO")
+                            local ok3, craftables = pcall(me.getCraftables, {name=item.id, damage=item.dmg})
+                            craftables = ok3 and craftables or {n=0}
+                            if craftables.n and craftables.n >= 1 then
+                                local delta = math.min(item.craftSize or 1, item.count-item.current)
+                                local succ, req = pcall(function() return craftables[1].request(delta, false, freeCpu) end)
+                                if succ and req then
+                                    craftStatus = "Крафт: "..item.name
+                                    uoc.addLog(logs, "Крафт "..delta.."x "..item.name.." на CPU "..tostring(freeCpu),"INFO")
+                                else
+                                    craftStatus = "Ошибка: запрос крафта"
+                                    uoc.addLog(logs, "Ошибка: не удалось отправить крафт "..item.name,"ERROR")
+                                end
                             else
                                 craftStatus = "Ошибка: нет рецепта "..item.name
                                 uoc.addLog(logs, "Ошибка: нет рецепта "..item.name,"ERROR")
@@ -280,4 +296,10 @@ end)
 g.setResolution(WIDTH,HEIGHT)
 reload()
 draw()
-autoCraftLoop()
+local ok, err = pcall(autoCraftLoop)
+if not ok then
+    uoc.addLog(logs, "Фатальная ошибка: "..tostring(err), "ERROR")
+    draw()
+    os.sleep(3)
+    computer.shutdown(true)
+end
