@@ -26,11 +26,21 @@ if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {})
 end
 
--------------------- Реальное мировое время по Киеву (UTC+3, без кеша) --------------------
+-------------------- Реальное UTC+3 (по Киеву) --------------------
+-- UTC + 3 часа: всегда актуальное время по Киеву без зависимости от OpenOS RTC (всегда по мировым стандартам)
 local function getKyivTime()
-    -- Используем настоящее реальное время системы и корректируем под Киев (UTC+3 летом)
-    -- Если OpenOS на сервере с RTC, то это будет действительно мировое время, иначе локальное
-    local t = os.date("!*t", os.time() + 3*3600) -- Киевское время (UTC+3)
+    -- Текущее "реальное" мировое время через API worldtimeapi (если есть интернет)
+    local handle = io.popen("wget -qO- https://worldtimeapi.org/api/timezone/Europe/Kyiv.txt 2>/dev/null")
+    if handle then
+        local text = handle:read("*a")
+        handle:close()
+        local h, m, s = text:match("datetime:%s*%d+%-%d+%-%d+T(%d+):(%d+):(%d+)")
+        if h and m and s then
+            return string.format("%02d:%02d:%02d", tonumber(h), tonumber(m), tonumber(s))
+        end
+    end
+    -- Если нет интернета, fallback: просто UTC+3, не майнкрафт-время, а по настоящему времени
+    local t = os.date("!*t", os.time() + 3*3600)
     return string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
 end
 
@@ -98,28 +108,28 @@ local function shadowRect(x, y, w, h)
 end
 
 local function drawHeader()
-    uoc.drawText(3,2,"Ultimate AutoCraft",COLORS.ok,true)
+    uoc.drawText(3,3,"Ultimate AutoCraft",COLORS.ok,true)
     g.setBackground(COLORS.progress_fg)
-    g.fill(2,3,WIDTH-2,1," ")
-    shadowRect(2,3,WIDTH-2,1)
+    g.fill(2,4,WIDTH-2,1," ")
+    shadowRect(2,4,WIDTH-2,1)
     g.setBackground(COLORS.bg)
-    uoc.drawText(WIDTH-34,2,"Статус: "..craftStatus,
+    uoc.drawText(WIDTH-34,3,"Статус: "..craftStatus,
         (craftStatus:find("Ошибка") and COLORS.error) or COLORS.ok)
-    uoc.progressBar(3,4,WIDTH-6, isCrafting and 0.9 or 0)
+    uoc.progressBar(3,5,WIDTH-6, isCrafting and 0.9 or 0)
 end
 
 local function drawLogs()
-    uoc.drawLogs(3, HEIGHT-14, logs, 4, COLORS.log)
+    -- Сдвигаем логи ниже таблицы
+    uoc.drawLogs(3, HEIGHT-17, logs, 4, COLORS.log)
 end
 
 local function drawItems()
-    -- Динамически растягиваем таблицу почти на весь экран
-    local x, y = 2, 7
+    -- Динамически растянутая таблица
+    local x, y = 2, 8 -- чуть ниже
     local totalWidth = WIDTH-4
-    -- Пропорции: Название:В наличии:Держать:За раз = 3:1:1:1 (примерно)
-    local col_name = math.floor(totalWidth * 0.46)
-    local col_now = math.floor(totalWidth * 0.18)
-    local col_hold = math.floor(totalWidth * 0.18)
+    local col_name = math.floor(totalWidth * 0.45)
+    local col_now = math.floor(totalWidth * 0.17)
+    local col_hold = math.floor(totalWidth * 0.17)
     local col_once = totalWidth - col_name - col_now - col_hold
 
     -- Верх рамки
@@ -147,7 +157,12 @@ local function drawItems()
     g.set(x, y+2, "├"..string.rep("─",col_name).."┼"..string.rep("─",col_now).."┼"..string.rep("─",col_hold).."┼"..string.rep("─",col_once).."┤")
 
     -- Строки предметов
-    local showItems = uoc.filterItems(dataItems, search)
+    local showItems = {}
+    for i,item in ipairs(dataItems) do
+        if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+            table.insert(showItems, item)
+        end
+    end
     local perPage = HEIGHT-24
     for i = itemScroll, math.min(#showItems, itemScroll+perPage-1) do
         local it = showItems[i]
@@ -155,8 +170,10 @@ local function drawItems()
         local row = y+2+(i-itemScroll)+1
         g.setBackground(isSel and COLORS.select_active or COLORS.bg)
         g.setForeground(COLORS.text)
+        -- аккуратно обрезаем строку если длинная
+        local nameStr = unicode.sub((it.name or "<??>"), 1, col_name)
         g.set(x, row, "│")
-        g.set(x+1, row, string.format("%-"..col_name.."s",it.name or "<?>"))
+        g.set(x+1, row, string.format("%-"..col_name.."s",nameStr))
         g.set(x+col_name+1, row, "│")
         g.set(x+col_name+2, row, string.format("%"..col_now.."s",tonumber(it.current) or 0))
         g.set(x+col_name+col_now+2, row, "│")
@@ -191,7 +208,7 @@ local function drawItems()
 end
 
 local function drawSearchBar()
-    local x, y, w, h = 3, HEIGHT-10, WIDTH-6, 3
+    local x, y, w, h = 3, HEIGHT-13, WIDTH-6, 3
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
     g.fill(x+1, y+1, w-2, h-2, " ")
@@ -255,7 +272,6 @@ end
 local function reload()
     local ok, res = pcall(uoc.loadf, DATA_FILE)
     dataItems = ok and res or {}
-    -- Корректно показывает "В наличии" (qty) для каждого предмета
     for _,item in ipairs(dataItems) do
         local qty = 0
         local stackList = {}
@@ -326,13 +342,9 @@ local function editItem()
     uoc.drawText(10,HEIGHT-6,"Новое имя (Enter пропустить): ",COLORS.text)
     term.setCursor(40,HEIGHT-6)
     local name = tostring(io.read())
-    if not name or name == "" then
-        changeitem = false
-        resetSelection()
-        draw()
-        return
+    if name and name ~= "" then
+        item.name = name
     end
-    item.name = name
     -- Количество
     uoc.drawText(10,HEIGHT-5,"Новое держать (число, Enter пропустить): ",COLORS.text)
     term.setCursor(54,HEIGHT-5)
@@ -450,8 +462,8 @@ event.listen("touch", function(_,_,x,y,_,_)
             return
         end
     end
-    -- Поле поиска (WIDTH-6 x 3, левый верхний угол 3,HEIGHT-10)
-    if y >= HEIGHT-10 and y <= HEIGHT-8 then
+    -- Поле поиска (WIDTH-6 x 3, левый верхний угол 3,HEIGHT-13)
+    if y >= HEIGHT-13 and y <= HEIGHT-11 then
         searchActive = false
         if x >= 3+(WIDTH-6)-3 and x <= 3+(WIDTH-6)-1 and search ~= "" then
             search = ""
@@ -467,9 +479,14 @@ event.listen("touch", function(_,_,x,y,_,_)
         searchActive = false
     end
     -- Список предметов (выбор)
-    local showItems = uoc.filterItems(dataItems, search)
+    local showItems = {}
+    for i,item in ipairs(dataItems) do
+        if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+            table.insert(showItems, item)
+        end
+    end
     local perPage = HEIGHT-24
-    local itemsStartY = 10
+    local itemsStartY = 11
     local itemsEndY = itemsStartY + perPage - 1
     if y >= itemsStartY and y <= itemsEndY then
         local idx = itemScroll + (y-itemsStartY)
@@ -507,13 +524,20 @@ end)
 
 event.listen("key_down", function(_,_,key,_,_)
     if changeitem then return end
-    local showItems = uoc.filterItems(dataItems, search)
+    local showItems = {}
+    for i,item in ipairs(dataItems) do
+        if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+            table.insert(showItems, item)
+        end
+    end
     local perPage = HEIGHT-24
     if searchActive then
         if key == 14 then -- backspace
             search = search:sub(1,-2)
         elseif key == 211 then -- delete
             search = ""
+        elseif key == 28 then -- enter
+            searchActive = false
         elseif key >= 32 and key < 128 then
             if unicode.len(search) < WIDTH-15 then
                 search = search .. unicode.char(key)
