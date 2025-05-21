@@ -1,4 +1,4 @@
--- PreCraft ULTIMATE (2025) — идеальные кнопки и автокрафт без ограничений
+-- PreCraft ULTIMATE (Lua 5.2, OpenOS 1.6.1 compatible, NO "unexpected symbol near '='")
 local component = require("component")
 local event = require("event")
 local fs = require("filesystem")
@@ -14,37 +14,16 @@ local WIDTH, HEIGHT = 160, 50
 local ADM = {["shify4713"]=true, ["LiwMorgan"]=true, ["KReaTlVNuY"]=true, ["4ertik_"]=true}
 local PATH = "/home/BD.txt"
 
--- === Цвета для flat-дизайна ===
 local COLORS = {
-  bg = 0x23272e,      -- общий фон
-  fg = 0xE6EDF3,      -- основной текст
-  border = 0x2866b2,  -- рамки
-  err = 0xFF3C3C,
-  ok = 0x7CFC00,
-  warn = 0xFFD700,
-  info = 0x66FFFF,
-  select_bg = 0x3A5068,
-  select_fg = 0xF1F1F1,
-  btn_bg = 0x2980b9,
-  btn_fg = 0xf7f7f7,
-  btn_act = 0x155a8a,
-  btn_border = 0x2980b9,
-  btn_shadow = 0x1d2731,
-  tab_on = 0x2980b9,
-  tab_off = 0x23272e,
-  tab_fg = 0xFFFFFF,
-  input_bg = 0x1c232b,
-  input_fg = 0xA4FFFA,
-  input_border = 0x2980b9,
-  log_bg = 0x242b33,
-  log_ok = 0x7CFC00,
-  log_warn = 0xFFD700,
-  log_err = 0xFF3C3C,
-  log_info = 0x66FFFF,
-  log_time = 0x474a4e,
-  log_txt = 0xE6EDF3,
-  search_bg = 0x26324a,
-  search_icon = 0x50B9FF
+  bg = 0x23272e, fg = 0xE6EDF3, border = 0x2866b2, err = 0xFF3C3C,
+  ok = 0x7CFC00, warn = 0xFFD700, info = 0x66FFFF,
+  select_bg = 0x3A5068, select_fg = 0xF1F1F1,
+  btn_bg = 0x2980b9, btn_fg = 0xf7f7f7, btn_act = 0x155a8a,
+  btn_border = 0x2980b9, btn_shadow = 0x1d2731,
+  tab_on = 0x2980b9, tab_off = 0x23272e, tab_fg = 0xFFFFFF,
+  input_bg = 0x1c232b, input_fg = 0xA4FFFA, input_border = 0x2980b9,
+  log_bg = 0x242b33, log_ok = 0x7CFC00, log_warn = 0xFFD700, log_err = 0xFF3C3C, log_info = 0x66FFFF,
+  log_time = 0x474a4e, log_txt = 0xE6EDF3, search_bg = 0x26324a, search_icon = 0x50B9FF
 }
 
 local function clamp(val, min, max) return math.max(min, math.min(val, max)) end
@@ -58,22 +37,19 @@ local function load()
   if not f then return {} end
   local dat = f:read("*a"); f:close()
   local ok, t = pcall(function() return load("return "..dat)() end)
-  return ok and t or {}
+  if ok then return t else return {} end
 end
 gpu.setResolution(WIDTH, HEIGHT)
 
--- === Состояние ===
 local state = {
   tab = 1, tabs = {"Главная", "Изменить", "Логи"},
   data = {}, logs = {}, select = 1, scroll = 1, search = "",
   input = {active=false, value="", prompt="", action=nil},
   go = false, error = nil, filtered = {}, maxscroll = 1,
   redraw = true, hover = {btn=nil, item=nil, tab=nil, search=false},
-  logScroll = 1, -- для скролла логов
-  btns = {} -- динамическое хранение кнопок
+  logScroll = 1, btns = {}
 }
 
--- === Логирование ===
 local function now()
   local t=os.date("*t")
   return string.format("%02d:%02d:%02d",t.hour,t.min,t.sec)
@@ -84,12 +60,15 @@ local function log(kind, msg)
   state.redraw=true
 end
 
--- === Красивая кнопка с эффектом нажатия и наведения ===
 local function btn(x,y,w,h,str,active,hover,pressed)
-  local bg = pressed and 0x368ef0 or (active and COLORS.btn_act or COLORS.btn_bg)
-  if hover and not pressed then bg = 0x6ec6ff end
+  local bg = COLORS.btn_bg
+  if pressed then bg = 0x368ef0
+  elseif active then bg = COLORS.btn_act
+  elseif hover then bg = 0x6ec6ff
+  end
   gpu.setBackground(bg)
   gpu.setForeground(COLORS.btn_fg)
+  local i
   for i=0,h-1 do gpu.fill(x, y+i, w, 1, " ") end
   gpu.setForeground(COLORS.btn_border)
   gpu.set(x, y, "╭"..string.rep("─",w-2).."╮")
@@ -101,7 +80,6 @@ local function btn(x,y,w,h,str,active,hover,pressed)
   return {x1=x,x2=x+w-1,y1=y,y2=y+h-1}
 end
 
--- === Рендер кнопочной панели ===
 local function renderButtons()
   local y = 44
   local btns = {
@@ -112,6 +90,7 @@ local function renderButtons()
     {"Выход", "exit", 75, y, false}
   }
   state.btns = {}
+  local i
   for i,b in ipairs(btns) do
     local hover = (state.hover.btn == i)
     local pressed = (state.hover.pressed and state.hover.btn == i)
@@ -121,22 +100,23 @@ local function renderButtons()
   end
 end
 
--- === Главный рендер (только кнопочная и автокрафт часть для краткости) ===
 local function render()
   gpu.setBackground(COLORS.bg); gpu.setForeground(COLORS.fg)
   gpu.fill(1,1,WIDTH,HEIGHT," ")
   renderButtons()
 end
 
--- === КРАФТ БЕЗ ОГРАНИЧЕНИЙ: ждёт любой свободный CPU, не пропускает заказы ===
+-- === БЕЗ ОГРАНИЧЕНИЯ CPU: ждёт свободный ===
 local function request_craft_safe(craftable, count, item_name)
-  while true do
+  local success = false
+  while not success do
     local cpus = me.getCpus()
-    local free = false
-    for _,cpu in ipairs(cpus) do if not cpu.busy then free = true; break end end
-    if free then
+    local found = false
+    local i
+    for i=1,#cpus do if not cpus[i].busy then found = true; break end end
+    if found then
       local ok, msg = pcall(function() return craftable.request(count, false) end)
-      if ok then log("ok","Заказано: "..item_name.." x"..count); return true
+      if ok then log("ok","Заказано: "..item_name.." x"..count); success = true
       else
         if tostring(msg):find("missing resources") then log("warn","Не хватает для "..item_name); return false
         elseif tostring(msg):find("no recipe") then log("err","Нет рецепта "..item_name); return false
@@ -144,14 +124,17 @@ local function request_craft_safe(craftable, count, item_name)
       end
     else
       log("info","Ожидание свободного CPU для "..item_name)
-      os.sleep(1) -- ждём, потом повторяем
+      os.sleep(1)
     end
   end
+  return true
 end
 
 local function checkCraft()
   if not state.go then return end
-  for _,v in ipairs(state.data) do
+  local i
+  for i=1,#state.data do
+    local v = state.data[i]
     local itemsMe=me.getItemDetail({id=v.id,dmg=v.dmg})
     local qty=itemsMe and itemsMe.basic().qty or 0
     local needAll=(v.count or 0)-qty
@@ -168,16 +151,15 @@ local function checkCraft()
   end
 end
 
--- === Обработка нажатий мыши по кнопкам ===
 local function handleTouch(_,_,x,y,_,playerName)
   if not ADM[playerName or ""] then return end
-  -- Кнопки
-  for idx,b in ipairs(state.btns) do
+  local idx
+  for idx=1,#state.btns do
+    local b = state.btns[idx]
     if x>=b.x1 and x<=b.x2 and y>=b.y1 and y<=b.y2 then
       state.hover.btn=idx; state.hover.pressed=true; state.redraw=true
-      os.sleep(0.08) -- короткая анимация "нажатия"
+      os.sleep(0.08)
       state.hover.pressed=false
-      -- Обработка действий
       if b.action=="add" then log("info","Добавление предмета (пример)")
       elseif b.action=="edit" then log("info","Редактирование (пример)")
       elseif b.action=="del" then log("warn","Удаление (пример)")
@@ -190,7 +172,6 @@ local function handleTouch(_,_,x,y,_,playerName)
   end
 end
 
--- === Запуск автокрафта в фоне ===
 local function mainloop()
   state.data=load()
   event.listen("touch",handleTouch)
