@@ -87,13 +87,13 @@ local FOOTER_HEIGHT = 1 -- Зарезервированная строка вн�
 
 -- Рассчитываем Y-координаты снизу вверх, чтобы избежать наложений
 local LOG_Y_START = HEIGHT - LOG_HEIGHT + 1 -- Логи начинаются с этого Y (40 - 4 + 1 = 37)
-local BUTTON_Y = LOG_Y_START - BUTTON_HEIGHT - 1 -- Кнопки над логами (37 - 3 - 1 = 33)
-local SEARCH_BAR_Y = BUTTON_Y - SEARCH_BAR_HEIGHT - 1 -- Поиск над кнопками (33 - 3 - 1 = 29)
+local BUTTON_Y = LOG_Y_START - BUTTON_HEIGHT - 1 -- Кнопки над логами, с отступом в 1 строку (37 - 3 - 1 = 33)
+local SEARCH_BAR_Y = BUTTON_Y - SEARCH_BAR_HEIGHT - 2 -- Поиск над кнопками, с отступом в 2 строки (33 - 3 - 2 = 28)
 
 -- Начало и конец области таблицы
-local TABLE_Y_START = HEADER_HEIGHT + 2 -- Таблица начинается после хедера (6 + 2 = 8)
+local TABLE_Y_START = HEADER_HEIGHT + 2 -- Таблица начинается после хедера, с отступом в 2 строки (6 + 2 = 8)
 -- TABLE_VISIBLE_ROWS = Y_поиска - Y_начала_таблицы - 3 строки (заголовки таблицы) - 1 отступ
-local TABLE_VISIBLE_ROWS = SEARCH_BAR_Y - TABLE_Y_START - 3 - 1 -- 29 - 8 - 3 - 1 = 17 строк данных
+local TABLE_VISIBLE_ROWS = SEARCH_BAR_Y - TABLE_Y_START - 3 - 1 -- 28 - 8 - 3 - 1 = 16 строк данных
 
 -------------------- Переменные --------------------
 local logs = {}
@@ -122,8 +122,7 @@ function addLog(text, lvl)
     lvl = lvl or "INFO"
     local t = string.format("[!] [%s] %s", lvl, text)
     table.insert(logs, t)
-    -- Ограничиваем количество логов до LOG_LINES, удаляя старые
-    while #logs > LOG_LINES do table.remove(logs, 1) end
+    while #logs > LOG_LINES do table.remove(logs, 1) end -- Ограничиваем количество логов до LOG_LINES
     drawLogs() -- Перерисовываем только логи, это помогает уменьшить мерцание
 end
 
@@ -279,8 +278,6 @@ local function drawSearchBar()
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
     g.fill(x+1, y+1, w-2, h-2, " ")
-    g.setForeground(COLORS.search_cross)
-    g.set(x+w-3, y+1, (search ~= "" and "×" or " "))
     g.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
     local display = search
     if display=="" then display = "Поиск: введите часть названия..." end
@@ -290,6 +287,8 @@ local function drawSearchBar()
         display = unicode.sub(display, unicode.len(display)-maxlen+2)
     end
     g.set(x+2, y+1, display)
+    g.setForeground(COLORS.search_cross)
+    g.set(x+w-3, y+1, (search ~= "" and "×" or " ")) -- Кнопка сброса поиска
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
 end
@@ -353,7 +352,7 @@ function draw()
     if computer.uptime() - lastDrawTime < 0.1 then return end
     lastDrawTime = computer.uptime()
 
-    clearScreen() -- Полная очистка экрана при каждой полной перерисовке
+    -- clearScreen() -- Убрано: теперь каждая функция отрисовки очищает свою область
     drawHeader()
     drawItems()
     drawSearchBar()
@@ -401,19 +400,25 @@ end
 local function addItem()
     changeitem = true
     hoveredButton = nil -- Сбрасываем состояние наведенной кнопки
-    draw() -- Обновляем UI, чтобы убрать выделение с кнопки и показать чистый экран для ввода
-
+    -- Очищаем экран и рисуем только подсказки для ввода
+    clearScreen()
     uoc.drawText(10,HEIGHT-9,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
-
     uoc.drawText(10,HEIGHT-8,"Название: ",COLORS.text)
     term.setCursor(20,HEIGHT-8)
     local name = tostring(io.read())
     if name == "" then name = "Новый предмет" end
 
+    clearScreen() -- Очищаем экран перед следующим запросом
+    uoc.drawText(10,HEIGHT-9,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
+    uoc.drawText(10,HEIGHT-8,"Название: "..name,COLORS.text) -- Показываем уже введенное имя
     uoc.drawText(10,HEIGHT-7,"Держать (число, 0 для пропуска): ",COLORS.text)
     term.setCursor(39,HEIGHT-7)
     local count = tonumber(io.read()) or 0
 
+    clearScreen() -- Очищаем экран перед следующим запросом
+    uoc.drawText(10,HEIGHT-9,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
+    uoc.drawText(10,HEIGHT-8,"Название: "..name,COLORS.text)
+    uoc.drawText(10,HEIGHT-7,"Держать: "..count,COLORS.text)
     uoc.drawText(10,HEIGHT-6,"Крафт за раз (число, 1 для пропуска): ",COLORS.text)
     term.setCursor(39,HEIGHT-6)
     local craftSize = tonumber(io.read()) or 1
@@ -442,10 +447,9 @@ local function editItem()
 
     changeitem = true
     hoveredButton = nil -- Сбрасываем состояние наведенной кнопки
-    draw() -- Обновляем UI, чтобы убрать выделение с кнопки и показать чистый экран для ввода
-
+    -- Очищаем экран и рисуем только подсказки для ввода
+    clearScreen()
     uoc.drawText(10,HEIGHT-9,"Изменение: "..(item.name or "<??>"),COLORS.ok)
-
     uoc.drawText(10,HEIGHT-8,"Новое имя (Enter пропустить): ",COLORS.text)
     term.setCursor(40,HEIGHT-8)
     local name = tostring(io.read())
@@ -453,12 +457,19 @@ local function editItem()
         item.name = name
     end
 
+    clearScreen() -- Очищаем экран перед следующим запросом
+    uoc.drawText(10,HEIGHT-9,"Изменение: "..(item.name or "<??>"),COLORS.ok)
+    uoc.drawText(10,HEIGHT-8,"Новое имя: "..(item.name or "<??>"),COLORS.text) -- Показываем уже введенное имя
     uoc.drawText(10,HEIGHT-7,"Новое держать (число, Enter пропустить): ",COLORS.text)
     term.setCursor(54,HEIGHT-7)
     local countstr = tostring(io.read())
     local count = tonumber(countstr)
     if countstr ~= "" and count then item.count = count end
 
+    clearScreen() -- Очищаем экран перед следующим запросом
+    uoc.drawText(10,HEIGHT-9,"Изменение: "..(item.name or "<??>"),COLORS.ok)
+    uoc.drawText(10,HEIGHT-8,"Новое имя: "..(item.name or "<??>"),COLORS.text)
+    uoc.drawText(10,HEIGHT-7,"Новое держать: "..(item.count or 0),COLORS.text)
     uoc.drawText(10,HEIGHT-6,"Новый крафт за раз (число, Enter пропустить): ",COLORS.text)
     term.setCursor(55,HEIGHT-6)
     local csstr = tostring(io.read())
@@ -673,26 +684,20 @@ event.listen("key_down", function(_,_,key,_,_)
     local perPage = TABLE_VISIBLE_ROWS
 
     if searchActive then
-        if key == 14 then
-            search = unicode.sub(search, 1, unicode.len(search)-1)
-        elseif key == 211 then
+        if key == 14 then -- backspace
+            search = unicode.sub(search, 1, unicode.len(search)-1) -- Корректное удаление Unicode символов
+        elseif key == 211 then -- delete
             search = ""
-        elseif key == 28 then
+        elseif key == 28 then -- enter
             searchActive = false
-        else
-            local char_code = key
-            if char_code >= 32 and char_code <= 126 then
-                if unicode.len(search) < WIDTH-15 then
-                    search = search .. unicode.char(char_code)
-                end
-            end
+        -- Убрана обработка ASCII символов, теперь только key_press
         end
         itemScroll = 1
         selectedItemIdx = nil
     else
-        if key == 200 then
+        if key == 200 then -- up
             itemScroll = math.max(1,itemScroll-1)
-        elseif key == 208 then
+        elseif key == 208 then -- down
             if #showItems > perPage then
                 itemScroll = math.min(#showItems-perPage+1,itemScroll+1)
             end
@@ -704,7 +709,8 @@ end)
 event.listen("key_press", function(_, char)
     if changeitem then return end
     if searchActive then
-        if not (char == '\n' or char == '\b' or char == '\r') then
+        -- Если это не управляющий символ (Enter, Backspace и т.д.), добавляем его к поиску
+        if not (char == '\n' or char == '\b' or char == '\r' or char == '\t') then -- Добавил '\t' для табуляции
             if unicode.len(search) < WIDTH-15 then
                 search = search .. char
             end
@@ -718,7 +724,7 @@ end)
 
 -------------------- Старт --------------------
 g.setResolution(WIDTH,HEIGHT)
-clearScreen()
+clearScreen() -- Полная очистка при старте
 addLog("Программа запущена.", "INFO")
 reload()
 draw()
