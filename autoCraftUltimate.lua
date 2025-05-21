@@ -1,4 +1,5 @@
 --wget -f https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua /lib/ultimateOC.lua
+--wget -f https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/autoCraftUltimate.lua /home/autoCraftUltimate.lua
 local component = require("component")
 local fs = require("filesystem")
 local shell = require("shell")
