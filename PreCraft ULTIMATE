@@ -181,7 +181,7 @@ local function drawSearch()
     g.setForeground(COLOR.SEARCH_TEXT)
     g.fill(x, y, w, 1, " ")
     local msg = "Поиск: "..(state.search=="" and "Для поиска введите название.." or state.search)
-    if unicode.len(msg) > w-3 then msg = unicode.sub(msg, 1, w-3) end
+    if unicode.len(msg) > w-3 then msg = unicode.sub(msg, 1, math.floor(w-3)) end
     g.set(x+1, y, msg)
     g.setBackground(COLOR.BG1)
 end
@@ -247,7 +247,7 @@ local function drawInput()
     g.set(x+2,y-2,state.input.prompt)
     g.setForeground(COLOR.INPUT_TEXT)
     local shown = state.input.value
-    if unicode.len(shown) > w-4 then shown = unicode.sub(shown, -w+4) end
+    if unicode.len(shown) > w-4 then shown = unicode.sub(shown, -math.floor(w-4)) end
     g.set(x+2, y, shown)
     g.setForeground(COLOR.LABEL)
     g.set(x+2+unicode.len(shown), y, "_")
