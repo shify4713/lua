@@ -16,7 +16,7 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/ultimatCraftLib-Gemini"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Проверка и загрузка ultimateOC.lua
 if not fs.exists(LIB_PATH) then
@@ -39,7 +39,7 @@ if not ok then
 end
 
 -- Передаем ссылку на GPU в библиотеку, чтобы она могла использовать g
--- Это важно, если uoc.lua использует 'gpu' напрямую, а не 'g'
+-- Это важно, так как uoc.lua теперь ожидает M.gpu
 uoc.gpu = g
 
 -- Проверка существования файла данных
@@ -78,7 +78,7 @@ local nextCraftUpdate = 0
 local isCrafting = false
 
 -- Определяем фиксированные высоты для блоков
-local HEADER_HEIGHT = 6 -- Высота хедера с прогресс-баром
+local HEADER_HEIGHT = 6 -- Высота хедера с прогресс-баром (строки 1-6)
 local LOG_LINES = 4 -- Количество строк для логов
 local LOG_HEIGHT = LOG_LINES -- Высота блока логов (по 1 строке на лог)
 local BUTTON_HEIGHT = 3 -- Высота кнопок
@@ -86,15 +86,14 @@ local SEARCH_BAR_HEIGHT = 3 -- Высота строки поиска
 local FOOTER_HEIGHT = 1 -- Зарезервированная строка внизу (не используется, но для отступов)
 
 -- Рассчитываем Y-координаты снизу вверх, чтобы избежать наложений
-local LOG_Y_START = HEIGHT - LOG_HEIGHT + 1 -- Логи начинаются с этого Y
-local BUTTON_Y = LOG_Y_START - BUTTON_HEIGHT - 1 -- Кнопки над логами, с отступом в 1 строку
-local SEARCH_BAR_Y = BUTTON_Y - SEARCH_BAR_HEIGHT - 1 -- Поиск над кнопками, с отступом в 1 строку
+local LOG_Y_START = HEIGHT - LOG_HEIGHT + 1 -- Логи начинаются с этого Y (40 - 4 + 1 = 37)
+local BUTTON_Y = LOG_Y_START - BUTTON_HEIGHT - 1 -- Кнопки над логами (37 - 3 - 1 = 33)
+local SEARCH_BAR_Y = BUTTON_Y - SEARCH_BAR_HEIGHT - 1 -- Поиск над кнопками (33 - 3 - 1 = 29)
 
 -- Начало и конец области таблицы
-local TABLE_Y_START = HEADER_HEIGHT + 2 -- Таблица начинается после хедера, с отступом в 2 строки
+local TABLE_Y_START = HEADER_HEIGHT + 2 -- Таблица начинается после хедера (6 + 2 = 8)
 -- TABLE_VISIBLE_ROWS = Y_поиска - Y_начала_таблицы - 3 строки (заголовки таблицы) - 1 отступ
-local TABLE_VISIBLE_ROWS = SEARCH_BAR_Y - TABLE_Y_START - 3 - 1
-
+local TABLE_VISIBLE_ROWS = SEARCH_BAR_Y - TABLE_Y_START - 3 - 1 -- 29 - 8 - 3 - 1 = 17 строк данных
 
 -------------------- Переменные --------------------
 local logs = {}
@@ -123,7 +122,8 @@ function addLog(text, lvl)
     lvl = lvl or "INFO"
     local t = string.format("[!] [%s] %s", lvl, text)
     table.insert(logs, t)
-    while #logs > LOG_LINES do table.remove(logs, 1) end -- Ограничиваем количество логов до LOG_LINES
+    -- Ограничиваем количество логов до LOG_LINES, удаляя старые
+    while #logs > LOG_LINES do table.remove(logs, 1) end
     drawLogs() -- Перерисовываем только логи, это помогает уменьшить мерцание
 end
 
@@ -271,6 +271,7 @@ local function drawItems()
     end
 end
 
+-- Отрисовка строки поиска
 local function drawSearchBar()
     local x, y, w, h = 3, SEARCH_BAR_Y, WIDTH-6, SEARCH_BAR_HEIGHT
     g.setBackground(COLORS.bg)
@@ -293,6 +294,7 @@ local function drawSearchBar()
     g.setForeground(COLORS.text)
 end
 
+-- Отрисовка кнопок
 local function drawButtons()
     local btns = {
         {name="Удалить", x=WIDTH-60, tip="Удалить выбранный предмет из списка"},
@@ -312,12 +314,14 @@ local function drawButtons()
     end
 end
 
+-- Отрисовка футера (пустая строка внизу)
 local function drawFooter()
     g.setBackground(COLORS.bg)
     g.fill(1, HEIGHT - FOOTER_HEIGHT + 1, WIDTH, FOOTER_HEIGHT, " ")
     g.setForeground(COLORS.text)
 end
 
+-- Отрисовка всплывающей подсказки
 function drawTooltip()
     if tooltip and tooltip ~= "" and os.time() - tooltipTimeout >= 0.5 then
         local tipWidth = unicode.len(tooltip) + 4
@@ -339,10 +343,11 @@ function drawTooltip()
     else
         -- Очищаем только ту область, где могла быть подсказка
         g.setBackground(COLORS.bg)
-        g.fill(WIDTH - 20, 1, 20, 3, " ")
+        g.fill(WIDTH - 20, 1, 20, 3, " ") -- Примерная область для очистки подсказки
     end
 end
 
+-- Главная функция отрисовки всего интерфейса
 function draw()
     -- Ограничиваем частоту перерисовки для уменьшения мерцания
     if computer.uptime() - lastDrawTime < 0.1 then return end
@@ -395,7 +400,9 @@ end
 
 local function addItem()
     changeitem = true
-    clearScreen() -- Очистка для режима ввода
+    hoveredButton = nil -- Сбрасываем состояние наведенной кнопки
+    draw() -- Обновляем UI, чтобы убрать выделение с кнопки и показать чистый экран для ввода
+
     uoc.drawText(10,HEIGHT-9,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
 
     uoc.drawText(10,HEIGHT-8,"Название: ",COLORS.text)
@@ -434,7 +441,9 @@ local function editItem()
     if not item then return addLog("Выбранный предмет не существует (возможно, был удален).","ERROR") end
 
     changeitem = true
-    clearScreen() -- Очистка для режима ввода
+    hoveredButton = nil -- Сбрасываем состояние наведенной кнопки
+    draw() -- Обновляем UI, чтобы убрать выделение с кнопки и показать чистый экран для ввода
+
     uoc.drawText(10,HEIGHT-9,"Изменение: "..(item.name or "<??>"),COLORS.ok)
 
     uoc.drawText(10,HEIGHT-8,"Новое имя (Enter пропустить): ",COLORS.text)
@@ -559,7 +568,7 @@ end
 event.listen("touch", function(_,_,x,y,_,_)
     if changeitem then return end
 
-    hoveredButton = nil
+    hoveredButton = nil -- Сбрасываем наведение при клике
     tooltip = ""
 
     local btns = {
