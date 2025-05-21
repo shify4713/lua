@@ -1,3 +1,4 @@
+--wget -f https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua /lib/ultimateOC.lua
 local component = require("component")
 local fs = require("filesystem")
 local shell = require("shell")
@@ -13,7 +14,7 @@ local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
 local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
--- Подгрузка библиотеки
+-- Загрузка либы ultimateOC
 if not fs.exists(LIB_PATH) then
     shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
 end
@@ -42,6 +43,10 @@ local COLORS = {
     progress_fg = 0x50FA7B,
     select = 0x23262E,
     select_active = 0x44B3FF,
+    search_bg = 0x23262E,
+    search_border = 0x00BFFF,
+    search_cross = 0xFF5555,
+    search_hint = 0x888888,
 }
 local WIDTH, HEIGHT = 110, 40
 local craftStatus = "Ожидание..."
@@ -55,6 +60,7 @@ local search = ""
 local selectedItem = nil
 local itemScroll = 1
 local changeitem = false
+local searchActive = false -- для фокуса на поле поиска
 
 -------------------- Визуал --------------------
 local function clear()
@@ -87,15 +93,39 @@ local function drawItems()
         local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem])
         uoc.selectLine(3, y, 100, (it.name or "<?>"), isSel, COLORS.select, COLORS.select_active, COLORS.text)
         g.setForeground(COLORS.text)
-        g.set(40, y, tostring(it.current or 0))
-        g.set(55, y, tostring(it.count or 0))
-        g.set(70, y, tostring(it.craftSize or 0))
+        g.set(40, y, tostring(tonumber(it.current) or 0))
+        g.set(55, y, tostring(tonumber(it.count) or 0))
+        g.set(70, y, tostring(tonumber(it.craftSize) or 0))
         y = y + 1
     end
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
-    local hint = (search == "" and "Поиск: (введите часть названия...)" or "Поиск: "..search)
-    uoc.drawText(3,HEIGHT-10, hint, COLORS.text)
+end
+
+local function drawSearchBar()
+    local x, y, w, h = 3, HEIGHT-10, 60, 3
+    -- Рамка и фон
+    uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
+    g.setBackground(COLORS.search_bg)
+    g.fill(x+1, y+1, w-2, h-2, " ")
+    -- Крестик для сброса
+    g.setForeground(COLORS.search_cross)
+    g.set(x+w-3, y+1, (search ~= "" and "×" or " "))
+    -- Само поле
+    g.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
+    local display = search
+    if display=="" then display = "Поиск: введите часть названия..." end
+    -- Отрисовка курсора если поиск активен
+    if searchActive then
+        display = display .. "_"
+    end
+    local maxlen = w-7
+    if unicode.len(display) > maxlen then
+        display = unicode.sub(display, unicode.len(display)-maxlen+2)
+    end
+    g.set(x+2, y+1, display)
+    g.setBackground(COLORS.bg)
+    g.setForeground(COLORS.text)
 end
 
 local function drawButtons()
@@ -109,6 +139,7 @@ local function draw()
     clear()
     drawHeader()
     drawItems()
+    drawSearchBar()
     drawButtons()
     drawLogs()
 end
@@ -119,13 +150,19 @@ local function reload()
     dataItems = ok and res or {}
     for _,item in ipairs(dataItems) do
         local ok2, d = pcall(me.getItemDetail, {id = item.id, dmg = item.dmg})
-        item.current = (ok2 and d and d.qty) or 0
+        item.current = (ok2 and d and tonumber(d.qty)) or 0
     end
 end
 
 local function save()
     local ok, err = pcall(uoc.savef, DATA_FILE, dataItems)
     if not ok then uoc.addLog(logs, "Ошибка сохранения: "..tostring(err), "ERROR") end
+end
+
+local function resetSelection()
+    search = ""
+    itemScroll = 1
+    selectedItem = nil
 end
 
 local function addItem()
@@ -137,10 +174,10 @@ local function addItem()
     local name = tostring(io.read())
     uoc.drawText(10,HEIGHT-5,"Держать (число): ",COLORS.text)
     term.setCursor(29,HEIGHT-5)
-    local count = tonumber(io.read())
+    local count = tonumber(io.read()) or 0
     uoc.drawText(10,HEIGHT-4,"Крафт за раз (число): ",COLORS.text)
     term.setCursor(32,HEIGHT-4)
-    local craftSize = tonumber(io.read())
+    local craftSize = tonumber(io.read()) or 1
     local stack = nil
     local ok, res = pcall(me.getStackInSlot, 1)
     if ok then stack = res end
@@ -152,13 +189,14 @@ local function addItem()
         uoc.addLog(logs, "Ошибка: нет предмета в слоте 1!","ERROR")
     end
     changeitem = false
+    resetSelection()
 end
 
 local function editItem()
     if not selectedItem then return uoc.addLog(logs,"Не выбран предмет!","ERROR") end
     local item = dataItems[selectedItem]
     clear()
-    uoc.drawText(10,HEIGHT-7,"Изменение: "..item.name,COLORS.ok)
+    uoc.drawText(10,HEIGHT-7,"Изменение: "..(item.name or "<??>"),COLORS.ok)
     uoc.drawText(10,HEIGHT-6,"Новое имя (Enter пропустить): ",COLORS.text)
     term.setCursor(40,HEIGHT-6)
     local name = tostring(io.read())
@@ -173,11 +211,13 @@ local function editItem()
     if cs then item.craftSize = cs end
     save()
     uoc.addLog(logs, "Изменено: "..item.name,"INFO")
+    changeitem = false
+    resetSelection()
 end
 
 local function removeItem()
     if not selectedItem then return uoc.addLog(logs,"Не выбран предмет!","ERROR") end
-    uoc.addLog(logs, "Удалён: "..dataItems[selectedItem].name,"WARN")
+    uoc.addLog(logs, "Удалён: "..(dataItems[selectedItem].name or "<??>"),"WARN")
     table.remove(dataItems,selectedItem)
     selectedItem = nil
     save()
@@ -204,10 +244,10 @@ local function autoCraftLoop()
             if now >= nextCraftUpdate then
                 reload()
                 for i, item in ipairs(dataItems) do
-                    local ok, details = pcall(me.getItemDetail, {id=item.id, dmg=item.dmg})
-                    details = ok and details or {qty=0}
-                    item.current = details.qty or 0
-                    if item.current < (item.count or 0) then
+                    local count = tonumber(item.count) or 0
+                    local craftSize = tonumber(item.craftSize) or 1
+                    local current = tonumber(item.current) or 0
+                    if current < count then
                         -- Автоматический выбор свободного CPU
                         local ok2, cpus = pcall(me.getCpus)
                         cpus = ok2 and cpus or {}
@@ -219,18 +259,20 @@ local function autoCraftLoop()
                             local ok3, craftables = pcall(me.getCraftables, {name=item.id, damage=item.dmg})
                             craftables = ok3 and craftables or {n=0}
                             if craftables.n and craftables.n >= 1 then
-                                local delta = math.min(item.craftSize or 1, item.count-item.current)
-                                local succ, req = pcall(function() return craftables[1].request(delta, false, freeCpu) end)
-                                if succ and req then
-                                    craftStatus = "Крафт: "..item.name
-                                    uoc.addLog(logs, "Крафт "..delta.."x "..item.name.." на CPU "..tostring(freeCpu),"INFO")
-                                else
-                                    craftStatus = "Ошибка: запрос крафта"
-                                    uoc.addLog(logs, "Ошибка: не удалось отправить крафт "..item.name,"ERROR")
+                                local delta = math.min(craftSize, count - current)
+                                if delta > 0 then
+                                    local succ, req = pcall(function() return craftables[1].request(delta, false, freeCpu) end)
+                                    if succ and req then
+                                        craftStatus = "Крафт: "..(item.name or "<??>")
+                                        uoc.addLog(logs, "Крафт "..delta.."x "..(item.name or "<??>").." на CPU "..tostring(freeCpu),"INFO")
+                                    else
+                                        craftStatus = "Ошибка: запрос крафта"
+                                        uoc.addLog(logs, "Ошибка: не удалось отправить крафт "..(item.name or "<??>"),"ERROR")
+                                    end
                                 end
                             else
-                                craftStatus = "Ошибка: нет рецепта "..item.name
-                                uoc.addLog(logs, "Ошибка: нет рецепта "..item.name,"ERROR")
+                                craftStatus = "Ошибка: нет рецепта "..(item.name or "<??>")
+                                uoc.addLog(logs, "Ошибка: нет рецепта "..(item.name or "<??>"),"ERROR")
                             end
                         else
                             craftStatus = "Ошибка: нет свободных CPU"
@@ -262,6 +304,24 @@ event.listen("touch", function(_,_,x,y,_,_)
             removeItem()
         end
     end
+    -- Поле поиска (60x3, левый верхний угол 3,HEIGHT-10)
+    if y >= HEIGHT-10 and y <= HEIGHT-8 then
+        searchActive = false
+        -- Клик по кресту
+        if x >= 3+60-3 and x <= 3+60-1 and search ~= "" then
+            search = ""
+            draw()
+            return
+        end
+        -- Клик по полю поиска
+        if x >= 3+1 and x <= 3+60-4 then
+            searchActive = true
+            draw()
+            return
+        end
+    else
+        searchActive = false
+    end
     -- Список предметов (выбор)
     if y >= 7 and y <= 30 then
         local showItems = uoc.filterItems(dataItems, search)
@@ -278,16 +338,22 @@ end)
 event.listen("key_down", function(_,_,key,_,_)
     if changeitem then return end
     local showItems = uoc.filterItems(dataItems, search)
-    if key == 200 then -- up
-        itemScroll = math.max(1,itemScroll-1)
-    elseif key == 208 then -- down
-        itemScroll = math.min(math.max(1,#showItems-23),itemScroll+1)
-    elseif key == 14 then -- backspace
-        search = search:sub(1,-2)
-    elseif key == 28 then -- enter
-        -- не используется (можно для быстрого крафта)
-    elseif key >= 32 and key < 128 then
-        search = search .. unicode.char(key)
+    if searchActive then
+        if key == 14 then -- backspace
+            search = search:sub(1,-2)
+        elseif key == 211 then -- delete
+            search = ""
+        elseif key >= 32 and key < 128 then
+            if unicode.len(search) < 55 then
+                search = search .. unicode.char(key)
+            end
+        end
+    else
+        if key == 200 then -- up
+            itemScroll = math.max(1,itemScroll-1)
+        elseif key == 208 then -- down
+            itemScroll = math.min(math.max(1,#showItems-23),itemScroll+1)
+        end
     end
     draw()
 end)
