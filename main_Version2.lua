@@ -1,4 +1,4 @@
--- main.lua — основной цикл, интеграция, обработка событий, рендер
+-- PreCraft ULTIMATE (OpenComputers) - Новый main.lua без ADM, playerName и багов ввода
 
 local ui = require("ui")
 local storage = require("storage")
@@ -34,7 +34,7 @@ local state = {
   input = {active=false, value="", prompt="", action=nil, next=nil, params={}},
   go = false, error = nil, filtered = {}, maxscroll = 1,
   redraw = true, hover = {btn=nil, item=nil, tab=nil, search=false},
-  logScroll = 1, btns = {}, itemHit = {}, chBtnHit={}, searchHit=nil
+  logScroll = 1, btns = {}, itemHit = {}, searchHit=nil
 }
 
 local function now_msk()
@@ -43,13 +43,13 @@ local function now_msk()
   local t = os.date("*t", msk)
   return string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
 end
+
 local function log(kind, msg)
   table.insert(state.logs, {kind=kind, time=now_msk(), msg=msg})
   if #state.logs>40 then table.remove(state.logs,1) end
   state.redraw=true
 end
 
--- === Интерфейс, рисуем всё
 local function render()
   gpu.setBackground(COLORS.bg); gpu.setForeground(COLORS.fg)
   gpu.fill(1,1,WIDTH,HEIGHT," ")
@@ -137,7 +137,17 @@ local function render()
   gpu.setForeground(COLORS.fg)
   -- Модальное окно
   if state.input.active then
-    ui.inputModal(WIDTH, HEIGHT, COLORS, state.input.prompt, state.input.value)
+    -- Простая модалка: рисуем тёмное окно, prompt и текущий ввод
+    local mw, mh = 50, 5
+    local mx, my = math.floor(WIDTH/2-mw/2), math.floor(HEIGHT/2-mh/2)
+    gpu.setBackground(COLORS.input_bg)
+    gpu.setForeground(COLORS.input_fg)
+    gpu.fill(mx, my, mw, mh, " ")
+    ui.border(mx, my, mw, mh, COLORS.input_border)
+    gpu.set(mx+2, my+1, state.input.prompt or "")
+    gpu.set(mx+2, my+2, state.input.value or "")
+    gpu.setBackground(COLORS.bg)
+    gpu.setForeground(COLORS.fg)
   end
   -- Ошибки
   if state.error then
@@ -245,7 +255,7 @@ local function handleTouch(_,_,x,y)
         if b.action=="add" then
           askInput("Имя предмета:","add_name","")
         elseif b.action=="edit" and state.filtered[state.select] then
-          state.tab=2; state.redraw=true
+          askInput("Новое имя:","edit_name",state.filtered[state.select].name)
         elseif b.action=="del" and state.filtered[state.select] then
           table.remove(state.data,state.select)
           storage.save(PATH, state.data)
@@ -262,19 +272,6 @@ local function handleTouch(_,_,x,y)
   if state.tab==1 and state.itemHit then
     for _,b in ipairs(state.itemHit) do
       if x>=b.x1 and x<=b.x2 and y==b.y then state.select=b.idx; state.redraw=true; return end
-    end
-  end
-  -- Редактирование
-  if state.tab==2 then
-    local v = state.filtered[state.select]
-    if not v then return end
-    local x, y, w, h = 84, 13, 65, 14
-    local cx = x+3; local cy = y+9
-    if x<=x and y<=y and x<=x+w and y<=y+h then
-      if x>=cx and x<=cx+19 and y==cy then askInput("Новое имя:","edit_name",v.name)
-      elseif x>=cx+22 and x<=cx+41 and y==cy then askInput("Новое количество:","edit_count",tostring(v.count))
-      elseif x>=cx+44 and x<=cx+63 and y==cy then askInput("Новый размер крафта:","edit_craft",tostring(v.craftSize))
-      elseif x>=cx+60 and y==cy then state.tab=1; state.redraw=true end
     end
   end
 end
