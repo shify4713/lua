@@ -1,14 +1,11 @@
--- PreCraft ULTIMATE (2025, оптимизированная версия, только LiwMorgan админ)
 local component = require("component")
 local event = require("event")
 local unicode = require("unicode")
 local fs = require("filesystem")
-local shell = require("shell")
 local serialization = require("serialization")
 
 local gpu = assert(component.gpu, "GPU не найден")
 local me = assert(component.me_interface, "ME интерфейс не найден")
-
 local WIDTH, HEIGHT = 160, 50
 gpu.setResolution(WIDTH, HEIGHT)
 
@@ -24,7 +21,6 @@ local ADM = {['LiwMorgan']=true}
 local DATA_PATH = "/home/BD.txt"
 local LOG_PATH = "/home/PCU.log"
 
--- === Утилиты ===
 local function safeLoadTable(path)
     if not fs.exists(path) then return {} end
     local f = io.open(path, "r")
@@ -64,7 +60,6 @@ local function clamp(val, min, max)
     return val
 end
 
--- === Состояние ===
 local state = {
     tab = "main", -- main/change/log
     data = {},
@@ -86,7 +81,6 @@ local state = {
     }
 }
 
--- === Инициализация файлов ===
 if not fs.exists(DATA_PATH) then safeSaveTable(DATA_PATH, {}) end
 if not fs.exists(LOG_PATH) then
     local f = io.open(LOG_PATH, "w") if f then f:close() end
@@ -94,7 +88,6 @@ end
 state.data = safeLoadTable(DATA_PATH)
 state.logs = safeLoadTable(LOG_PATH)
 
--- === Графика ===
 local function clear()
     gpu.setBackground(COLOR.BG)
     gpu.fill(1, 1, WIDTH, HEIGHT, " ")
@@ -154,6 +147,7 @@ local function drawMainTable()
     state.maxscroll = math.max(1, #filtered-maxshow+1)
     state.select = clamp(state.select, 1, #filtered)
     state.scroll = clamp(state.scroll, 1, state.maxscroll)
+    state.itemHitboxes = {}
     for i=state.scroll,math.min(#filtered,state.scroll+maxshow-1) do
         local v = filtered[i]
         local y = 7 + (i-state.scroll)
@@ -163,6 +157,7 @@ local function drawMainTable()
         gpu.set(xCount, y, tostring(v.count or ""))
         gpu.set(xCraft, y, tostring(v.craftSize or ""))
         gpu.set(xSel, y, i==state.select and "<--" or "")
+        state.itemHitboxes[#state.itemHitboxes+1] = {x1=xName, x2=xSel+8, y=y, index=i}
     end
     gpu.setBackground(COLOR.BG)
     gpu.setForeground(COLOR.TEXT)
@@ -265,7 +260,6 @@ local function render()
     state.redraw = false
 end
 
--- === Логика ===
 local function saveAll()
     safeSaveTable(DATA_PATH, state.data)
 end
@@ -314,7 +308,6 @@ local function commitInput()
     refresh()
 end
 
--- === Обработка событий ===
 local function handleKeyDown(_, _, _, key, chr)
     if state.input.active then
         if key==13 then commitInput()
@@ -322,7 +315,7 @@ local function handleKeyDown(_, _, _, key, chr)
             if #state.input.value > 0 then
                 state.input.value = unicode.sub(state.input.value,1,unicode.len(state.input.value)-1)
             end
-        elseif chr and unicode.len(state.input.value)<48 then
+        elseif chr and type(chr)=="string" and unicode.len(state.input.value)<48 then
             state.input.value = state.input.value .. chr
         end
         state.redraw = true
@@ -333,16 +326,12 @@ local function handleKeyDown(_, _, _, key, chr)
         if key==208 then state.select=clamp(state.select+1,1,#state.filtered) state.redraw=true end
         if key==203 and state.scroll>1 then state.scroll=state.scroll-1 state.redraw=true end
         if key==205 and state.scroll<state.maxscroll then state.scroll=state.scroll+1 state.redraw=true end
-        if state.searchBox then
-            if key==8 then
-                if #state.search > 0 then
-                    state.search = unicode.sub(state.search,1,unicode.len(state.search)-1)
-                    state.redraw=true
-                end
-            elseif chr then
-                state.search = state.search .. chr
-                state.redraw=true
-            end
+        if key==8 and #state.search > 0 then
+            state.search = unicode.sub(state.search,1,unicode.len(state.search)-1)
+            state.redraw=true
+        elseif chr and type(chr)=="string" then
+            state.search = state.search .. chr
+            state.redraw=true
         end
         if key==13 then state.tab="change" state.redraw=true end
     end
@@ -354,7 +343,7 @@ end
 
 local function handleTouch(_, _, x, y, _, playerName)
     if not ADM[playerName] then return end
-    -- вкладки
+    -- Вкладки
     for _,tab in ipairs(state.tabHitboxes or {}) do
         if y == tab.y and x >= tab.x1 and x <= tab.x2 then
             state.tab = tab.key
@@ -362,13 +351,13 @@ local function handleTouch(_, _, x, y, _, playerName)
             return
         end
     end
-    -- поиск
+    -- Поиск
     if state.tab == "main" and state.searchBox and y == state.searchBox.y and x >= state.searchBox.x1 and x <= state.searchBox.x2 then
         askInput("Поиск:", "search", state.search)
         state.redraw = true
         return
     end
-    -- кнопки
+    -- Кнопки
     for _,btn in ipairs(state.buttons or {}) do
         if y == btn.y and x >= btn.x and x <= btn.x2 then
             if btn.action=="add" then
@@ -385,11 +374,24 @@ local function handleTouch(_, _, x, y, _, playerName)
             return
         end
     end
+    -- Клик по предмету — выбор
+    if state.tab == "main" then
+        for _,box in ipairs(state.itemHitboxes or {}) do
+            if y == box.y and x >= box.x1 and x <= box.x2 then
+                state.select = box.index
+                state.redraw = true
+                return
+            end
+        end
+    end
 end
 
 local function mainloop()
     event.listen("touch", handleTouch)
-    event.listen("key_down", function(...) handleKeyDown(...) end)
+    event.listen("key_down", function(_, _, _, key, chr)
+        if chr and type(chr)~="string" then chr = nil end
+        handleKeyDown(nil, nil, nil, key, chr)
+    end)
     while true do
         if state.redraw then render() end
         os.sleep(0.05)
