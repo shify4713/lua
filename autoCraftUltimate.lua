@@ -13,7 +13,6 @@ local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
 local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
--- Загрузка либы ultimateOC
 if not fs.exists(LIB_PATH) then
     shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
 end
@@ -27,10 +26,11 @@ if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {})
 end
 
--------------------- Время по МСК (без интернета) --------------------
-local function getMSKTime()
-    -- os.time() возвращает UNIX-время в UTC
-    local t = os.date("!*t", os.time() + 3*3600) -- +3 часа для МСК
+-------------------- Реальное мировое время по Киеву (UTC+3, без кеша) --------------------
+local function getKyivTime()
+    -- Используем настоящее реальное время системы и корректируем под Киев (UTC+3 летом)
+    -- Если OpenOS на сервере с RTC, то это будет действительно мировое время, иначе локальное
+    local t = os.date("!*t", os.time() + 3*3600) -- Киевское время (UTC+3)
     return string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
 end
 
@@ -77,7 +77,7 @@ local tooltipTimeout = 0
 -------------------- Логгирование с реальным временем --------------------
 local function addLog(logs, text, lvl)
     lvl = lvl or "INFO"
-    local now = getMSKTime()
+    local now = getKyivTime()
     local t = string.format("[%s][%s] %s", now, lvl, text)
     table.insert(logs, t)
     while #logs > 50 do table.remove(logs, 1) end
@@ -113,13 +113,14 @@ local function drawLogs()
 end
 
 local function drawItems()
-    -- Размеры столбцов
-    local x, y = 4, 7
-    local col_name = 36
-    local col_now = 12
-    local col_hold = 14
-    local col_once = 14
-    local width = col_name + col_now + col_hold + col_once + 5
+    -- Динамически растягиваем таблицу почти на весь экран
+    local x, y = 2, 7
+    local totalWidth = WIDTH-4
+    -- Пропорции: Название:В наличии:Держать:За раз = 3:1:1:1 (примерно)
+    local col_name = math.floor(totalWidth * 0.46)
+    local col_now = math.floor(totalWidth * 0.18)
+    local col_hold = math.floor(totalWidth * 0.18)
+    local col_once = totalWidth - col_name - col_now - col_hold
 
     -- Верх рамки
     g.setForeground(COLORS.select_active)
@@ -147,7 +148,7 @@ local function drawItems()
 
     -- Строки предметов
     local showItems = uoc.filterItems(dataItems, search)
-    local perPage = 18
+    local perPage = HEIGHT-24
     for i = itemScroll, math.min(#showItems, itemScroll+perPage-1) do
         local it = showItems[i]
         local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem])
@@ -190,7 +191,7 @@ local function drawItems()
 end
 
 local function drawSearchBar()
-    local x, y, w, h = 3, HEIGHT-10, 60, 3
+    local x, y, w, h = 3, HEIGHT-10, WIDTH-6, 3
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
     g.fill(x+1, y+1, w-2, h-2, " ")
@@ -267,7 +268,6 @@ local function reload()
                 end
             end
         else
-            -- на крайняк через getItemDetail
             local ok2, d = pcall(me.getItemDetail, {id = item.id, dmg = item.dmg})
             if ok2 and d then
                 qty = d.qty or d.size or 0
@@ -450,15 +450,15 @@ event.listen("touch", function(_,_,x,y,_,_)
             return
         end
     end
-    -- Поле поиска (60x3, левый верхний угол 3,HEIGHT-10)
+    -- Поле поиска (WIDTH-6 x 3, левый верхний угол 3,HEIGHT-10)
     if y >= HEIGHT-10 and y <= HEIGHT-8 then
         searchActive = false
-        if x >= 3+60-3 and x <= 3+60-1 and search ~= "" then
+        if x >= 3+(WIDTH-6)-3 and x <= 3+(WIDTH-6)-1 and search ~= "" then
             search = ""
             draw()
             return
         end
-        if x >= 3+1 and x <= 3+60-4 then
+        if x >= 3+1 and x <= 3+(WIDTH-6)-4 then
             searchActive = true
             draw()
             return
@@ -468,7 +468,7 @@ event.listen("touch", function(_,_,x,y,_,_)
     end
     -- Список предметов (выбор)
     local showItems = uoc.filterItems(dataItems, search)
-    local perPage = 18
+    local perPage = HEIGHT-24
     local itemsStartY = 10
     local itemsEndY = itemsStartY + perPage - 1
     if y >= itemsStartY and y <= itemsEndY then
@@ -508,18 +508,17 @@ end)
 event.listen("key_down", function(_,_,key,_,_)
     if changeitem then return end
     local showItems = uoc.filterItems(dataItems, search)
-    local perPage = 18
+    local perPage = HEIGHT-24
     if searchActive then
         if key == 14 then -- backspace
             search = search:sub(1,-2)
         elseif key == 211 then -- delete
             search = ""
         elseif key >= 32 and key < 128 then
-            if unicode.len(search) < 55 then
+            if unicode.len(search) < WIDTH-15 then
                 search = search .. unicode.char(key)
             end
         end
-        -- Сбросить скроллинг при новом поиске
         itemScroll = 1
     else
         if key == 200 then -- up
