@@ -1,0 +1,418 @@
+-- Обменник руды: финал с автосохранением и автовыбором адаптеров, современной цветовой схемой и надёжным обменом
+
+local com = require("component")
+local event = require("event")
+local unicode = require("unicode")
+local fs = require("filesystem")
+local db = com.isAvailable("database") and com.database or error("нет базы данных")
+local gpu = com.gpu
+local os = require("os")
+
+-- Цвета
+local COLOR_BG       = 0x1e1e1e
+local COLOR_HEADER   = 0x00aaff
+local COLOR_HEADER_INACTIVE = 0x3686cc
+local COLOR_TEXT     = 0xcccccc
+local COLOR_OK       = 0x6ec17f
+local COLOR_ALERT    = 0xffd166
+local COLOR_ERROR    = 0xef476f
+local COLOR_COLUMN   = 0x90caf9
+local COLOR_BTN      = 0x0099ff
+local COLOR_BTN_SEL  = 0xffd166
+
+gpu.setResolution(65, 25)
+local w, h = gpu.getResolution()
+local save_file = "/etc/ore_exchange_adapters.cfg"
+
+local logs = {}
+local logScroll = 0
+local showTab = "events"
+local needRedrawMain = true
+local needRedrawLogs = true
+
+local LOG_LIMIT = 500
+
+local stats = {
+    exchanged = {},
+    returned = {},
+}
+
+local items = {
+    {count = "2.5", displayNameOre = "Медная",oreId = "IC2:copperOre", oreDmg = "0", productId = "ThermalFoundation:material", productDmg = "64", displayNameProduct = "Медный слиток", ore_dict_product = "ingotCopper"},
+    {count = "8", displayNameOre = "Красная",oreId = "minecraft:redstone_ore", oreDmg = "0", productId = "minecraft:redstone", productDmg = "0", displayNameProduct = "Красная пыль", ore_dict_product = "dustRedstone"},
+    {count = "2.5", displayNameOre = "Золотая",oreId = "minecraft:gold_ore", oreDmg = "0", productId = "minecraft:gold_ingot", productDmg = "0", displayNameProduct = "Золотой слиток", ore_dict_product = "ingotGold"},
+    {count = "2.5", displayNameOre = "Железная",oreId = "minecraft:iron_ore", oreDmg = "0", productId = "minecraft:iron_ingot", productDmg = "0", displayNameProduct = "Железный слиток", ore_dict_product = "ingotIron"},
+    {count = "2.5", displayNameOre = "Алмазная", oreId = "minecraft:diamond_ore", oreDmg = "0", productId = "minecraft:diamond", productDmg = "0", displayNameProduct = "Алмаз", ore_dict_product = "gemDiamond"},
+    {count = "2.5", displayNameOre = "Угольная",oreId = "minecraft:coal_ore", oreDmg = "0", productId = "minecraft:coal", productDmg = "0", displayNameProduct = "Уголь", ore_dict_product = "coal"},
+    {count = "2", displayNameOre = "Ториевая",oreId = "dwcity:Thorium_ore", oreDmg = "0", productId = "dwcity:Thorium_ingot", productDmg = "0", displayNameProduct = "Ториевый слиток", ore_dict_product = "Thorium_ingot"},
+    {count = "2.5", displayNameOre = "Оловянная",oreId = "IC2:tinOre", oreDmg = "0", productId = "ThermalFoundation:material", productDmg = "65", displayNameProduct = "Оловяный слиток", ore_dict_product = "ingotTin"},
+    {count = "2.5", displayNameOre = "Свинцовая",oreId = "ThermalFoundation:Ore", oreDmg = "3", productId = "ThermalFoundation:material", productDmg = "67", displayNameProduct = "Свинцовый слиток", ore_dict_product = "ingotLead"},
+    {count = "2.5", displayNameOre = "Никелевая",oreId = "ThermalFoundation:Ore", oreDmg = "4", productId = "ThermalFoundation:material", productDmg = "68", displayNameProduct = "Никелевый слиток", ore_dict_product = "ingotNickel"},
+    {count = "2.5", displayNameOre = "Кварцевая",oreId = "minecraft:quartz_ore", oreDmg = "0", productId = "minecraft:quartz", productDmg = "0", displayNameProduct = "Кварц", ore_dict_product = "gemQuartz"},
+    {count = "2.5", displayNameOre = "Изумрудная", oreId = "minecraft:emerald_ore", oreDmg = "0", productId = "minecraft:emerald", productDmg = "0", displayNameProduct = "Изумруд", ore_dict_product = "gemEmerald"},
+    {count = "2.5", displayNameOre = "Серебряная",oreId = "ThermalFoundation:Ore", oreDmg = "2", productId = "ThermalFoundation:material", productDmg = "66", displayNameProduct = "Серебряный слиток", ore_dict_product = "ingotSilver"},
+    {count = "2.0", displayNameOre = "Платиновая",oreId = "ThermalFoundation:Ore", oreDmg = "5", productId = "ThermalFoundation:material", productDmg = "69", displayNameProduct = "Платиновый слиток", ore_dict_product = "ingotPlatinum"},
+    {count = "8", displayNameOre = "Лазуритовая",oreId = "minecraft:lapis_ore", oreDmg = "0", productId = "minecraft:dye", productDmg = "4", displayNameProduct = "Лазурит", ore_dict_product = "dye"},
+    {count = "2.0", displayNameOre = "Дракониевая", oreId = "DraconicEvolution:draconiumOre", oreDmg = "0", productId = "DraconicEvolution:draconiumIngot", productDmg = "0", displayNameProduct = "Дракониевая пыль", ore_dict_product = "ingotDraconium"},
+    {count = "2.5", displayNameOre = "Истинного кварца",oreId = "appliedenergistics2:tile.OreQuartz", oreDmg = "0", productId = "appliedenergistics2:item.ItemMultiMaterial", productDmg = "0", displayNameProduct = "Истинный кварц", ore_dict_product = "crystalCertusQuartz"}
+}
+
+local adapters = {buffer=nil, check=nil, interface=nil}
+
+local function save_adapters()
+    local file = io.open(save_file, "w")
+    if not file then return end
+    for k,v in pairs(adapters) do
+        if v and v.address then file:write(k.."="..v.address.."\n") end
+    end
+    file:close()
+end
+
+local function load_adapters()
+    if not fs.exists(save_file) then return end
+    for line in io.lines(save_file) do
+        local k,v = line:match("^(%w+)=(.+)$")
+        if k and v and com.isAvailable(v) then
+            adapters[k] = com.proxy(v)
+        end
+    end
+end
+
+-- Автовыбор первого попавшегося адаптера нужного типа
+local function auto_choose_adapter(kind, ctype)
+    for address in com.list(ctype) do
+        adapters[kind] = com.proxy(address)
+        save_adapters()
+        return true
+    end
+    return false
+end
+
+local function add_log(msg, color)
+    table.insert(logs, {msg=msg, color=color or COLOR_TEXT})
+    if #logs > LOG_LIMIT then table.remove(logs, 1) end
+    needRedrawLogs = true
+end
+
+local function color_text(x, y, text, color)
+    gpu.setForeground(color)
+    gpu.set(x, y, text)
+end
+
+local function drawLogsTabs()
+    local tabList = {
+        {key="events", text="Последние события"},
+        {key="exchanged", text="Обменяно"},
+        {key="returned", text="Возвращено"}
+    }
+    local x = 4
+    for i,tab in ipairs(tabList) do
+        local tabText = "["..tab.text.."]"
+        gpu.setForeground(showTab==tab.key and COLOR_HEADER or COLOR_HEADER_INACTIVE)
+        gpu.set(x, 2, tabText)
+        tabList[i].x1 = x
+        tabList[i].x2 = x + unicode.len(tabText) - 1
+        tabList[i].y = 2
+        x = x + unicode.len(tabText) + 2
+    end
+    gpu.setForeground(COLOR_TEXT)
+    return tabList
+end
+
+local function drawLogsButton()
+    local btnText = "[К обмену]"
+    local btnY = h-2
+    local btnX = math.floor(w/2 - unicode.len(btnText)/2)
+    gpu.setForeground(COLOR_BTN)
+    gpu.set(btnX, btnY, btnText)
+    gpu.setForeground(COLOR_TEXT)
+    return {x1=btnX, x2=btnX+unicode.len(btnText)-1, y1=btnY, y2=btnY}
+end
+
+local function draw_logs()
+    gpu.setBackground(COLOR_BG)
+    gpu.fill(1,1,w,h," ")
+    local tabList = drawLogsTabs()
+    local y = 4
+
+    if showTab == "events" then
+        gpu.setForeground(COLOR_HEADER)
+        gpu.set(math.floor(w/2-8), y, "Журнал событий")
+        y = y + 2
+        local linesToShow = h - y - 2
+        local total = #logs
+        if logScroll > total - linesToShow then logScroll = math.max(0, total - linesToShow) end
+        if logScroll < 0 then logScroll = 0 end
+        for i = 1, linesToShow do
+            local idx = total - logScroll - linesToShow + i
+            if idx > 0 and logs[idx] then
+                gpu.setForeground(logs[idx].color or COLOR_TEXT)
+                gpu.set(4, y, logs[idx].msg)
+                y = y + 1
+            end
+        end
+    elseif showTab == "exchanged" then
+        gpu.setForeground(COLOR_HEADER)
+        gpu.set(math.floor(w/2-7), y, "Обменяно руды")
+        y = y + 2
+        local oreList = {}
+        for name, count in pairs(stats.exchanged) do table.insert(oreList, {name=name, count=count}) end
+        table.sort(oreList, function(a,b) return a.name < b.name end)
+        local linesToShow = h - y - 2
+        for i=1,math.min(linesToShow,#oreList) do
+            local entry = oreList[i]
+            gpu.setForeground(COLOR_OK)
+            gpu.set(6, y, string.format("%-20s: x%d", entry.name, entry.count))
+            y = y + 1
+        end
+    elseif showTab == "returned" then
+        gpu.setForeground(COLOR_HEADER)
+        gpu.set(math.floor(w/2-8), y, "Возвращено в буфер")
+        y = y + 2
+        local retList = {}
+        for name, count in pairs(stats.returned) do table.insert(retList, {name=name, count=count}) end
+        table.sort(retList, function(a,b) return a.name < b.name end)
+        local linesToShow = h - y - 2
+        for i=1,math.min(linesToShow,#retList) do
+            local entry = retList[i]
+            gpu.setForeground(COLOR_ALERT)
+            gpu.set(6, y, string.format("%-24s: x%d", entry.name, entry.count))
+            y = y + 1
+        end
+    end
+    drawLogsButton()
+    gpu.setForeground(COLOR_TEXT)
+    needRedrawLogs = false
+end
+
+local function print_items(cached)
+    if not needRedrawMain and cached then return end
+    gpu.setBackground(COLOR_BG)
+    gpu.fill(1,1,w,h," ")
+    local xOre = 4
+    local xCount = math.floor(w/2) - 6
+    local xStatus = xCount + 18
+    color_text(xOre,2,"Руда обмена",COLOR_COLUMN)
+    color_text(xCount,2,"Множитель",COLOR_COLUMN)
+    color_text(xStatus,2,"Статус",COLOR_COLUMN)
+    if not adapters.interface then return end
+    for i,item in ipairs(items) do
+        local y = 3 + i
+        color_text(xOre, y, string.format("%-15s", item.displayNameOre), COLOR_TEXT)
+        color_text(xCount, y, string.format("x %4s", item.count), COLOR_HEADER_INACTIVE)
+        local networkItemRaw = adapters.interface.getItemDetail({id = item.productId, dmg = tonumber(item.productDmg)})
+        if networkItemRaw then
+            local networkItem = networkItemRaw.all()
+            if networkItem.qty >= tonumber(item.count) then
+                color_text(xStatus, y, "доступно", COLOR_OK)
+            else
+                color_text(xStatus, y, "нету", COLOR_ERROR)
+            end
+        else
+            color_text(xStatus, y, "нету", COLOR_ERROR)
+        end
+    end
+    local btnText = "[Логи]"
+    local btnY = h-2
+    local btnX = math.floor(w/2 - unicode.len(btnText)/2)
+    gpu.setForeground(COLOR_BTN)
+    gpu.set(btnX, btnY, btnText)
+    gpu.setForeground(COLOR_TEXT)
+    needRedrawMain = false
+end
+
+local function find_ore(stack)
+    for _,v in ipairs(items) do
+        if stack.id == v.oreId and tostring(stack.dmg or stack.damage or 0) == v.oreDmg then
+            return v
+        end
+    end
+    return nil
+end
+
+local function is_buffer_full()
+    if not adapters.buffer then return false end
+    local bufSize = adapters.buffer.getInventorySize()
+    for slot = 1, bufSize do
+        if not adapters.buffer.getStackInSlot(slot) then
+            return false
+        end
+    end
+    return true
+end
+
+local function give_items_with_logs(ore, qty)
+    local give = math.floor(tonumber(ore.count) * qty)
+    db.clear(1)
+    adapters.interface.store({name=ore.productId, damage=tonumber(ore.productDmg)}, db.address, 1)
+    adapters.interface.setInterfaceConfiguration(1, db.address, 1, give)
+    local left = give
+    local tries = 0
+    while left > 0 do
+        while is_buffer_full() do
+            add_log("Ожидание освобождения места под слитки!", COLOR_ALERT)
+            os.sleep(1)
+        end
+        local given = adapters.interface.pushItem("UP", 1, left)
+        if given > 0 then
+            left = left - given
+            tries = 0
+        else
+            tries = tries + 1
+            os.sleep(0.25)
+        end
+    end
+    adapters.interface.setInterfaceConfiguration(1, db.address, 1, 0)
+    add_log(string.format("Обмен: %dx %s → %dx %s", qty, ore.displayNameOre, give, ore.displayNameProduct), COLOR_OK)
+    stats.exchanged[ore.displayNameOre] = (stats.exchanged[ore.displayNameOre] or 0) + qty
+end
+
+-- Авто-сохранение адаптеров при каждом выборе!
+local function drawChooseAdapter(kind, ctype, title, exclude_address)
+    gpu.setBackground(COLOR_BG)
+    gpu.fill(1,1,w,h," ")
+    gpu.setForeground(COLOR_HEADER)
+    gpu.set(5, 2, title)
+    local currY = 4
+    local options = {}
+    for address, t in com.list(ctype) do
+        if not exclude_address or address ~= exclude_address then
+            local showtype = tostring(t)
+            local short_address = address:sub(1,8)
+            local label = string.format("%s [%s]", short_address, showtype)
+            gpu.setForeground(COLOR_TEXT)
+            gpu.set(5, currY, label)
+            options[#options+1] = {x1=5, y1=currY, x2=5+unicode.len(label)-1, y2=currY, address=address}
+            currY = currY + 2
+        end
+    end
+    if #options == 0 then
+        gpu.setForeground(COLOR_ERROR)
+        gpu.set(5, currY+2, "Нет доступных устройств типа "..ctype)
+        os.sleep(2)
+        return drawChooseAdapter(kind, ctype, title, exclude_address)
+    end
+    while true do
+        local _,_,x,y = event.pull("touch")
+        for _, opt in ipairs(options) do
+            if x >= opt.x1 and x <= opt.x2 and y == opt.y1 then
+                adapters[kind] = com.proxy(opt.address)
+                save_adapters()
+                return
+            end
+        end
+    end
+end
+
+-- --- АВТОВЫБОР + ручной выбор если не найден ---
+load_adapters()
+if not adapters.buffer then
+    if not auto_choose_adapter("buffer", "crystal") then
+        drawChooseAdapter("buffer", "crystal", "Выберите crystal сундук (буфер)")
+        save_adapters()
+    end
+end
+if not adapters.check then
+    if not auto_choose_adapter("check", "diamond") then
+        drawChooseAdapter("check", "diamond", "Выберите diamond сундук (проверочный)")
+        save_adapters()
+    end
+end
+if not adapters.interface then
+    if not auto_choose_adapter("interface", "me_interface") then
+        drawChooseAdapter("interface", "me_interface", "Выберите ME интерфейс")
+        save_adapters()
+    end
+end
+
+local function main_exchange_loop()
+    while true do
+        if showTab == "events" or showTab == "exchanged" or showTab == "returned" then
+            draw_logs()
+        else
+            print_items(true)
+        end
+
+        local eventHappened = false
+        if adapters.buffer and adapters.check then
+            local bufSize = adapters.buffer.getInventorySize()
+            for slot = 1, bufSize do
+                local stack = adapters.buffer.getStackInSlot(slot)
+                if stack then
+                    local ore = find_ore(stack)
+                    if ore then
+                        local qty = stack.qty or stack.size or stack.count or 1
+                        adapters.buffer.pushItem("DOWN", slot, qty)
+                        eventHappened = true
+                    end
+                end
+            end
+        end
+
+        if adapters.check and adapters.interface and adapters.buffer then
+            local checkSize = adapters.check.getInventorySize()
+            for slot = 1, checkSize do
+                local stack = adapters.check.getStackInSlot(slot)
+                if stack then
+                    local ore = find_ore(stack)
+                    local qty = stack.qty or stack.size or stack.count or 1
+                    if ore then
+                        adapters.check.pushItem("DOWN", slot, qty)
+                        give_items_with_logs(ore, qty)
+                        eventHappened = true
+                    else
+                        adapters.check.pushItem("UP", slot, qty)
+                        local label = stack.label or stack.id
+                        add_log(string.format("Вернул: %dx %s", qty, label), COLOR_ALERT)
+                        stats.returned[label] = (stats.returned[label] or 0) + qty
+                        eventHappened = true
+                    end
+                end
+            end
+        end
+
+        if eventHappened then
+            needRedrawMain = true
+        end
+
+        local ev = {event.pull(0.6)}
+        if ev[1] == "touch" then
+            local x, y = ev[3], ev[4]
+            if showTab == "events" or showTab == "exchanged" or showTab == "returned" then
+                local tabList = drawLogsTabs()
+                for _,tab in ipairs(tabList) do
+                    if x >= tab.x1 and x <= tab.x2 and y == tab.y then
+                        showTab = tab.key
+                        needRedrawLogs = true
+                        break
+                    end
+                end
+                local btn = drawLogsButton()
+                if x >= btn.x1 and x <= btn.x2 and y == btn.y1 then
+                    showTab = nil
+                    needRedrawMain = true
+                end
+                if showTab=="events" then
+                    if y == h-3 then logScroll = logScroll + 3; needRedrawLogs = true end
+                    if y == 4 then logScroll = logScroll - 3; needRedrawLogs = true end
+                end
+            else
+                local btnText = "[Логи]"
+                local btnY = h-2
+                local btnX = math.floor(w/2 - unicode.len(btnText)/2)
+                if x >= btnX and x <= btnX+unicode.len(btnText)-1 and y == btnY then
+                    showTab = "events"
+                    needRedrawLogs = true
+                end
+            end
+        elseif ev[1] == "scroll" and (showTab=="events") then
+            local _, _, _, y, dir = table.unpack(ev)
+            if dir < 0 then logScroll = logScroll + 3; needRedrawLogs = true end
+            if dir > 0 then logScroll = logScroll - 3; needRedrawLogs = true end
+        end
+    end
+end
+
+needRedrawMain = true
+print_items(false)
+main_exchange_loop()
