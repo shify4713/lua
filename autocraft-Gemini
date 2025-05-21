@@ -1,12 +1,13 @@
 -- autoCraftUltimate.lua
 -- Основная программа для OpenComputers.
 -- Исправлены мерцания логов, наложение элементов, визуал таблицы и ошибки.
+-- Поддержка поиска на кириллице.
 
 local component = require("component")
 local fs = require("filesystem")
 local shell = require("shell")
 local event = require("event")
-local unicode = require("unicode")
+local unicode = require("unicode") -- Используется для работы с Unicode (включая кириллицу)
 local term = require("term")
 local computer = require("computer")
 
@@ -213,6 +214,7 @@ local function drawItems()
     -- Фильтрация предметов для отображения
     local showItems = {}
     for i,item in ipairs(dataItems) do
+        -- Поиск без учета регистра, поддержка кириллицы
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
             table.insert(showItems, item)
         end
@@ -460,7 +462,7 @@ local function editItem()
     clearScreen() -- Очищаем экран перед следующим запросом
     uoc.drawText(10,HEIGHT-9,"Изменение: "..(item.name or "<??>"),COLORS.ok)
     uoc.drawText(10,HEIGHT-8,"Новое имя: "..(item.name or "<??>"),COLORS.text) -- Показываем уже введенное имя
-    uoc.drawText(10,HEIGHT-7,"Новое держать (число, Enter пропустить): ",COLORS.text)
+    uoc.drawText(10,HEIGHT-7,"Держать (число, Enter пропустить): ",COLORS.text)
     term.setCursor(54,HEIGHT-7)
     local countstr = tostring(io.read())
     local count = tonumber(countstr)
@@ -559,7 +561,7 @@ local function autoCraftLoop()
                             craftStatus = "Ожидание CPU..."
                             addLog("Нет свободных CPU для крафта.", "WARN")
                             break
-                        end
+                        </div>
                     end
                 end
                 if not craftedThisCycle and isCrafting then
