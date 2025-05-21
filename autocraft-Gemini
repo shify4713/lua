@@ -232,6 +232,7 @@ local function drawItems()
         g.setBackground(isSel and COLORS.select_active or COLORS.bg)
         g.setForeground(COLORS.text)
 
+        -- Обрезаем текст, чтобы он не выходил за рамки колонки
         local nameStr = unicode.sub((it.name or "<??>"), 1, col_name)
         local nowStr  = string.format("%"..col_now.."s", tostring(it.current or 0)):sub(-col_now)
         local holdStr = string.format("%"..col_hold.."s", tostring(it.count or 0)):sub(-col_hold)
@@ -283,12 +284,18 @@ local function drawSearchBar()
     g.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
     local display = search
     if display=="" then display = "Поиск: введите часть названия..." end
-    if searchActive then display = display .. "_" end
     local maxlen = w - 7
+    -- Обрезаем отображаемый текст поиска, чтобы он не выходил за рамки поля
     if unicode.len(display) > maxlen then
         display = unicode.sub(display, unicode.len(display)-maxlen+2)
     end
     g.set(x+2, y+1, display)
+    if searchActive then
+        term.setCursor(x + 2 + unicode.len(search), y + 1) -- Устанавливаем курсор для ввода
+        term.showCursor(true)
+    else
+        term.showCursor(false)
+    end
     g.setForeground(COLORS.search_cross)
     g.set(x+w-3, y+1, (search ~= "" and "×" or " ")) -- Кнопка сброса поиска
     g.setBackground(COLORS.bg)
@@ -354,7 +361,7 @@ function draw()
     if computer.uptime() - lastDrawTime < 0.1 then return end
     lastDrawTime = computer.uptime()
 
-    -- clearScreen() -- Убрано: теперь каждая функция отрисовки очищает свою область
+    clearScreen() -- Полная очистка экрана при каждой полной перерисовке
     drawHeader()
     drawItems()
     drawSearchBar()
@@ -373,9 +380,11 @@ local function reload()
     local me_network_items = {}
     local ok_net, network_items = pcall(me.getItemsInNetwork)
     if ok_net then
+        addLog("Получение предметов из ME сети...", "DEBUG") -- Отладка
         for _, stack in ipairs(network_items) do
             local key = stack.name .. (stack.damage and ":" .. stack.damage or "")
             me_network_items[key] = (me_network_items[key] or 0) + (stack.size or stack.qty or 0)
+            addLog(string.format("ME: %s (dmg:%s) size:%s -> key: %s", stack.name, tostring(stack.damage), tostring(stack.size or stack.qty), key), "DEBUG") -- Отладка
         end
     else
         addLog("Не удалось получить список предметов из ME сети: " .. tostring(network_items), "ERROR")
@@ -384,6 +393,7 @@ local function reload()
     for _,item in ipairs(dataItems) do
         local key = item.id .. (item.dmg and ":" .. item.dmg or "")
         item.current = me_network_items[key] or 0
+        addLog(string.format("Data: %s (id:%s dmg:%s) current: %s", item.name, item.id, tostring(item.dmg), tostring(item.current)), "DEBUG") -- Отладка
     end
     addLog("Данные и количество предметов обновлены.", "INFO")
 end
@@ -402,26 +412,34 @@ end
 local function addItem()
     changeitem = true
     hoveredButton = nil -- Сбрасываем состояние наведенной кнопки
+    term.showCursor(true) -- Показываем курсор для ввода
+
     -- Очищаем экран и рисуем только подсказки для ввода
     clearScreen()
     uoc.drawText(10,HEIGHT-9,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
     uoc.drawText(10,HEIGHT-8,"Название: ",COLORS.text)
     term.setCursor(20,HEIGHT-8)
+    term.write(string.rep(" ", WIDTH - 20 - 1)) -- Очищаем остаток строки
+    term.setCursor(20,HEIGHT-8) -- Снова устанавливаем курсор
     local name = tostring(io.read())
     if name == "" then name = "Новый предмет" end
 
     clearScreen() -- Очищаем экран перед следующим запросом
     uoc.drawText(10,HEIGHT-9,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
-    uoc.drawText(10,HEIGHT-8,"Название: "..name,COLORS.text) -- Показываем уже введенное имя
+    uoc.drawText(10,HEIGHT-8,"Название: "..unicode.sub(name, 1, WIDTH - 10 - unicode.len("Название: ")),COLORS.text) -- Показываем уже введенное имя, обрезая
     uoc.drawText(10,HEIGHT-7,"Держать (число, 0 для пропуска): ",COLORS.text)
+    term.setCursor(39,HEIGHT-7)
+    term.write(string.rep(" ", WIDTH - 39 - 1)) -- Очищаем остаток строки
     term.setCursor(39,HEIGHT-7)
     local count = tonumber(io.read()) or 0
 
     clearScreen() -- Очищаем экран перед следующим запросом
     uoc.drawText(10,HEIGHT-9,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
-    uoc.drawText(10,HEIGHT-8,"Название: "..name,COLORS.text)
+    uoc.drawText(10,HEIGHT-8,"Название: "..unicode.sub(name, 1, WIDTH - 10 - unicode.len("Название: ")),COLORS.text)
     uoc.drawText(10,HEIGHT-7,"Держать: "..count,COLORS.text)
     uoc.drawText(10,HEIGHT-6,"Крафт за раз (число, 1 для пропуска): ",COLORS.text)
+    term.setCursor(39,HEIGHT-6)
+    term.write(string.rep(" ", WIDTH - 39 - 1)) -- Очищаем остаток строки
     term.setCursor(39,HEIGHT-6)
     local craftSize = tonumber(io.read()) or 1
 
@@ -437,6 +455,7 @@ local function addItem()
         addLog("Ошибка: нет предмета в слоте 1 ME интерфейса!","ERROR")
     end
     changeitem = false
+    term.showCursor(false) -- Скрываем курсор
     resetSelection()
     reload()
     draw() -- Обновляем экран после добавления
@@ -449,10 +468,14 @@ local function editItem()
 
     changeitem = true
     hoveredButton = nil -- Сбрасываем состояние наведенной кнопки
+    term.showCursor(true) -- Показываем курсор для ввода
+
     -- Очищаем экран и рисуем только подсказки для ввода
     clearScreen()
     uoc.drawText(10,HEIGHT-9,"Изменение: "..(item.name or "<??>"),COLORS.ok)
     uoc.drawText(10,HEIGHT-8,"Новое имя (Enter пропустить): ",COLORS.text)
+    term.setCursor(40,HEIGHT-8)
+    term.write(string.rep(" ", WIDTH - 40 - 1)) -- Очищаем остаток строки
     term.setCursor(40,HEIGHT-8)
     local name = tostring(io.read())
     if name ~= "" then
@@ -461,8 +484,10 @@ local function editItem()
 
     clearScreen() -- Очищаем экран перед следующим запросом
     uoc.drawText(10,HEIGHT-9,"Изменение: "..(item.name or "<??>"),COLORS.ok)
-    uoc.drawText(10,HEIGHT-8,"Новое имя: "..(item.name or "<??>"),COLORS.text) -- Показываем уже введенное имя
-    uoc.drawText(10,HEIGHT-7,"Держать (число, Enter пропустить): ",COLORS.text)
+    uoc.drawText(10,HEIGHT-8,"Новое имя: "..unicode.sub(item.name or "<??>", 1, WIDTH - 10 - unicode.len("Новое имя: ")),COLORS.text) -- Показываем уже введенное имя, обрезая
+    uoc.drawText(10,HEIGHT-7,"Новое держать (число, Enter пропустить): ",COLORS.text)
+    term.setCursor(54,HEIGHT-7)
+    term.write(string.rep(" ", WIDTH - 54 - 1)) -- Очищаем остаток строки
     term.setCursor(54,HEIGHT-7)
     local countstr = tostring(io.read())
     local count = tonumber(countstr)
@@ -470,9 +495,11 @@ local function editItem()
 
     clearScreen() -- Очищаем экран перед следующим запросом
     uoc.drawText(10,HEIGHT-9,"Изменение: "..(item.name or "<??>"),COLORS.ok)
-    uoc.drawText(10,HEIGHT-8,"Новое имя: "..(item.name or "<??>"),COLORS.text)
+    uoc.drawText(10,HEIGHT-8,"Новое имя: "..unicode.sub(item.name or "<??>", 1, WIDTH - 10 - unicode.len("Новое имя: ")),COLORS.text)
     uoc.drawText(10,HEIGHT-7,"Новое держать: "..(item.count or 0),COLORS.text)
     uoc.drawText(10,HEIGHT-6,"Новый крафт за раз (число, Enter пропустить): ",COLORS.text)
+    term.setCursor(55,HEIGHT-6)
+    term.write(string.rep(" ", WIDTH - 55 - 1)) -- Очищаем остаток строки
     term.setCursor(55,HEIGHT-6)
     local csstr = tostring(io.read())
     local cs = tonumber(csstr)
@@ -481,6 +508,7 @@ local function editItem()
     save()
     addLog("Изменено: "..item.name,"INFO")
     changeitem = false
+    term.showCursor(false) -- Скрываем курсор
     resetSelection()
     reload()
     draw() -- Обновляем экран после изменения
@@ -561,7 +589,7 @@ local function autoCraftLoop()
                             craftStatus = "Ожидание CPU..."
                             addLog("Нет свободных CPU для крафта.", "WARN")
                             break
-                        </div>
+                        end
                     end
                 end
                 if not craftedThisCycle and isCrafting then
@@ -692,7 +720,6 @@ event.listen("key_down", function(_,_,key,_,_)
             search = ""
         elseif key == 28 then -- enter
             searchActive = false
-        -- Убрана обработка ASCII символов, теперь только key_press
         end
         itemScroll = 1
         selectedItemIdx = nil
