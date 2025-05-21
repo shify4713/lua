@@ -11,7 +11,6 @@ local me = component.me_interface
 
 local WIDTH, HEIGHT = 160, 50
 local PATH = "/home/BD.txt"
-local ADM = {["shify4713"]=true, ["LiwMorgan"]=true, ["KReaTlVNuY"]=true, ["4ertik_"]=true}
 
 local COLORS = {
   bg = 0x23272e, fg = 0xE6EDF3, border = 0x2866b2, err = 0xFF3C3C,
@@ -200,8 +199,7 @@ local function commitInput()
   end
 end
 
-local function handleKeyDown(_,_,char,code,playerName)
-  if not ADM[playerName or ""] then return end
+local function handleKeyDown(_,_,char,code)
   if state.input.active then
     if code==13 then commitInput()
     elseif code==8 then
@@ -229,8 +227,7 @@ local function hoverUpdate(x, y)
   end
 end
 
-local function handleTouch(_,_,x,y,_,playerName)
-  if not ADM[playerName or ""] then return end
+local function handleTouch(_,_,x,y)
   hoverUpdate(x,y)
   for _,t in ipairs(state.tabHit or {}) do
     if y==t.y and x>=t.x1 and x<=t.x2 then state.tab=t.idx; state.redraw=true; return end
@@ -282,8 +279,7 @@ local function handleTouch(_,_,x,y,_,playerName)
   end
 end
 
-local function handleScroll(_,_,x,y,dir,playerName)
-  if not ADM[playerName or ""] then return end
+local function handleScroll(_,_,x,y,dir)
   if state.input.active then return end
   if state.tab==1 and state.maxscroll>1 then
     if dir==1 and state.scroll>1 then state.scroll=state.scroll-1; state.redraw=true
