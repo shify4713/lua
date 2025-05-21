@@ -1,5 +1,3 @@
---wget -f https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua /lib/ultimateOC.lua
---wget -f https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/autoCraftUltimate.lua /home/autoCraftUltimate.lua
 local component = require("component")
 local fs = require("filesystem")
 local shell = require("shell")
@@ -29,28 +27,11 @@ if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {})
 end
 
--------------------- Время по МСК с кэшем --------------------
-local lastTime, lastTimeUpdate = "", 0
+-------------------- Время по МСК (без интернета) --------------------
 local function getMSKTime()
-    -- Кэшируем на 10 секунд
-    if computer.uptime() - lastTimeUpdate < 10 and lastTime ~= "" then
-        return lastTime
-    end
-    local handle = io.popen("wget -qO- https://worldtimeapi.org/api/timezone/Europe/Moscow.txt 2>/dev/null")
-    if handle then
-        local text = handle:read("*a")
-        handle:close()
-        local h, m, s = text:match("datetime:%s*%d+%-%d+%-%d+T(%d+):(%d+):(%d+)")
-        if h and m and s then
-            lastTime = string.format("%02d:%02d:%02d", tonumber(h), tonumber(m), tonumber(s))
-            lastTimeUpdate = computer.uptime()
-            return lastTime
-        end
-    end
-    local t = os.date("!*t", os.time() + 3*3600)
-    lastTime = string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
-    lastTimeUpdate = computer.uptime()
-    return lastTime
+    -- os.time() возвращает UNIX-время в UTC
+    local t = os.date("!*t", os.time() + 3*3600) -- +3 часа для МСК
+    return string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
 end
 
 -------------------- Настройки --------------------
@@ -118,7 +99,6 @@ end
 
 local function drawHeader()
     uoc.drawText(3,2,"Ultimate AutoCraft",COLORS.ok,true)
-    -- Декоративная линия и подсветка
     g.setBackground(COLORS.progress_fg)
     g.fill(2,3,WIDTH-2,1," ")
     shadowRect(2,3,WIDTH-2,1)
@@ -129,7 +109,6 @@ local function drawHeader()
 end
 
 local function drawLogs()
-    -- 4 строки логов над поиском
     uoc.drawLogs(3, HEIGHT-14, logs, 4, COLORS.log)
 end
 
@@ -192,6 +171,22 @@ local function drawItems()
     g.setForeground(COLORS.select_active)
     g.set(x, lastRow, "└"..string.rep("─",col_name).."┴"..string.rep("─",col_now).."┴"..string.rep("─",col_hold).."┴"..string.rep("─",col_once).."┘")
     g.setForeground(COLORS.text)
+
+    -- Скроллбар если нужно
+    if #showItems > perPage then
+        local barLen = math.max(2, math.floor(perPage * perPage / #showItems))
+        local barTop = y+3 + math.floor((perPage-barLen) * (itemScroll-1) / math.max(1,#showItems-perPage))
+        g.setForeground(COLORS.select_active)
+        g.set(WIDTH-2, y+3, "│")
+        for i=1,perPage do
+            g.set(WIDTH-2, y+2+i, "│")
+        end
+        g.setForeground(COLORS.ok)
+        for i=0,barLen-1 do
+            g.set(WIDTH-2, barTop+i, "█")
+        end
+        g.setForeground(COLORS.text)
+    end
 end
 
 local function drawSearchBar()
@@ -259,24 +254,20 @@ end
 local function reload()
     local ok, res = pcall(uoc.loadf, DATA_FILE)
     dataItems = ok and res or {}
-    -- Получаем ТЕКУЩЕЕ значение для каждого предмета (в наличии)
+    -- Корректно показывает "В наличии" (qty) для каждого предмета
     for _,item in ipairs(dataItems) do
         local qty = 0
-        -- Получаем список всех предметов в сети
-        local found = false
         local stackList = {}
         pcall(function() stackList = me.getItemsInNetwork({id = item.id, damage = item.dmg}) end)
         if stackList and stackList.n and stackList.n > 0 then
             for _,stack in ipairs(stackList) do
                 if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
                     qty = stack.size or stack.qty or 0
-                    found = true
                     break
                 end
             end
-        end
-        if not found then
-            -- Иногда getItemDetail даёт правильный qty
+        else
+            -- на крайняк через getItemDetail
             local ok2, d = pcall(me.getItemDetail, {id = item.id, dmg = item.dmg})
             if ok2 and d then
                 qty = d.qty or d.size or 0
@@ -462,13 +453,11 @@ event.listen("touch", function(_,_,x,y,_,_)
     -- Поле поиска (60x3, левый верхний угол 3,HEIGHT-10)
     if y >= HEIGHT-10 and y <= HEIGHT-8 then
         searchActive = false
-        -- Клик по кресту
         if x >= 3+60-3 and x <= 3+60-1 and search ~= "" then
             search = ""
             draw()
             return
         end
-        -- Клик по полю поиска
         if x >= 3+1 and x <= 3+60-4 then
             searchActive = true
             draw()
@@ -478,9 +467,12 @@ event.listen("touch", function(_,_,x,y,_,_)
         searchActive = false
     end
     -- Список предметов (выбор)
-    if y >= 10 and y <= 29 then
-        local showItems = uoc.filterItems(dataItems, search)
-        local idx = itemScroll + (y-10)
+    local showItems = uoc.filterItems(dataItems, search)
+    local perPage = 18
+    local itemsStartY = 10
+    local itemsEndY = itemsStartY + perPage - 1
+    if y >= itemsStartY and y <= itemsEndY then
+        local idx = itemScroll + (y-itemsStartY)
         if showItems[idx] then
             for k,v in ipairs(dataItems) do
                 if v == showItems[idx] then selectedItem = k break end
@@ -516,6 +508,7 @@ end)
 event.listen("key_down", function(_,_,key,_,_)
     if changeitem then return end
     local showItems = uoc.filterItems(dataItems, search)
+    local perPage = 18
     if searchActive then
         if key == 14 then -- backspace
             search = search:sub(1,-2)
@@ -526,11 +519,15 @@ event.listen("key_down", function(_,_,key,_,_)
                 search = search .. unicode.char(key)
             end
         end
+        -- Сбросить скроллинг при новом поиске
+        itemScroll = 1
     else
         if key == 200 then -- up
             itemScroll = math.max(1,itemScroll-1)
         elseif key == 208 then -- down
-            itemScroll = math.min(math.max(1,#showItems-17),itemScroll+1)
+            if #showItems > perPage then
+                itemScroll = math.min(#showItems-perPage+1,itemScroll+1)
+            end
         end
     end
     draw()
