@@ -1,8 +1,7 @@
--- PreCraft ULTIMATE (2025, Lua 5.2, Safe Refactored Version)
+-- PreCraft ULTIMATE (2025, оптимизированная версия, только LiwMorgan админ)
 local component = require("component")
 local event = require("event")
 local unicode = require("unicode")
-local term = require("term")
 local fs = require("filesystem")
 local shell = require("shell")
 local serialization = require("serialization")
@@ -13,7 +12,6 @@ local me = assert(component.me_interface, "ME интерфейс не найде
 local WIDTH, HEIGHT = 160, 50
 gpu.setResolution(WIDTH, HEIGHT)
 
--- === Цвета и константы ===
 local COLOR = {
     BG = 0x232c42, FG = 0xA4FFFA, BORDER = 0x00ffff, ERROR = 0xFF4444,
     BTN_BG = 0x00AADD, BTN_TXT = 0x181824, BTN_ACTIVE = 0x26d6ff,
@@ -22,7 +20,7 @@ local COLOR = {
     TAB_ON = 0x00AADD, TAB_OFF = 0x232c42, TAB_TXT = 0xFFFFFF,
     SEARCH_BG = 0x003355, SEARCH_TXT = 0xA4FFFA
 }
-local ADM = {['LiwMorgan']=true, ['shify4713']=true}
+local ADM = {['LiwMorgan']=true}
 local DATA_PATH = "/home/BD.txt"
 local LOG_PATH = "/home/PCU.log"
 
@@ -76,11 +74,16 @@ local state = {
     scroll = 1,
     filtered = {},
     maxscroll = 1,
-    input = {active=false, value="", prompt="", action=nil, confirm=nil},
+    input = {active=false, value="", prompt="", action=nil},
     search = "",
     go = false,
     error = nil,
-    buttons = {}
+    buttons = {},
+    tabs = {
+        {label="Главная", key="main"},
+        {label="Изменить", key="change"},
+        {label="Логи", key="log"}
+    }
 }
 
 -- === Инициализация файлов ===
@@ -108,14 +111,16 @@ local function drawBorder()
 end
 
 local function drawTabs()
-    local tabs = {{"Главная","main"},{"Изменить","change"},{"Логи","log"}}
     local x = 5
-    for _,tab in ipairs(tabs) do
-        local active = (tab[2]==state.tab)
+    state.tabHitboxes = {}
+    for i,tab in ipairs(state.tabs) do
+        local active = (tab.key==state.tab)
         gpu.setBackground(active and COLOR.TAB_ON or COLOR.TAB_OFF)
         gpu.setForeground(COLOR.TAB_TXT)
-        gpu.set(x,3,"["..tab[1].."]")
-        x = x + unicode.len(tab[1])+5
+        local label = "["..tab.label.."]"
+        gpu.set(x,3,label)
+        state.tabHitboxes[i] = {x1=x, x2=x+unicode.len(label)-1, y=3, key=tab.key}
+        x = x + unicode.len(label)+3
     end
     gpu.setBackground(COLOR.BG)
 end
@@ -138,7 +143,6 @@ local function drawMainTable()
     gpu.set(xCraft,6,"Крафт")
     gpu.set(xSel,6,"Выбрать")
     gpu.setForeground(COLOR.TEXT)
-    -- Фильтрация
     local filtered = {}
     for i,v in ipairs(state.data) do
         if state.search=="" or unicode.lower(v.name or ""):find(unicode.lower(state.search)) then
@@ -174,6 +178,7 @@ local function drawSearch()
     local msg = "Поиск: "..(state.search=="" and "Для поиска введите название.." or state.search)
     if unicode.len(msg) > w-2 then msg = unicode.sub(msg, 1, w-2) end
     gpu.set(x+1, y, msg)
+    state.searchBox = {x1=x, x2=x+w-1, y=y}
     gpu.setBackground(COLOR.BG)
 end
 
@@ -190,6 +195,8 @@ local function drawButtons()
         gpu.setForeground(COLOR.BTN_TXT)
         gpu.fill(btn.x, 40, btn.w, 1, " ")
         gpu.set(btn.x+math.floor((btn.w-unicode.len(btn.label))/2), 40, btn.label)
+        btn.y = 40
+        btn.x2 = btn.x + btn.w - 1
     end
     gpu.setBackground(COLOR.BG)
 end
@@ -219,6 +226,20 @@ local function drawLog()
     gpu.setForeground(COLOR.TEXT)
 end
 
+local function drawInput()
+    if not state.input.active then return end
+    local w = 50
+    local x = math.floor((WIDTH-w)/2)
+    local y = 30
+    gpu.setBackground(COLOR.SEARCH_BG)
+    gpu.fill(x, y, w, 1, " ")
+    gpu.setForeground(COLOR.SEARCH_TXT)
+    local msg = state.input.prompt .. " " .. state.input.value
+    if unicode.len(msg) > w-2 then msg = unicode.sub(msg, 1, w-2) end
+    gpu.set(x+1, y, msg)
+    gpu.setBackground(COLOR.BG)
+end
+
 local function render()
     clear()
     drawBorder()
@@ -232,7 +253,15 @@ local function render()
         gpu.set(WIDTH-25,HEIGHT,"Всего: "..#state.data)
     elseif state.tab == "log" then
         drawLog()
+    elseif state.tab == "change" and state.filtered[state.select] then
+        local v = state.filtered[state.select]
+        gpu.setForeground(COLOR.LABEL)
+        gpu.set(30,12,"Название: "..(v.name or "?"))
+        gpu.set(30,14,"Кол-во: "..tostring(v.count or "?"))
+        gpu.set(30,16,"Размер крафта: "..tostring(v.craftSize or "?"))
+        gpu.setForeground(COLOR.TEXT)
     end
+    drawInput()
     state.redraw = false
 end
 
@@ -247,7 +276,7 @@ local function refresh()
 end
 
 local function resetInput()
-    state.input = {active=false, value="", prompt="", action=nil, confirm=nil}
+    state.input = {active=false, value="", prompt="", action=nil}
 end
 
 local function askInput(prompt, action, default)
@@ -261,7 +290,6 @@ local function commitInput()
     if not state.input.action then resetInput() return end
     local idx = state.select
     local v = state.filtered and state.filtered[idx]
-    if not v and state.input.action~="add" then resetInput() return end
     if state.input.action=="add" then
         local item = me.getStackInSlot(1)
         if not item then state.error="Положите предмет в 1-й слот интерфейса!"; resetInput(); return end
@@ -269,13 +297,17 @@ local function commitInput()
         addLog(state.logs, "Добавлен предмет: "..state.input.value)
         refresh()
     elseif state.input.action=="edit" then
-        v.name = state.input.value
-        addLog(state.logs, "Изменено имя: "..(v.name or "?"))
+        if v then v.name = state.input.value end
+        addLog(state.logs, "Изменено имя: "..(v and v.name or "?"))
     elseif state.input.action=="del" then
-        for i,dat in ipairs(state.data) do
-            if dat==v then table.remove(state.data,i); break end
+        if v then
+            for i,dat in ipairs(state.data) do
+                if dat==v then table.remove(state.data,i); break end
+            end
+            addLog(state.logs, "Удалён: "..(v.name or "?"))
         end
-        addLog(state.logs, "Удалён: "..(v.name or "?"))
+    elseif state.input.action=="search" then
+        state.search = state.input.value
     end
     saveAll()
     resetInput()
@@ -283,7 +315,7 @@ local function commitInput()
 end
 
 -- === Обработка событий ===
-local function handleKeyDown(_,_,_,key,chr)
+local function handleKeyDown(_, _, _, key, chr)
     if state.input.active then
         if key==13 then commitInput()
         elseif key==8 then
@@ -301,17 +333,18 @@ local function handleKeyDown(_,_,_,key,chr)
         if key==208 then state.select=clamp(state.select+1,1,#state.filtered) state.redraw=true end
         if key==203 and state.scroll>1 then state.scroll=state.scroll-1 state.redraw=true end
         if key==205 and state.scroll<state.maxscroll then state.scroll=state.scroll+1 state.redraw=true end
-        if key==13 then state.tab="change" state.redraw=true end
-        -- Поиск
-        if key==8 then
-            if #state.search > 0 then
-                state.search = unicode.sub(state.search,1,unicode.len(state.search)-1)
+        if state.searchBox then
+            if key==8 then
+                if #state.search > 0 then
+                    state.search = unicode.sub(state.search,1,unicode.len(state.search)-1)
+                    state.redraw=true
+                end
+            elseif chr then
+                state.search = state.search .. chr
                 state.redraw=true
             end
-        elseif chr then
-            state.search = state.search .. chr
-            state.redraw=true
         end
+        if key==13 then state.tab="change" state.redraw=true end
     end
     if key==27 then
         if state.tab~="main" then state.tab="main" state.redraw=true end
@@ -319,34 +352,46 @@ local function handleKeyDown(_,_,_,key,chr)
     end
 end
 
-local function handleTouch(_,_,x,y,_,nick)
-    if not ADM[nick] then return end
+local function handleTouch(_, _, x, y, _, playerName)
+    if not ADM[playerName] then return end
+    -- вкладки
+    for _,tab in ipairs(state.tabHitboxes or {}) do
+        if y == tab.y and x >= tab.x1 and x <= tab.x2 then
+            state.tab = tab.key
+            state.redraw = true
+            return
+        end
+    end
+    -- поиск
+    if state.tab == "main" and state.searchBox and y == state.searchBox.y and x >= state.searchBox.x1 and x <= state.searchBox.x2 then
+        askInput("Поиск:", "search", state.search)
+        state.redraw = true
+        return
+    end
+    -- кнопки
     for _,btn in ipairs(state.buttons or {}) do
-        local by = 40
-        if y==by and x>=btn.x and x<btn.x+btn.w then
+        if y == btn.y and x >= btn.x and x <= btn.x2 then
             if btn.action=="add" then
                 askInput("Название нового предмета:", "add", "")
             elseif btn.action=="edit" then
                 askInput("Новое имя:", "edit", state.filtered[state.select] and state.filtered[state.select].name or "")
             elseif btn.action=="del" then
-                askInput("Введите 'del' для удаления:", "del", "")
+                askInput("Введите имя для удаления:", "del", state.filtered[state.select] and state.filtered[state.select].name or "")
             elseif btn.action=="toggleGo" then
                 state.go = not state.go
                 addLog(state.logs, "Режим: "..(state.go and "GO" or "STOP"))
                 state.redraw=true
             end
+            return
         end
     end
 end
 
--- === Главный цикл ===
 local function mainloop()
     event.listen("touch", handleTouch)
     event.listen("key_down", function(...) handleKeyDown(...) end)
-    local lastCheck = os.clock()
     while true do
         if state.redraw then render() end
-        -- Здесь можно добавить автокрафт (checkCraft) по необходимости
         os.sleep(0.05)
     end
 end
