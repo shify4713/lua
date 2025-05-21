@@ -1,0 +1,114 @@
+-- ultimateOC.lua
+-- Библиотека вспомогательных функций для OpenComputers GUI
+-- Исправлены потенциальные ошибки и оптимизированы функции.
+
+local fs = require("filesystem")
+local unicode = require("unicode")
+local serialization = require("serialization") -- Явно подключаем
+local component = require("component") -- Подключаем component для доступа к gpu
+
+local M = {}
+
+-- Важно: GPU будет передаваться из основного скрипта, чтобы избежать проблем с контекстом
+M.gpu = nil -- Будет инициализировано снаружи (из основного скрипта)
+
+-- Безопасное сохранение таблицы (быстрее и надёжнее)
+function M.savef(path, tbl)
+    local ok, ser = pcall(serialization.serialize, tbl)
+    if not ok then error("Ошибка сериализации: "..tostring(ser)) end
+    local f, err = io.open(path, "w")
+    if not f then error("Не могу открыть файл для записи: "..err) end
+    f:write(ser)
+    f:close()
+end
+
+-- Безопасная загрузка таблицы
+function M.loadf(path)
+    if not fs.exists(path) then return {} end
+    local f, err = io.open(path, "r")
+    if not f then error("Не могу открыть файл: "..err) end
+    local data = f:read("*a")
+    f:close()
+    local ok, tbl = pcall(serialization.unserialize, data)
+    if not ok then error("Ошибка десериализации: "..tostring(tbl)) end
+    return tbl or {}
+end
+
+-- Гибкий фильтр предметов по подстроке (поиск не зависит от регистра)
+function M.filterItems(tbl, query)
+    if not query or query == "" then return tbl end
+    local res = {}
+    query = unicode.lower(query)
+    for i, item in ipairs(tbl) do
+        if item.name and unicode.lower(item.name):find(query, 1, true) then
+            table.insert(res, item)
+        end
+    end
+    return res
+end
+
+-- Закруглённый прямоугольник c опциональной цветной рамкой
+function M.roundRect(x, y, w, h, borderColor, fillColor)
+    if not M.gpu then return end -- Проверка на инициализацию GPU
+    borderColor = borderColor or 0x44475a
+    fillColor = fillColor or 0x1B1D23
+    -- Заливка
+    if fillColor then
+        M.gpu.setBackground(fillColor)
+        M.gpu.fill(x, y, w, h, " ")
+    end
+    -- Рамка
+    M.gpu.setForeground(borderColor)
+    M.gpu.set(x+1, y, string.rep("─", w-2))
+    M.gpu.set(x+1, y+h-1, string.rep("─", w-2))
+    for i = y+1, y+h-2 do
+        M.gpu.set(x, i, "│")
+        M.gpu.set(x+w-1, i, "│")
+    end
+    M.gpu.set(x, y, "╭")
+    M.gpu.set(x+w-1, y, "╮")
+    M.gpu.set(x, y+h-1, "╰")
+    M.gpu.set(x+w-1, y+h-1, "╯")
+end
+
+-- Прогресс-бар (цветной)
+function M.progressBar(x, y, w, percent, fg, bg)
+    if not M.gpu then return end -- Проверка на инициализацию GPU
+    fg = fg or 0x50FA7B
+    bg = bg or 0x44475a
+    M.gpu.setBackground(bg)
+    M.gpu.fill(x, y, w, 1, " ")
+    M.gpu.setBackground(fg)
+    M.gpu.fill(x, y, math.max(0, math.floor(w * percent)), 1, " ")
+    M.gpu.setBackground(0x1B1D23)
+end
+
+-- Анимированная кнопка (с закруглением, цветами и "нажатием")
+function M.animatedButton(x, y, w, h, text, active, baseColor, hoverColor, textColor)
+    if not M.gpu then return end -- Проверка на инициализацию GPU
+    baseColor = baseColor or 0x00BFFF
+    hoverColor = hoverColor or 0x1E90FF
+    textColor = textColor or 0xFFFFFF
+    local color = active and hoverColor or baseColor
+    M.roundRect(x, y, w, h, color, color) -- Используем M.roundRect для отрисовки кнопки
+    M.gpu.setForeground(textColor)
+    M.gpu.set(x + math.floor((w-unicode.len(text))/2), y + math.floor(h/2), text)
+    M.gpu.setBackground(0x1B1D23)
+end
+
+-- Тень под текстом
+function M.drawText(x, y, text, color, shadow)
+    if not M.gpu then return end -- Проверка на инициализацию GPU
+    color = color or 0xF8F8F2
+    if shadow then
+        M.gpu.setForeground(0x282A36)
+        M.gpu.set(x+1, y+1, text)
+    end
+    M.gpu.setForeground(color)
+    M.gpu.set(x, y, text)
+end
+
+-- Удалены M.addLog и M.drawLogs из библиотеки, так как они реализованы в основном скрипте.
+-- Удалены M.scrollArray и M.selectLine, так как они не используются в основном скрипте.
+
+return M
