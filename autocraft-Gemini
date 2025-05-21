@@ -1,5 +1,6 @@
 -- autoCraftUltimate.lua
--- Переписанная версия для OpenOS 1.6.1, Lua 5.2 (без RTC)
+-- Полностью исправленная версия для OpenOS 1.6.1, Lua 5.2
+-- Без функционала времени, логи с префиксом [!]
 
 local component = require("component")
 local fs = require("filesystem")
@@ -11,7 +12,7 @@ local computer = require("computer")
 
 local g = component.gpu
 local me = component.me_interface
--- Полностью убраны обращения к component.rtc
+-- Полностью убраны все упоминания component.rtc
 
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
@@ -41,16 +42,6 @@ end
 if not fs.exists(DATA_FILE) then
     io.stdout:write("Файл базы данных " .. DATA_FILE .. " не найден, создаю пустой.\n")
     uoc.savef(DATA_FILE, {}) -- Создаем пустой файл данных
-end
-
--------------------- Имитация времени UTC+3 (для OpenComputers) --------------------
--- Эта функция будет возвращать имитацию киевского времени,
--- основанную на системном времени OpenComputers (которое обычно синхронизируется с майнкрафтом).
-local function getKyivTime()
-    local currentTime = os.time() -- Используем только системное время OC
-    -- Смещение для UTC+3: 3 часа * 3600 секунд в часе
-    local t = os.date("!*t", currentTime + 3 * 3600)
-    return string.format("%02d:%02d", t.hour, t.min)
 end
 
 -------------------- Настройки --------------------
@@ -94,11 +85,10 @@ local tooltip = ""
 local tooltipTimeout = 0
 local lastDrawTime = 0 -- Для отслеживания времени между перерисовками (для производительности)
 
--------------------- Логгирование с имитацией времени --------------------
+-------------------- Логгирование --------------------
 local function addLog(text, lvl)
     lvl = lvl or "INFO"
-    local now = getKyivTime()
-    local t = string.format("[%s][%s] %s", now, lvl, text)
+    local t = string.format("[!] [%s] %s", lvl, text) -- Лог с префиксом [!]
     table.insert(logs, t)
     -- Ограничиваем количество логов для экономии памяти и места на экране
     while #logs > 50 do table.remove(logs, 1) end
@@ -291,13 +281,15 @@ local function drawButtons()
     end
 end
 
-local function drawTimeFooter()
-    g.setForeground(COLORS.search_hint)
-    g.set(2, HEIGHT, "Время (Киев): "..getKyivTime())
+-- Функция для отрисовки футера (где раньше было время, теперь пусто)
+local function drawFooter()
+    g.setBackground(COLORS.bg)
+    g.fill(1, HEIGHT, WIDTH, 1, " ") -- Очищаем нижнюю строку
     g.setForeground(COLORS.text)
+    -- Здесь можно добавить любую другую информацию, если потребуется
 end
 
--- Добавляем отсутствующую функцию drawTooltip
+-- Добавляем функцию drawTooltip
 local function drawTooltip()
     -- Показываем подсказку через 0.5 секунды, если она есть
     if tooltip and tooltip ~= "" and os.time() - tooltipTimeout >= 0.5 then
@@ -337,7 +329,7 @@ local function draw()
     drawSearchBar()
     drawButtons()
     drawLogs()
-    drawTimeFooter()
+    drawFooter() -- Вызываем пустой футер
     drawTooltip() -- Теперь эта функция существует
     g.setResolution(WIDTH, HEIGHT) -- Убеждаемся, что разрешение установлено
 end
