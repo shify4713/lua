@@ -67,29 +67,29 @@ local COLORS = {
     tooltip_bg = 0x44475a,
     tooltip_text = 0xF8F8F2,
 }
+
 local WIDTH, HEIGHT = 110, 40
 local craftStatus = "Ожидание..."
 local nextCraftUpdate = 0
 local isCrafting = false
 
--- Количество строк для логов и их позиция
-local LOG_LINES = 4 -- Увеличено до 4 строк
-local LOG_HEIGHT = LOG_LINES + 1 -- 4 строки текста + 1 для отступа
-local LOG_Y_START = HEIGHT - LOG_LINES + 1 -- Логи начинаются с этого Y
+-- Определяем фиксированные высоты для блоков
+local HEADER_HEIGHT = 6 -- Высота хедера с прогресс-баром
+local LOG_LINES = 4 -- Количество строк для логов
+local LOG_HEIGHT = LOG_LINES -- Высота блока логов (по 1 строке на лог)
+local BUTTON_HEIGHT = 3 -- Высота кнопок
+local SEARCH_BAR_HEIGHT = 3 -- Высота строки поиска
+local FOOTER_HEIGHT = 1 -- Зарезервированная строка внизу (не используется, но для отступов)
 
--- Позиция кнопок
-local BUTTON_HEIGHT = 3 -- Высота кнопки
-local BUTTON_Y = LOG_Y_START - BUTTON_HEIGHT - 1 -- Кнопки над логами, с отступом
+-- Рассчитываем Y-координаты снизу вверх, чтобы избежать наложений
+local LOG_Y_START = HEIGHT - LOG_HEIGHT + 1 -- Логи начинаются с этого Y
+local BUTTON_Y = LOG_Y_START - BUTTON_HEIGHT - 1 -- Кнопки над логами, с отступом в 1 строку
+local SEARCH_BAR_Y = BUTTON_Y - SEARCH_BAR_HEIGHT - 1 -- Поиск над кнопками, с отступом в 1 строку
 
--- Позиция поля поиска
-local SEARCH_BAR_HEIGHT = 3 -- Высота поля поиска
-local SEARCH_BAR_Y = BUTTON_Y - SEARCH_BAR_HEIGHT - 1 -- Поиск над кнопками, с отступом
-
--- Позиция начала таблицы
-local TABLE_Y_START = 8 -- Начало таблицы (заголовок + 2 строки)
--- Количество видимых строк таблицы
--- Высота таблицы = Y_поиска - Y_начала_таблицы - 3 строки (заголовки таблицы)
-local TABLE_VISIBLE_ROWS = SEARCH_BAR_Y - TABLE_Y_START - 3
+-- Начало и конец области таблицы
+local TABLE_Y_START = HEADER_HEIGHT + 2 -- Таблица начинается после хедера, с отступом в 2 строки
+-- TABLE_VISIBLE_ROWS = Y_поиска - Y_начала_таблицы - 3 строки (заголовки таблицы) - 1 отступ
+local TABLE_VISIBLE_ROWS = SEARCH_BAR_Y - TABLE_Y_START - 3 -1
 
 
 -------------------- Переменные --------------------
@@ -106,8 +106,8 @@ local tooltipTimeout = 0
 local lastDrawTime = 0 -- Для отслеживания времени между перерисовками (для производительности)
 
 
--- Предварительные объявления функций, которые вызывают друг друга
--- Это делает функции глобальными и решает проблему 'nil value'
+-- Предварительные объявления функций (важно для решения "nil value" ошибок)
+-- Объявляем их как глобальные (без 'local'), чтобы они были доступны отовсюду
 function addLog(text, lvl) end
 function draw() end
 function drawLogs() end
@@ -119,8 +119,8 @@ function addLog(text, lvl)
     lvl = lvl or "INFO"
     local t = string.format("[!] [%s] %s", lvl, text)
     table.insert(logs, t)
-    while #logs > LOG_LINES * 2 do table.remove(logs, 1) end
-    drawLogs() -- Перерисовываем только логи при добавлении
+    while #logs > LOG_LINES * 2 do table.remove(logs, 1) end -- Ограничиваем количество логов
+    drawLogs() -- Перерисовываем только логи, это помогает уменьшить мерцание
 end
 
 -------------------- Визуал --------------------
@@ -138,6 +138,8 @@ local function shadowRect(x, y, w, h)
 end
 
 local function drawHeader()
+    g.setBackground(COLORS.bg)
+    g.fill(1, 1, WIDTH, HEADER_HEIGHT, " ") -- Очищаем область хедера
     uoc.drawText(3,3,"Ultimate AutoCraft",COLORS.ok,true)
     g.setBackground(COLORS.progress_fg)
     g.fill(2,4,WIDTH-2,1," ")
@@ -151,8 +153,8 @@ end
 function drawLogs()
     local start = math.max(1, #logs - LOG_LINES + 1)
     g.setBackground(COLORS.bg)
-    -- Очищаем всю область логов, чтобы избежать остаточных символов
-    g.fill(1, LOG_Y_START, WIDTH, LOG_LINES, " ")
+    -- Очищаем только область логов
+    g.fill(1, LOG_Y_START, WIDTH, LOG_HEIGHT, " ")
     for i = 1, LOG_LINES do
         local idx = start + i - 1
         if logs[idx] then
@@ -170,6 +172,10 @@ local function drawItems()
     local col_now = math.floor(totalWidth * 0.18)
     local col_hold = math.floor(totalWidth * 0.18)
     local col_once = totalWidth - col_name - col_now - col_hold
+
+    -- Очищаем всю область таблицы перед отрисовкой
+    g.setBackground(COLORS.bg)
+    g.fill(x, y, totalWidth + 6, TABLE_VISIBLE_ROWS + 4, " ") -- +4 для заголовков и нижней рамки
 
     -- Верх рамки
     g.setForeground(COLORS.select_active)
@@ -228,14 +234,6 @@ local function drawItems()
         g.setBackground(COLORS.bg)
     end
 
-    -- Очистка строк ниже текущего отображения
-    for i = #showItems + 1, itemScroll + TABLE_VISIBLE_ROWS - 1 do
-        local row = y + 2 + (i - itemScroll) + 1
-        if row < SEARCH_BAR_Y then
-            g.fill(x, row, totalWidth + 6, 1, " ")
-        end
-    end
-
     -- Низ рамки
     local lastRow = y + TABLE_VISIBLE_ROWS + 3
     g.setForeground(COLORS.select_active)
@@ -261,6 +259,8 @@ end
 
 local function drawSearchBar()
     local x, y, w, h = 3, SEARCH_BAR_Y, WIDTH-6, SEARCH_BAR_HEIGHT
+    g.setBackground(COLORS.bg)
+    g.fill(x,y,w,h," ") -- Очищаем область поиска перед отрисовкой
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
     g.fill(x+1, y+1, w-2, h-2, " ")
@@ -286,6 +286,8 @@ local function drawButtons()
         {name=isCrafting and "Остановить" or "Автокрафт", x=WIDTH-30, tip=isCrafting and "Остановить автокрафт" or "Запустить автокрафт"},
         {name="Добавить", x=WIDTH-15, tip="Добавить новый предмет (предмет в 1 слоте ME интерфейса)"},
     }
+    g.setBackground(COLORS.bg)
+    g.fill(1, BUTTON_Y, WIDTH, BUTTON_HEIGHT, " ") -- Очищаем область кнопок
     for i,v in ipairs(btns) do
         local hover = hoveredButton == i
         uoc.animatedButton(v.x, BUTTON_Y, 12, 3, v.name, hover, COLORS.button, COLORS.buttonActive, COLORS.text)
@@ -298,7 +300,7 @@ end
 
 local function drawFooter()
     g.setBackground(COLORS.bg)
-    g.fill(1, HEIGHT, WIDTH, 1, " ")
+    g.fill(1, HEIGHT - FOOTER_HEIGHT + 1, WIDTH, FOOTER_HEIGHT, " ")
     g.setForeground(COLORS.text)
 end
 
@@ -306,6 +308,7 @@ function drawTooltip()
     if tooltip and tooltip ~= "" and os.time() - tooltipTimeout >= 0.5 then
         local tipWidth = unicode.len(tooltip) + 4
         local tipHeight = 3
+        -- Позиционируем подсказку в правом верхнем углу, чтобы не перекрывать основные элементы
         local tipX = math.max(1, WIDTH - tipWidth - 1)
         local tipY = 1
 
@@ -321,20 +324,23 @@ function drawTooltip()
         g.setBackground(COLORS.bg)
         g.setForeground(COLORS.text)
     else
-        tooltip = ""
+        -- Очищаем область, где была подсказка, если она исчезла
+        g.setBackground(COLORS.bg)
+        g.fill(WIDTH - 20, 1, 20, 3, " ") -- Примерная область для очистки подсказки
     end
 end
 
 function draw()
+    -- Ограничиваем частоту перерисовки для уменьшения мерцания
     if computer.uptime() - lastDrawTime < 0.1 then return end
     lastDrawTime = computer.uptime()
 
-    clearScreen() -- Полная очистка экрана при каждой полной перерисовке
+    clearScreen() -- Полная очистка экрана
     drawHeader()
     drawItems()
     drawSearchBar()
     drawButtons()
-    drawLogs()
+    drawLogs() -- Логи теперь в самом низу
     drawFooter()
     drawTooltip()
     g.setResolution(WIDTH, HEIGHT)
@@ -547,175 +553,4 @@ event.listen("touch", function(_,_,x,y,_,_)
         {idx=1, x=WIDTH-60, y=BUTTON_Y, w=12, h=3},
         {idx=2, x=WIDTH-45, y=BUTTON_Y, w=12, h=3},
         {idx=3, x=WIDTH-30, y=BUTTON_Y, w=12, h=3},
-        {idx=4, x=WIDTH-15, y=BUTTON_Y, w=12, h=3},
-    }
-    for i,btn in ipairs(btns) do
-        if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
-            hoveredButton = btn.idx
-            if btn.idx==1 then removeItem()
-            elseif btn.idx==2 then editItem()
-            elseif btn.idx==3 then if isCrafting then stopCraft() else doCraft() end
-            elseif btn.idx==4 then addItem()
-            end
-            draw()
-            return
-        end
-    end
-
-    local searchBarX, searchBarY, searchBarW, searchBarH = 3, SEARCH_BAR_Y, WIDTH-6, SEARCH_BAR_HEIGHT
-    if x >= searchBarX and x <= searchBarX + searchBarW - 1 and y >= searchBarY and y <= searchBarY + searchBarH - 1 then
-        if x >= searchBarX + searchBarW - 3 and x <= searchBarX + searchBarW - 1 and search ~= "" then
-            search = ""
-            searchActive = false
-            addLog("Поиск очищен.", "INFO")
-        else
-            searchActive = true
-        end
-        draw()
-        return
-    else
-        searchActive = false
-    end
-
-    local itemsStartY = TABLE_Y_START + 3
-    local itemsEndY = itemsStartY + TABLE_VISIBLE_ROWS - 1
-
-    if y >= itemsStartY and y <= itemsEndY then
-        local idxInShowItems = (y-itemsStartY) + itemScroll
-        local showItems = {}
-        for i,item in ipairs(dataItems) do
-            if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
-                table.insert(showItems, item)
-            end
-        end
-
-        if showItems[idxInShowItems] then
-            selectedItemIdx = nil
-            for k,v in ipairs(dataItems) do
-                if v == showItems[idxInShowItems] then
-                    selectedItemIdx = k
-                    break
-                end
-            end
-            addLog("Выбран предмет: " .. (dataItems[selectedItemIdx].name or "<??>"), "INFO")
-        end
-    else
-        selectedItemIdx = nil
-    end
-
-    draw()
-end)
-
-event.listen("drag", function(_,_,x,y,_,_)
-    if changeitem then return end
-    hoveredButton = nil
-    tooltip = ""
-
-    local btns = {
-        {idx=1, x=WIDTH-60, y=BUTTON_Y, w=12, h=3},
-        {idx=2, x=WIDTH-45, y=BUTTON_Y, w=12, h=3},
-        {idx=3, x=WIDTH-30, y=BUTTON_Y, w=12, h=3},
-        {idx=4, x=WIDTH-15, y=BUTTON_Y, w=12, h=3},
-    }
-    for i,btn in ipairs(btns) do
-        if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
-            hoveredButton = btn.idx
-            tooltipTimeout = os.time()
-            if btn.idx == 1 then tooltip = "Удалить выбранный предмет из списка"
-            elseif btn.idx == 2 then tooltip = "Изменить параметры выбранного предмета"
-            elseif btn.idx == 3 then tooltip = (isCrafting and "Остановить автокрафт" or "Запустить автокрафт")
-            elseif btn.idx == 4 then tooltip = "Добавить новый предмет (предмет в 1 слоте ME интерфейса)"
-            end
-            draw()
-            return
-        end
-    end
-    draw()
-end)
-
-event.listen("key_down", function(_,_,key,_,_)
-    if changeitem then return end
-
-    local showItems = {}
-    for i,item in ipairs(dataItems) do
-        if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
-            table.insert(showItems, item)
-        end
-    end
-    local perPage = TABLE_VISIBLE_ROWS
-
-    if searchActive then
-        if key == 14 then
-            search = unicode.sub(search, 1, unicode.len(search)-1)
-        elseif key == 211 then
-            search = ""
-        elseif key == 28 then
-            searchActive = false
-        else
-            local char_code = key
-            if char_code >= 32 and char_code <= 126 then
-                if unicode.len(search) < WIDTH-15 then
-                    search = search .. unicode.char(char_code)
-                end
-            end
-        end
-        itemScroll = 1
-        selectedItemIdx = nil
-    else
-        if key == 200 then
-            itemScroll = math.max(1,itemScroll-1)
-        elseif key == 208 then
-            if #showItems > perPage then
-                itemScroll = math.min(#showItems-perPage+1,itemScroll+1)
-            end
-        end
-    end
-    draw()
-end)
-
-event.listen("key_press", function(_, char)
-    if changeitem then return end
-    if searchActive then
-        if not (char == '\n' or char == '\b' or char == '\r') then
-            if unicode.len(search) < WIDTH-15 then
-                search = search .. char
-            end
-        end
-        itemScroll = 1
-        selectedItemIdx = nil
-        draw()
-    end
-end)
-
-
--------------------- Старт --------------------
-g.setResolution(WIDTH,HEIGHT)
-clearScreen()
-addLog("Программа запущена.", "INFO")
-reload()
-draw()
-
-local craftThread = coroutine.create(autoCraftLoop)
-
-while true do
-    local status, result = coroutine.resume(craftThread)
-    if not status then
-        addLog("Фатальная ошибка в цикле автокрафта: "..tostring(result), "ERROR")
-        draw()
-        os.sleep(5)
-        computer.shutdown(true)
-    end
-
-    local e = {event.pull(0.05)}
-    if e[1] == "touch" then
-        event.push("touch", e[2],e[3],e[4],e[5],e[6],e[7])
-    elseif e[1] == "drag" then
-        event.push("drag", e[2],e[3],e[4],e[5],e[6],e[7])
-    elseif e[1] == "key_down" then
-        event.push("key_down", e[2],e[3],e[4],e[5],e[6],e[7])
-    elseif e[1] == "key_press" then
-        event.push("key_press", e[2],e[3],e[4],e[5])
-    end
-
-    draw()
-end
+        {idx=4, x=WIDTH-15, y=BUTTON_Y, w=1
