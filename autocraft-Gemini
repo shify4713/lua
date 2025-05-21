@@ -1,7 +1,7 @@
 -- autoCraftUltimate.lua
 -- Полностью исправленная версия для OpenOS 1.6.1, Lua 5.2
 -- Без функционала времени, логи с префиксом [!]
--- Исправлены мерцания логов, наложение элементов, визуал таблицы.
+-- Исправлены мерцания логов, наложение элементов, визуал таблицы и ошибка 'drawTooltip'.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -67,21 +67,28 @@ local COLORS = {
     tooltip_bg = 0x44475a,
     tooltip_text = 0xF8F8F2,
 }
--- Увеличим высоту, чтобы разместить все элементы без наложений
-local WIDTH, HEIGHT = 110, 40 
+local WIDTH, HEIGHT = 110, 40
 local craftStatus = "Ожидание..."
 local nextCraftUpdate = 0
 local isCrafting = false
 
 -- Количество строк для логов и их позиция
 local LOG_LINES = 3
-local LOG_Y_START = HEIGHT - LOG_LINES + 1
+local LOG_HEIGHT = LOG_LINES + 1 -- 3 строки текста + 1 для отступа
+local LOG_Y_START = HEIGHT - LOG_LINES + 1 -- Логи начинаются с этого Y
 
 -- Позиция кнопок
-local BUTTON_Y = HEIGHT - 4
+local BUTTON_HEIGHT = 3 -- Высота кнопки
+local BUTTON_Y = LOG_Y_START - BUTTON_HEIGHT - 1 -- Кнопки над логами, с отступом
 
 -- Позиция поля поиска
-local SEARCH_BAR_Y = BUTTON_Y - 5 -- Расположим поиск выше кнопок, чтобы они не накладывались
+local SEARCH_BAR_HEIGHT = 3 -- Высота поля поиска
+local SEARCH_BAR_Y = BUTTON_Y - SEARCH_BAR_HEIGHT - 1 -- Поиск над кнопками, с отступом
+
+-- Позиция начала таблицы
+local TABLE_Y_START = 8 -- Начало таблицы (заголовок + 2 строки)
+-- Количество видимых строк таблицы
+local TABLE_VISIBLE_ROWS = SEARCH_BAR_Y - TABLE_Y_START - 4 -- От начала таблицы до поля поиска, минус заголовки и рамки
 
 -------------------- Переменные --------------------
 local logs = {}
@@ -96,14 +103,18 @@ local tooltip = ""
 local tooltipTimeout = 0
 local lastDrawTime = 0 -- Для отслеживания времени между перерисовками (для производительности)
 
+-- Предварительные объявления функций (чтобы избежать 'nil value' ошибок)
+local draw
+local drawTooltip
+local addLog
+
 -------------------- Логгирование --------------------
-local function addLog(text, lvl)
+function addLog(text, lvl)
     lvl = lvl or "INFO"
-    local t = string.format("[!] [%s] %s", lvl, text) -- Лог с префиксом [!]
+    local t = string.format("[!] [%s] %s", lvl, text)
     table.insert(logs, t)
-    -- Ограничиваем количество логов для экономии памяти и места на экране
-    while #logs > LOG_LINES * 2 do table.remove(logs, 1) end -- Чуть больше, чем видно, для плавности
-    drawLogs() -- Перерисовываем логи сразу при добавлении
+    while #logs > LOG_LINES * 2 do table.remove(logs, 1) end -- Ограничиваем количество логов
+    draw() -- Перерисовываем весь экран, чтобы логи обновились
 end
 
 -------------------- Визуал --------------------
@@ -128,18 +139,15 @@ local function drawHeader()
     g.setBackground(COLORS.bg)
     uoc.drawText(WIDTH-34,3,"Статус: "..craftStatus,
         (craftStatus:find("Ошибка") and COLORS.error) or COLORS.ok)
-    uoc.progressBar(3,5,WIDTH-6, isCrafting and 0.9 or 0) -- Прогресс бар для визуализации активности
+    uoc.progressBar(3,5,WIDTH-6, isCrafting and 0.9 or 0)
 end
 
-local function drawLogs()
-    -- Логи в самом низу, 3 строки
+function drawLogs()
     local start = math.max(1, #logs - LOG_LINES + 1)
     g.setBackground(COLORS.bg)
     for i = 1, LOG_LINES do
-        -- Очищаем только область каждой строки лога, не весь фон.
+        -- Очищаем каждую строку лога перед отрисовкой, чтобы избежать мерцания
         g.fill(1, LOG_Y_START + i - 1, WIDTH, 1, " ")
-    end
-    for i = 1, LOG_LINES do
         local idx = start + i - 1
         if logs[idx] then
             g.setForeground(COLORS.log)
@@ -150,16 +158,12 @@ local function drawLogs()
 end
 
 local function drawItems()
-    local x, y = 2, 8
+    local x, y = 2, TABLE_Y_START
     local totalWidth = WIDTH - 6
-    -- Динамический расчет ширины колонок
     local col_name = math.floor(totalWidth * 0.44)
     local col_now = math.floor(totalWidth * 0.18)
     local col_hold = math.floor(totalWidth * 0.18)
-    local col_once = totalWidth - col_name - col_now - col_hold -- Последняя колонка заполняет оставшееся пространство
-
-    -- Вычисление количества строк для предметов, исходя из новой высоты
-    local perPage = SEARCH_BAR_Y - y - 6 -- Высота таблицы: от заголовка до поля поиска, минус отступы
+    local col_once = totalWidth - col_name - col_now - col_hold
 
     -- Верх рамки
     g.setForeground(COLORS.select_active)
@@ -188,16 +192,15 @@ local function drawItems()
     -- Фильтрация предметов для отображения
     local showItems = {}
     for i,item in ipairs(dataItems) do
-        -- Используем unicode.lower для поиска без учета регистра
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
             table.insert(showItems, item)
         end
     end
 
-    for i = itemScroll, math.min(#showItems, itemScroll + perPage - 1) do
+    for i = itemScroll, math.min(#showItems, itemScroll + TABLE_VISIBLE_ROWS - 1) do
         local it = showItems[i]
         local isSel = (selectedItemIdx and dataItems[selectedItemIdx] == it)
-        local row = y + 2 + (i - itemScroll) + 1 -- Вычисляем текущую строку для отрисовки
+        local row = y + 2 + (i - itemScroll) + 1
 
         g.setBackground(isSel and COLORS.select_active or COLORS.bg)
         g.setForeground(COLORS.text)
@@ -219,27 +222,27 @@ local function drawItems()
         g.setBackground(COLORS.bg)
     end
 
-    -- Очистка строк ниже текущего отображения, если предметов меньше perPage
-    for i = #showItems + 1, itemScroll + perPage - 1 do
+    -- Очистка строк ниже текущего отображения
+    for i = #showItems + 1, itemScroll + TABLE_VISIBLE_ROWS - 1 do
         local row = y + 2 + (i - itemScroll) + 1
-        if row < SEARCH_BAR_Y then -- Убедимся, что не затираем нижние элементы
+        if row < SEARCH_BAR_Y then
             g.fill(x, row, totalWidth + 6, 1, " ")
         end
     end
 
     -- Низ рамки
-    local lastRow = y+perPage+3
+    local lastRow = y + TABLE_VISIBLE_ROWS + 3
     g.setForeground(COLORS.select_active)
     g.set(x, lastRow, "└"..string.rep("─",col_name).."┴"..string.rep("─",col_now).."┴"..string.rep("─",col_hold).."┴"..string.rep("─",col_once).."┘")
     g.setForeground(COLORS.text)
 
     -- Скроллбар если нужно
-    if #showItems > perPage then
-        local barLen = math.max(2, math.floor(perPage * perPage / #showItems))
-        local barTop = y + 3 + math.floor((perPage - barLen) * (itemScroll - 1) / math.max(1, #showItems - perPage))
+    if #showItems > TABLE_VISIBLE_ROWS then
+        local barLen = math.max(2, math.floor(TABLE_VISIBLE_ROWS * TABLE_VISIBLE_ROWS / #showItems))
+        local barTop = y + 3 + math.floor((TABLE_VISIBLE_ROWS - barLen) * (itemScroll - 1) / math.max(1, #showItems - TABLE_VISIBLE_ROWS))
         g.setForeground(COLORS.select_active)
-        g.fill(WIDTH-2, y+3, 1, perPage, " ") -- Очистка всей области скроллбара перед отрисовкой
-        for i=1,perPage do
+        g.fill(WIDTH-2, y+3, 1, TABLE_VISIBLE_ROWS, " ")
+        for i=1,TABLE_VISIBLE_ROWS do
              g.set(WIDTH-2, y+2+i, "│")
         end
         g.setForeground(COLORS.ok)
@@ -251,17 +254,17 @@ local function drawItems()
 end
 
 local function drawSearchBar()
-    local x, y, w, h = 3, SEARCH_BAR_Y, WIDTH-6, 3
+    local x, y, w, h = 3, SEARCH_BAR_Y, WIDTH-6, SEARCH_BAR_HEIGHT
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
-    g.fill(x+1, y+1, w-2, h-2, " ") -- Очистка внутри рамки
+    g.fill(x+1, y+1, w-2, h-2, " ")
     g.setForeground(COLORS.search_cross)
-    g.set(x+w-3, y+1, (search ~= "" and "×" or " ")) -- Кнопка сброса поиска
+    g.set(x+w-3, y+1, (search ~= "" and "×" or " "))
     g.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
     local display = search
     if display=="" then display = "Поиск: введите часть названия..." end
-    if searchActive then display = display .. "_" end -- Курсор
-    local maxlen = w - 7 -- Максимальная длина текста для отображения (с учетом "Поиск: " и "х")
+    if searchActive then display = display .. "_" end
+    local maxlen = w - 7
     if unicode.len(display) > maxlen then
         display = unicode.sub(display, unicode.len(display)-maxlen+2)
     end
@@ -289,16 +292,14 @@ end
 
 local function drawFooter()
     g.setBackground(COLORS.bg)
-    g.fill(1, HEIGHT, WIDTH, 1, " ") -- Очищаем нижнюю строку (не используется, но на всякий случай)
+    g.fill(1, HEIGHT, WIDTH, 1, " ")
     g.setForeground(COLORS.text)
 end
 
--- Функция drawTooltip
-local function drawTooltip()
+function drawTooltip()
     if tooltip and tooltip ~= "" and os.time() - tooltipTimeout >= 0.5 then
         local tipWidth = unicode.len(tooltip) + 4
         local tipHeight = 3
-        -- Позиционируем подсказку: справа, сверху, чтобы не перекрывать кнопки или логи
         local tipX = math.max(1, WIDTH - tipWidth - 1)
         local tipY = 1
 
@@ -318,17 +319,16 @@ local function drawTooltip()
     end
 end
 
-
-local function draw()
+function draw()
     if computer.uptime() - lastDrawTime < 0.1 then return end
     lastDrawTime = computer.uptime()
 
-    clearScreen() -- Очищаем экран полностью для полной перерисовки
+    clearScreen()
     drawHeader()
     drawItems()
     drawSearchBar()
     drawButtons()
-    drawLogs() -- Теперь логи будут всегда внизу
+    drawLogs()
     drawFooter()
     drawTooltip()
     g.setResolution(WIDTH, HEIGHT)
@@ -556,7 +556,7 @@ event.listen("touch", function(_,_,x,y,_,_)
         end
     end
 
-    local searchBarX, searchBarY, searchBarW, searchBarH = 3, SEARCH_BAR_Y, WIDTH-6, 3
+    local searchBarX, searchBarY, searchBarW, searchBarH = 3, SEARCH_BAR_Y, WIDTH-6, SEARCH_BAR_HEIGHT
     if x >= searchBarX and x <= searchBarX + searchBarW - 1 and y >= searchBarY and y <= searchBarY + searchBarH - 1 then
         if x >= searchBarX + searchBarW - 3 and x <= searchBarX + searchBarW - 1 and search ~= "" then
             search = ""
@@ -571,9 +571,8 @@ event.listen("touch", function(_,_,x,y,_,_)
         searchActive = false
     end
 
-    local perPage = SEARCH_BAR_Y - 8 - 6 -- Обновленное количество строк для предметов
-    local itemsStartY = 11
-    local itemsEndY = itemsStartY + perPage - 1
+    local itemsStartY = TABLE_Y_START + 3 -- Начало строк данных в таблице
+    local itemsEndY = itemsStartY + TABLE_VISIBLE_ROWS - 1 -- Конец строк данных в таблице
 
     if y >= itemsStartY and y <= itemsEndY then
         local idxInShowItems = (y-itemsStartY) + itemScroll
@@ -637,7 +636,7 @@ event.listen("key_down", function(_,_,key,_,_)
             table.insert(showItems, item)
         end
     end
-    local perPage = SEARCH_BAR_Y - 8 - 6
+    local perPage = TABLE_VISIBLE_ROWS
 
     if searchActive then
         if key == 14 then
