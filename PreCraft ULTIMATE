@@ -1,84 +1,54 @@
--- PreCraft ULTIMATE GUI (2025 edition): полный рабочий файл
--- Асинхронный ввод, современный GUI, исправленный автокрафт, логирование заказов
+-- PreCraft ULTIMATE (2025 Refactored Edition)
+-- Автор: shify4713, оптимизация и рефактор: GitHub Copilot Chat Assistant
 
+-- 1. Импорты и глобальные переменные
 local component = require("component")
-local fs = require("filesystem")
-local shell = require("shell")
 local event = require("event")
 local unicode = require("unicode")
 local term = require("term")
-local bit32 = require("bit32")
+local fs = require("filesystem")
+local shell = require("shell")
+
 local g = component.gpu
 local me = component.me_interface
 
-if not fs.exists("/lib/oc.lua") then
-    shell.execute("wget https://www.dropbox.com/s/cgfytt8g174a6vs/libPrecraft.lua?dl=1 /lib/oc.lua")
-end
-local oc = require("oc")
-if not fs.exists("/home/BD.txt") then
-    oc.savef("BD.txt", {})
-end
-
-local COLOR = {
-    BG1 = 0x181824,
-    BG2 = 0x232c42,
-    BORDER1 = 0x00ffff,
-    BORDER2 = 0x0055aa,
-    HEADER = 0xA4FFFA,
-    TAB_ON = 0x00AADD,
-    TAB_OFF = 0x232c42,
-    TAB_TEXT = 0xFFFFFF,
-    BUTTON = 0x00AADD,
-    BUTTON_TEXT = 0x181824,
-    BUTTON_BORDER = 0x005577,
-    BUTTON_SHADOW = 0x111118,
-    BUTTON_ON = 0x26d6ff,
-    SELECT = 0x444477,
-    SELECT_TEXT = 0xFFFFFF,
-    SEARCH_BG = 0x003355,
-    SEARCH_TEXT = 0xA4FFFA,
-    LOG_BG = 0x222233,
-    LOG_TEXT = 0xB2B2FF,
-    TEXT = 0xD38FFE,
-    LABEL = 0xFFD580,
-    SHADOW = 0x111118,
-    HINT = 0x73848d,
-    ERROR = 0xFF4444,
-    INPUT_BG = 0x232c42,
-    INPUT_TEXT = 0xA4FFFA,
-    INPUT_BORDER = 0x00AADD,
-    BLOCK_BG = 0x22212f,
-    BLOCK_SHADOW = 0x120c1c,
-    BLOCK_BORDER = 0x0055aa,
-    TABLE_LINE = 0xB78BFF
-}
-
-local ADM = {['LiwMorgan']=true, ['shify4713']=true}
 local WIDTH, HEIGHT = 160, 50
 g.setResolution(WIDTH, HEIGHT)
-g.setForeground(COLOR.TEXT)
-local scroll, maxscroll = 1, 1
-local guiPath, logs = {"start"}, {}
-local redraw = true
-local inputFind = ""
-local dataItems, content, posSelect = {}, {}, nil
-local lastButtons = {}
-local errorMsg = nil
-local go = false
-local dataq = nil
-local inputActive = false
-local inputValue = ""
-local inputPrompt = ""
-local editAction = nil
-local changeitem = false
 
-local lastLogUpdate = os.clock()
-local LOG_UPDATE_INTERVAL = 6
-local lastDraw = os.clock()
-local DRAW_INTERVAL = 0.3
-local prevTab = guiPath[#guiPath]
-local lastCraftCheck = os.clock()
-local CRAFT_CHECK_INTERVAL = 15
+local ADM = {['LiwMorgan']=true, ['shify4713']=true}
+local COLOR = {
+    BG1=0x181824, BG2=0x232c42, BORDER1=0x00ffff, BORDER2=0x0055aa,
+    HEADER=0xA4FFFA, TAB_ON=0x00AADD, TAB_OFF=0x232c42, TAB_TEXT=0xFFFFFF,
+    BUTTON=0x00AADD, BUTTON_TEXT=0x181824, BUTTON_BORDER=0x005577,
+    BUTTON_SHADOW=0x111118, BUTTON_ON=0x26d6ff, SELECT=0x444477, SELECT_TEXT=0xFFFFFF,
+    SEARCH_BG=0x003355, SEARCH_TEXT=0xA4FFFA, LOG_BG=0x222233, LOG_TEXT=0xB2B2FF,
+    TEXT=0xD38FFE, LABEL=0xFFD580, SHADOW=0x111118, HINT=0x73848d,
+    ERROR=0xFF4444, INPUT_BG=0x232c42, INPUT_TEXT=0xA4FFFA, INPUT_BORDER=0x00AADD,
+    BLOCK_BG=0x22212f, BLOCK_SHADOW=0x120c1c, BLOCK_BORDER=0x0055aa, TABLE_LINE=0xB78BFF
+}
+
+local DATA_PATH = "/home/BD.txt"
+local LOG_PATH = "/home/PCU.log"
+local LIB_OC = "/lib/oc.lua"
+local LIB_OC_URL = "https://www.dropbox.com/s/cgfytt8g174a6vs/libPrecraft.lua?dl=1"
+
+-- 2. Утилиты
+local function loadTable(path)
+    if not fs.exists(path) then return {} end
+    local f = io.open(path, "r")
+    if not f then return {} end
+    local data = f:read("*a")
+    f:close()
+    local ok, t = pcall(function() return load("return "..data)() end)
+    return ok and t or {}
+end
+
+local function saveTable(path, tbl)
+    local f = io.open(path, "w")
+    if not f then return end
+    f:write("return " .. require("serialization").serialize(tbl))
+    f:close()
+end
 
 local function getMoscowTime()
     local t = os.time()
@@ -87,33 +57,55 @@ local function getMoscowTime()
     return string.format("%02d:%02d:%02d", hour, utc.min, utc.sec)
 end
 
-local function sleepNoFreeze(sec)
-    local t0 = os.clock()
-    repeat
-        os.sleep(0.05)
-    until os.clock() - t0 >= sec
+local function addLog(logs, msg)
+    local line = ("[%s] %s"):format(getMoscowTime(), tostring(msg))
+    table.insert(logs, line)
+    if #logs > 200 then table.remove(logs, 1) end
+    local f = io.open(LOG_PATH, "a")
+    if f then f:write(line.."\n") f:close() end
 end
 
-local function gradient(y1, y2, color1, color2)
-    for y = y1, y2 do
-        local t = (y-y1)/(y2-y1)
-        local function mix(a,b) return math.floor(a + (b-a)*t) end
-        local r1 = bit32.band(bit32.rshift(color1, 16), 0xff)
-        local g1 = bit32.band(bit32.rshift(color1, 8), 0xff)
-        local b1 = bit32.band(color1, 0xff)
-        local r2 = bit32.band(bit32.rshift(color2, 16), 0xff)
-        local g2 = bit32.band(bit32.rshift(color2, 8), 0xff)
-        local b2 = bit32.band(color2, 0xff)
-        local r = mix(r1, r2)
-        local g_ = mix(g1, g2)
-        local b = mix(b1, b2)
-        g.setBackground(bit32.lshift(r, 16) + bit32.lshift(g_, 8) + b)
-        g.fill(1, y, WIDTH, 1, " ")
-    end
+local function shallowcopy(t)
+    local r = {}; for k,v in pairs(t) do r[k]=v end; return r
+end
+
+-- 3. Стейт и архитектура
+local state = {
+    tab = "main", -- main/change/log
+    data = {},
+    logs = {},
+    redraw = true,
+    select = 1,
+    scroll = 1,
+    input = {active=false, value="", prompt="", action=nil, confirm=nil},
+    search = "",
+    go = false,
+    error = nil
+}
+
+-- 4. Инициализация
+if not fs.exists(LIB_OC) then
+    shell.execute("wget "..LIB_OC_URL.." "..LIB_OC)
+end
+local oc = require("oc")
+
+if not fs.exists(DATA_PATH) then
+    saveTable(DATA_PATH, {})
+end
+if not fs.exists(LOG_PATH) then
+    local f = io.open(LOG_PATH, "w") if f then f:close() end
+end
+
+state.data = loadTable(DATA_PATH)
+state.logs = loadTable(LOG_PATH)
+
+-- 5. Графика и GUI
+local function clear()
     g.setBackground(COLOR.BG1)
+    g.fill(1,1,WIDTH,HEIGHT," ")
 end
 
-local function doubleBorder()
+local function drawBorder()
     g.setForeground(COLOR.BORDER1)
     g.set(1,1,"╔"..string.rep("═",WIDTH-2).."╗")
     g.set(1,HEIGHT,"╚"..string.rep("═",WIDTH-2).."╝")
@@ -124,595 +116,380 @@ local function doubleBorder()
     for y=3,HEIGHT-2 do g.set(2,y,"║") g.set(WIDTH-1,y,"║") end
 end
 
-local function header()
+local function drawTabs()
+    local tabs = {{"Главная","main"},{"Изменить","change"},{"Логи","log"}}
+    local x = 8
+    for _,tab in ipairs(tabs) do
+        local active = (tab[2]==state.tab)
+        g.setBackground(active and COLOR.TAB_ON or COLOR.TAB_OFF)
+        g.setForeground(COLOR.TAB_TEXT)
+        g.set(x,5,"["..tab[1].."]")
+        x = x + unicode.len(tab[1])+4
+    end
+    g.setBackground(COLOR.BG1)
+end
+
+local function drawHeader()
     g.setBackground(COLOR.BG1)
     g.setForeground(COLOR.HEADER)
     local title = "PreCraft ULTIMATE"
     g.set(math.floor(WIDTH/2-unicode.len(title)/2),3,title)
 end
 
-local function drawTabs()
-    local tabs = {{"[Главная]","start"},{"[Изменить]","change"},{"[Логи]","log"}}
-    local x = 8
-    for i,tab in ipairs(tabs) do
-        local isActive = guiPath[#guiPath]==tab[2]
-        g.setBackground(isActive and COLOR.TAB_ON or COLOR.TAB_OFF)
-        g.setForeground(COLOR.TAB_TEXT)
-        g.set(x,5,tab[1])
-        x = x + unicode.len(tab[1]) + 2
-    end
-    g.setBackground(COLOR.BG1)
-end
-
-local function drawButton(x, y, w, label, active)
-    g.setBackground(COLOR.BUTTON_SHADOW)
-    g.fill(x+1, y+1, w, 1, " ")
-    g.setBackground(active and COLOR.BUTTON_ON or COLOR.BUTTON)
-    g.setForeground(COLOR.BUTTON_TEXT)
-    g.fill(x, y, w, 1, " ")
-    g.setForeground(COLOR.BUTTON_BORDER)
-    g.set(x, y, string.rep("─", w))
-    g.setForeground(COLOR.BUTTON_TEXT)
-    g.set(x+math.floor((w-unicode.len(label))/2), y, label)
-    g.setBackground(COLOR.BG1)
-end
-
 local function drawMainTable()
-    local leftPad = 8
-    local nameW = 60
-    local countW = 18
-    local craftW = 18
-    local xName = leftPad
-    local xCount = xName + nameW + 2
-    local xCraft = xCount + countW + 2
-
-    -- Заголовки
+    local xName, wName = 9, 60
+    local xCount, wCount = xName+wName+2, 14
+    local xCraft, wCraft = xCount+wCount+2, 14
+    local xSel = xCraft+wCraft+2
     g.setForeground(COLOR.LABEL)
-    g.set(xName, 8, "Название предмета:")
-    g.set(xCount, 8, "Кол-во:")
-    g.set(xCraft, 8, "Крафт:")
-    -- Линия под заголовком
+    g.set(xName,8,"Название предмета:")
+    g.set(xCount,8,"Кол-во:")
+    g.set(xCraft,8,"Крафт:")
+    g.set(xSel,8,"Выбрать")
     g.setForeground(COLOR.TABLE_LINE)
-    g.set(xName, 9, string.rep("─", nameW))
-    g.set(xCount, 9, string.rep("─", countW))
-    g.set(xCraft, 9, string.rep("─", craftW))
-
-    -- Список предметов
-    g.setForeground(COLOR.TEXT)
-    maxscroll = #content
-    for i = scroll, math.min(scroll+33, #content) do
-        local k = i-scroll+1
-        local item = content[i]
-        if item then
-            g.set(xName, 9+k, ("%2d. %s"):format(i, item.name or ""))
-            g.setForeground(COLOR.TEXT)
-            if item.count then
-                g.set(xCount, 9+k, ("%10s"):format(tostring(item.count)))
-            end
-            if item.craftSize then
-                g.set(xCraft, 9+k, ("%8s"):format(tostring(item.craftSize)))
-            end
+    g.set(xName,9,string.rep("─",wName))
+    g.set(xCount,9,string.rep("─",wCount))
+    g.set(xCraft,9,string.rep("─",wCraft))
+    g.set(xSel,9,string.rep("─",8))
+    local filtered = {}
+    for i,v in ipairs(state.data) do
+        if state.search=="" or unicode.lower(v.name or ""):find(unicode.lower(state.search)) then
+            table.insert(filtered, shallowcopy(v))
         end
-        g.setForeground(COLOR.TEXT)
     end
-    g.setBackground(COLOR.BG1)
+    state.filtered = filtered
+    local maxshow = 33
+    state.maxscroll = math.max(1, #filtered-maxshow+1)
+    for i=state.scroll,math.min(#filtered,state.scroll+maxshow-1) do
+        local y = 9+(i-state.scroll+1)
+        g.setForeground(i==state.select and COLOR.SELECT_TEXT or COLOR.TEXT)
+        g.setBackground(i==state.select and COLOR.SELECT or COLOR.BG1)
+        g.set(xName,y,(v and filtered[i].name or ""))
+        g.set(xCount,y,(filtered[i].count or ""))
+        g.set(xCraft,y,(filtered[i].craftSize or ""))
+        g.set(xSel,y, (i==state.select and "<--" or ""))
+        g.setBackground(COLOR.BG1)
+    end
     g.setForeground(COLOR.TEXT)
 end
 
-local function drawSearch(y)
-    local searchW = math.floor(WIDTH*0.6)
-    local x = math.floor((WIDTH-searchW)/2)
+local function drawSearch()
+    local w = math.floor(WIDTH*0.55)
+    local x = math.floor((WIDTH-w)/2)
+    local y = 43
     g.setBackground(COLOR.SEARCH_BG)
     g.setForeground(COLOR.SEARCH_TEXT)
-    g.fill(x, y, searchW, 1, " ")
-    local msg = "Поиск: "..(inputFind=="" and "Для поиска введите название.." or inputFind)
-    if unicode.len(msg) > searchW-3 then
-        msg = unicode.sub(msg, 1, searchW-3)
-    end
+    g.fill(x, y, w, 1, " ")
+    local msg = "Поиск: "..(state.search=="" and "Для поиска введите название.." or state.search)
+    if unicode.len(msg) > w-3 then msg = unicode.sub(msg, 1, w-3) end
     g.set(x+1, y, msg)
     g.setBackground(COLOR.BG1)
 end
 
-local function drawError(y, msg)
-    local errW = math.floor(WIDTH*0.8)
-    local x = math.floor((WIDTH-errW)/2)
-    g.setBackground(COLOR.BG1)
-    g.setForeground(COLOR.ERROR)
-    g.fill(x, y, errW, 1, " ")
-    local out = msg
-    if unicode.len(out) > errW-2 then
-        out = unicode.sub(out, 1, errW-2)
-    end
-    g.set(x+1, y, out)
-    g.setForeground(COLOR.TEXT)
-end
-
 local function drawMainButtons()
-    lastButtons = {}
-    drawButton(16,46,22,"[Добавить]",false)
-    table.insert(lastButtons, {x=16,y=46,w=22,h=1,action="add"})
-    drawButton(48,46,22,"[Изменить]",false)
-    table.insert(lastButtons, {x=48,y=46,w=22,h=1,action="edit"})
-    drawButton(80,46,22,"[Удалить]",false)
-    table.insert(lastButtons, {x=80,y=46,w=22,h=1,action="del"})
-    drawButton(WIDTH-54,48,24,"[РЕЖИМ: "..(go and "GO (автокрафт)" or "STOP").."]",go)
-    table.insert(lastButtons, {x=WIDTH-54,y=48,w=24,h=1,action="go"})
-    drawButton(WIDTH-28,48,16,"[Stop]",not go)
-    table.insert(lastButtons, {x=WIDTH-28,y=48,w=16,h=1,action="stop"})
+    local btns = {
+        {x=16, w=22, label="[Добавить]", action="add"},
+        {x=48, w=22, label="[Изменить]", action="edit"},
+        {x=80, w=22, label="[Удалить]", action="del"},
+        {x=WIDTH-54, w=24, label="[РЕЖИМ: "..(state.go and "GO (автокрафт)" or "STOP").."]", action="go"},
+        {x=WIDTH-28, w=16, label="[Stop]", action="stop"}
+    }
+    state.buttons = {}
+    for i,btn in ipairs(btns) do
+        g.setBackground(COLOR.BUTTON)
+        g.setForeground(COLOR.BUTTON_TEXT)
+        g.fill(btn.x,46,btn.w,1," ")
+        g.set(btn.x+math.floor((btn.w-unicode.len(btn.label))/2),46,btn.label)
+        table.insert(state.buttons, btn)
+    end
 end
 
-local function drawChangeBlock(item)
-    local x, y, w, h = 22, 9, 92, 13
-    g.setBackground(COLOR.BLOCK_SHADOW)
-    g.fill(x+2, y+2, w, h, " ")
-    g.setBackground(COLOR.BLOCK_BG)
-    g.fill(x, y, w, h, " ")
-    g.setForeground(COLOR.BLOCK_BORDER)
-    g.set(x, y, "┌"..string.rep("─",w-2).."┐")
-    for i=1,h-2 do
-        g.set(x, y+i, "│")
-        g.set(x+w-1,y+i,"│")
+local function drawError()
+    if state.error then
+        local w = math.floor(WIDTH*0.8)
+        local x = math.floor((WIDTH-w)/2)
+        local y = 45
+        g.setBackground(COLOR.BG1)
+        g.setForeground(COLOR.ERROR)
+        g.fill(x, y, w, 1, " ")
+        g.set(x+1, y, state.error)
+        g.setForeground(COLOR.TEXT)
     end
-    g.set(x, y+h-1, "└"..string.rep("─",w-2).."┘")
-    local lx = x+4
-    local ly = y+2
-    g.setForeground(COLOR.LABEL)
-    g.set(lx, ly, "Название предмета:")
-    g.setForeground(COLOR.TEXT); g.set(lx+22,ly,item.name or "")
-    g.setForeground(COLOR.LABEL)
-    g.set(lx, ly+2, "id предмета:"); g.setForeground(COLOR.TEXT); g.set(lx+22,ly+2,tostring(item.id or ""))
-    g.setForeground(COLOR.LABEL)
-    g.set(lx, ly+4, "dmg предмета:"); g.setForeground(COLOR.TEXT); g.set(lx+22,ly+4,tostring(item.dmg or ""))
-    g.setForeground(COLOR.LABEL)
-    g.set(lx, ly+6, "Количество поддержания:"); g.setForeground(COLOR.TEXT); g.set(lx+22,ly+6,tostring(item.count or ""))
-    g.setForeground(COLOR.LABEL)
-    g.set(lx, ly+8, "Размер крафта:"); g.setForeground(COLOR.TEXT); g.set(lx+22,ly+8,tostring(item.craftSize or ""))
-    g.setBackground(COLOR.BG1); g.setForeground(COLOR.TEXT)
 end
 
-local function drawChangeSearchInput()
-    local searchW = math.floor(WIDTH*0.55)
-    local x = math.floor((WIDTH-searchW)/2)
-    local y = 24
-    g.setBackground(COLOR.SHADOW)
-    g.fill(x+1, y+1, searchW, 1, " ")
-    g.setBackground(COLOR.SEARCH_BG)
-    g.setForeground(COLOR.SEARCH_TEXT)
-    g.fill(x, y, searchW, 1, " ")
-    g.setForeground(COLOR.INPUT_BORDER)
-    g.set(x, y, string.rep("─", searchW))
-    g.setForeground(COLOR.LABEL)
-    g.set(x, y-1, " Поиск/фильтр: ")
-    g.setForeground(COLOR.SEARCH_TEXT)
-    local shown = inputFind or ""
-    if unicode.len(shown) > searchW-2 then
-        shown = unicode.sub(shown, -searchW+2)
+local function drawLog()
+    g.setBackground(COLOR.LOG_BG)
+    g.setForeground(COLOR.LOG_TEXT)
+    local show = 32
+    local first = math.max(1, #state.logs-show+1)
+    for i=first,#state.logs do
+        g.set(8, 9+i-first+1, state.logs[i])
     end
-    g.set(x+1, y, shown)
     g.setBackground(COLOR.BG1)
     g.setForeground(COLOR.TEXT)
+    g.set(math.floor(WIDTH/2)-5,7,"Логи событий:")
 end
 
-local function drawChangeInputField(value, prompt)
+local function drawInput()
+    if not state.input.active then return end
     local w = 50
     local x = math.floor((WIDTH-w)/2)
     local y = 27
     g.setBackground(COLOR.SHADOW)
-    g.fill(x+1, y+1, w, 1, " ")
+    g.fill(x+1,y+1,w,1," ")
     g.setBackground(COLOR.INPUT_BG)
     g.setForeground(COLOR.INPUT_TEXT)
-    g.fill(x, y, w, 1, " ")
+    g.fill(x,y,w,1," ")
     g.setForeground(COLOR.INPUT_BORDER)
-    g.set(x, y-1, "┌"..string.rep("─", w-2).."┐")
-    g.set(x, y+1, "└"..string.rep("─", w-2).."┘")
-    if prompt then
-        g.setForeground(COLOR.LABEL)
-        g.set(x+2, y-2, prompt)
-    end
+    g.set(x,y-1,"┌"..string.rep("─",w-2).."┐")
+    g.set(x,y+1,"└"..string.rep("─",w-2).."┘")
+    g.setForeground(COLOR.LABEL)
+    g.set(x+2,y-2,state.input.prompt)
     g.setForeground(COLOR.INPUT_TEXT)
-    local shown = value or ""
-    if unicode.len(shown) > w-4 then
-        shown = unicode.sub(shown, -w+4)
-    end
+    local shown = state.input.value
+    if unicode.len(shown) > w-4 then shown = unicode.sub(shown, -w+4) end
     g.set(x+2, y, shown)
     g.setForeground(COLOR.LABEL)
-    g.set(x + 2 + unicode.len(shown), y, "_")
+    g.set(x+2+unicode.len(shown), y, "_")
     g.setBackground(COLOR.BG1)
     g.setForeground(COLOR.TEXT)
 end
 
-local function drawChangeButtons()
-    lastButtons = {}
-    local btns = {
-        {text="Изменить название", action="name"},
-        {text="Изменить количество", action="count"},
-        {text="Изменить размер крафта", action="craft"}
-    }
-    local btnW = 28
-    local gap = 8
-    local totalW = btnW * #btns + gap * (#btns - 1)
-    local startX = math.floor((WIDTH - totalW) / 2)
-    local y = 32
-    for i,btn in ipairs(btns) do
-        local bx = startX + (i-1)*(btnW+gap)
-        drawButton(bx, y, btnW, btn.text, false)
-        lastButtons[#lastButtons+1] = {x=bx,y=y,w=btnW,h=1,action=btn.action}
-    end
-    local backW = 20
-    local backY = 38
-    local backX = math.floor((WIDTH-backW)/2)
-    drawButton(backX, backY, backW, "Назад", false)
-    lastButtons[#lastButtons+1] = {x=backX,y=backY,w=backW,h=1,action="back"}
-end
-
-local function drawLogs(y)
-    g.setBackground(COLOR.LOG_BG)
-    g.setForeground(COLOR.LOG_TEXT)
-    local show = 32
-    local first = math.max(1, #logs-show+1)
-    for i=first,#logs do
-        g.set(8, y+i-first+1, logs[i])
-    end
-    g.setBackground(COLOR.BG1)
+local function drawConfirm()
+    local w=48; local x=math.floor((WIDTH-w)/2); local y=30
+    g.setBackground(COLOR.ERROR)
     g.setForeground(COLOR.TEXT)
+    g.fill(x, y, w, 3, " ")
+    g.set(x+2, y+1, state.input.confirm or "Подтвердить действие? (Y/N)")
+    g.setBackground(COLOR.BG1)
 end
 
-local function Main()
-    gradient(1,HEIGHT,COLOR.BG1,COLOR.BG2)
-    doubleBorder()
-    header()
+local function render()
+    clear()
+    drawBorder()
+    drawHeader()
     drawTabs()
-    if guiPath[#guiPath]=="start" or guiPath[#guiPath]=="go" or guiPath[#guiPath]=="stop" then
+    if state.tab=="main" then
         drawMainTable()
-        drawSearch(43)
-        if errorMsg then drawError(44, errorMsg) end
+        drawSearch()
         drawMainButtons()
+        drawError()
         g.setForeground(COLOR.HINT)
-        g.set(WIDTH-28,HEIGHT,"Всего "..#dataItems.." крафтов")
+        g.set(WIDTH-28,HEIGHT,"Всего "..#state.data.." крафтов")
         g.setForeground(COLOR.TEXT)
-    elseif guiPath[#guiPath] == "change" then
-        local item = dataItems[posSelect]
-        if item then
-            drawChangeBlock(item)
-            drawChangeSearchInput()
-            if inputActive then
-                drawChangeInputField(inputValue, inputPrompt)
-            end
-            drawChangeButtons()
-        end
-    elseif guiPath[#guiPath] == "log" then
+    elseif state.tab=="change" and state.filtered and state.filtered[state.select] then
+        local v = state.filtered[state.select]
         g.setForeground(COLOR.LABEL)
-        g.set(math.floor(WIDTH/2)-5,7,"Логи событий:")
-        drawLogs(8)
-        drawButton(math.floor((WIDTH-20)/2),47,20,"Назад",false)
-        lastButtons = {{x=math.floor((WIDTH-20)/2),y=47,w=20,h=1,action="back"}}
-    end
-    redraw = false
-end
-
-local function ScrollContent()
-    local cont = {}
-    if inputFind ~= nil and inputFind ~= "" then
-        for _, data in ipairs(dataItems) do
-            if unicode.lower(data.name):find(unicode.lower(inputFind)) then
-                table.insert(cont, data)
-            end
+        g.set(30,12,"Название: "..(v.name or "?"))
+        g.set(30,14,"id: "..(v.id or "?").."   dmg: "..(v.dmg or "?"))
+        g.set(30,16,"Количество поддержания: "..(v.count or "?"))
+        g.set(30,18,"Размер крафта: "..(v.craftSize or "?"))
+        g.setForeground(COLOR.TEXT)
+        local btns = {
+            {x=40,w=28,label="Изменить название",action="name"},
+            {x=75,w=28,label="Изменить количество",action="count"},
+            {x=110,w=28,label="Изменить размер крафта",action="craft"},
+            {x=90,w=20,label="Назад",action="back"}
+        }
+        state.buttons = btns
+        for i,btn in ipairs(btns) do
+            g.setBackground(COLOR.BUTTON)
+            g.setForeground(COLOR.BUTTON_TEXT)
+            g.fill(btn.x,32,btn.w,1," ")
+            g.set(btn.x+math.floor((btn.w-unicode.len(btn.label))/2),32,btn.label)
         end
-        return cont
-    else
-        return dataItems
+    elseif state.tab=="log" then
+        drawLog()
+        local w=20; local x=math.floor((WIDTH-w)/2)
+        g.setBackground(COLOR.BUTTON)
+        g.setForeground(COLOR.BUTTON_TEXT)
+        g.fill(x,47,w,1," ")
+        g.set(x+math.floor((w-unicode.len("Назад"))/2),47,"Назад")
+        state.buttons = {{x=x,w=w,label="Назад",y=47,action="back"}}
     end
+    drawInput()
+    if state.input.confirm then drawConfirm() end
+    state.redraw = false
 end
 
-local function SaveAndRefresh()
-    oc.savef("BD.txt", dataItems)
-    content = ScrollContent()
-    redraw = true
+-- 6. Логика и обработка событий
+local function saveAll()
+    saveTable(DATA_PATH, state.data)
 end
 
-local function toGui(gui, clear)
-    if gui == "change" and not posSelect then
-        if #content > 0 then posSelect = 1 end
-    end
-    if clear then guiPath[#guiPath] = nil end
-    if guiPath[#guiPath] ~= gui then guiPath[#guiPath+1] = gui end
-    dataItems = oc.loadf("BD.txt")
-    content = ScrollContent()
-    redraw = true
+local function refresh()
+    state.data = loadTable(DATA_PATH)
+    state.redraw = true
 end
 
-local function Back()
-    table.remove(guiPath, #guiPath)
-    posSelect = nil
-    redraw = true
+local function resetInput()
+    state.input = {active=false, value="", prompt="", action=nil, confirm=nil}
 end
 
-local function AddLog(msg)
-    table.insert(logs, "["..getMoscowTime().."] "..tostring(msg))
-    if #logs > 100 then table.remove(logs, 1) end
+local function askInput(prompt, action, default)
+    state.input.active = true
+    state.input.value = default or ""
+    state.input.prompt = prompt
+    state.input.action = action
 end
 
-local function eScroll(_,_,_,_,zs,nick)
-    if ADM[nick] then
-        if guiPath[#guiPath] == "start" or guiPath[#guiPath] == "stop" or guiPath[#guiPath] == "go" then
-            if not zs then
-                scroll = 1
-            elseif zs == 1 and scroll > 1 then
-                scroll = scroll - 1
-            elseif zs == -1 and scroll < maxscroll-33 then
-                scroll = scroll + 1
-            end
-            content = ScrollContent()
-            redraw = true
-        end
-    end
-end
-
-local function AddItem()
-    changeitem = true
-    errorMsg = nil
-    if me.getStackInSlot(1) then
-        g.fill(1,43, WIDTH, 1, " ")
-        g.set(14,43,"Введите название предмета:") term.setCursor(40,43)
-        local name = tostring(io.read()) g.fill(1,43,80,1, " ")
-        g.set(14,43,"Введите кол-во поддержания:") term.setCursor(41,43)
-        local count = tonumber(io.read()) g.fill(1,43,80,1, " ")
-        g.set(14,43,"Введите макс. объём крафта:") term.setCursor(41,43)
-        local craftSize = tonumber(io.read()) g.fill(1,43,80,1, " ")
-        table.insert(dataItems, {name=name, id = me.getStackInSlot(1).id, dmg = me.getStackInSlot(1).dmg, count = count, craftSize = craftSize})
-        SaveAndRefresh()
-        posSelect = #dataItems
-        redraw = true
-        Main()
-    else
-        errorMsg = "Ошибка: предмет не установлен в 1-й слот интерфейса!"
-        redraw = true
-        Main()
-        sleepNoFreeze(2)
-        errorMsg = nil
-        redraw = true
-    end
-    changeitem = false
-end
-
-local function RemoveItem()
-    if posSelect and content[posSelect] then
-        for i = 1, #dataItems do
-            if dataItems[i] == content[posSelect] then
-                AddLog("Удалён: "..(dataItems[i].name or "?"))
-                table.remove(dataItems, i)
-                SaveAndRefresh()
-                posSelect = nil
-                return
-            end
-        end
-    end
-end
-
-local function EditItem()
-    if posSelect and content[posSelect] then
-        for i = 1, #dataItems do
-            if dataItems[i] == content[posSelect] then
-                posSelect = i
-                toGui("change")
-                return
-            end
-        end
-    end
-end
-
-local function ChangeItem(action)
-    if posSelect and dataItems[posSelect] then
-        inputActive = true
-        inputValue = ""
-        inputPrompt = ({
-            name = "Новое название:",
-            count = "Новое количество:",
-            craft = "Новый размер крафта:"
-        })[action]
-        editAction = action
-        redraw = true
-    end
+local function askConfirm(msg, confirm_action)
+    state.input.confirm = msg
+    state.input.action = confirm_action
 end
 
 local function commitInput()
-    if not (posSelect and dataItems[posSelect]) then
-        inputActive = false
-        return
+    if not state.input.action then resetInput() return end
+    local idx = state.select
+    local v = state.filtered and state.filtered[idx]
+    if not v then resetInput() return end
+    if state.input.action=="name" then
+        v.name = state.input.value
+        addLog(state.logs, "Изменено имя: "..(v.name or "?"))
+    elseif state.input.action=="count" then
+        v.count = tonumber(state.input.value)
+        addLog(state.logs, "Изменено количество: "..tostring(v.count))
+    elseif state.input.action=="craft" then
+        v.craftSize = tonumber(state.input.value)
+        addLog(state.logs, "Изменён размер крафта: "..tostring(v.craftSize))
+    elseif state.input.action=="add" then
+        local item = me.getStackInSlot(1)
+        if not item then state.error="Положите предмет в 1-й слот интерфейса!"; resetInput(); return end
+        table.insert(state.data, {name=state.input.value,id=item.id,dmg=item.dmg,count=1,craftSize=1})
+        addLog(state.logs, "Добавлен предмет: "..state.input.value)
+        refresh()
     end
-    if editAction == "name" then
-        dataItems[posSelect].name = inputValue
-        AddLog("Изменено имя предмета")
-    elseif editAction == "count" then
-        dataItems[posSelect].count = tonumber(inputValue)
-        AddLog("Изменено количество")
-    elseif editAction == "craft" then
-        dataItems[posSelect].craftSize = tonumber(inputValue)
-        AddLog("Изменён размер крафта")
-    end
-    SaveAndRefresh()
-    inputActive = false
-    inputValue = ""
-    editAction = nil
-    redraw = true
+    saveAll()
+    resetInput()
+    refresh()
 end
 
-local function eButton(_,_,x,y,_, nick)
-    if ADM[nick] then
-        if inputActive then
-            return
+local function commitConfirm()
+    if not state.input.action then resetInput() return end
+    local idx = state.select
+    local v = state.filtered and state.filtered[idx]
+    if not v then resetInput() return end
+    if state.input.action=="del" then
+        for i,dat in ipairs(state.data) do
+            if dat==v then table.remove(state.data,i); break end
         end
-        for _,btn in ipairs(lastButtons) do
-            if y == btn.y and x >= btn.x and x < btn.x + btn.w then
-                if btn.action == "add" then AddItem()
-                elseif btn.action == "edit" then EditItem()
-                elseif btn.action == "del" then RemoveItem()
-                elseif btn.action == "go" then
-                    go = true
-                    dataq = dataItems
-                    toGui("go")
-                    AddLog("Режим: GO")
-                    redraw = true
-                elseif btn.action == "stop" then
-                    go = false
-                    toGui("stop")
-                    AddLog("Режим: STOP")
-                    redraw = true
-                elseif btn.action == "name" then ChangeItem("name")
-                elseif btn.action == "count" then ChangeItem("count")
-                elseif btn.action == "craft" then ChangeItem("craft")
-                elseif btn.action == "back" then Back()
-                end
-                return
-            end
+        addLog(state.logs, "Удалён: "..(v.name or "?"))
+        saveAll()
+        refresh()
+    end
+    resetInput()
+end
+
+local function handleKeyDown(key, chr)
+    if state.input.confirm then
+        if key==89 or key==121 then -- Y/y
+            commitConfirm()
+        elseif key==78 or key==110 then -- N/n
+            resetInput()
         end
-        if guiPath[#guiPath] == "start" or guiPath[#guiPath] == "stop" or guiPath[#guiPath] == "go" then
-            local yTableStart = 10
-            local yTableEnd = yTableStart + math.min(33, #content)-1
-            if y >= yTableStart and y <= yTableEnd then
-                local idx = scroll + (y-yTableStart)
-                if content[idx] then
-                    posSelect = idx
-                    redraw = true
-                    Main()
-                end
-            end
+        state.redraw = true; return
+    end
+    if state.input.active then
+        if key==13 then commitInput()
+        elseif key==8 then state.input.value=unicode.sub(state.input.value,1,-2)
+        elseif chr and unicode.len(state.input.value)<48 then
+            state.input.value=state.input.value..chr
         end
-        if y == 5 then
-            local tx = 8
-            local tabs = {{"[Главная]","start"},{"[Изменить]","change"},{"[Логи]","log"}}
-            for i,tab in ipairs(tabs) do
-                local len = unicode.len(tab[1])
-                if x >= tx and x < tx+len then
-                    toGui(tab[2])
-                    return
-                end
-                tx = tx + len + 2
-            end
+        state.redraw = true; return
+    end
+    -- Управление списком
+    if state.tab=="main" and not state.input.active then
+        if key==200 and state.select>1 then state.select=state.select-1; state.redraw=true
+        elseif key==208 and state.select<#(state.filtered or state.data) then state.select=state.select+1; state.redraw=true
+        elseif key==203 and state.scroll>1 then state.scroll=state.scroll-1; state.redraw=true
+        elseif key==205 and state.scroll<state.maxscroll then state.scroll=state.scroll+1; state.redraw=true
+        elseif key==13 then state.tab="change"; state.redraw=true
         end
+        -- Поиск
+        if key==8 then state.search=unicode.sub(state.search,1,-2); state.redraw=true
+        elseif chr then state.search=state.search..chr; state.redraw=true end
+    end
+    -- Выход из режима редактирования
+    if key==27 then
+        if state.tab~="main" then state.tab="main"; state.redraw=true end
+        resetInput()
     end
 end
 
-local function InputWrite(_,_,key1, key2, nick)
-    if ADM[nick] then
-        if inputActive then
-            if key1 == 13 then
-                commitInput()
-                return
-            elseif key1 == 8 then
-                inputValue = unicode.sub(inputValue, 1, -2)
-            elseif key1 ~= 0 then
-                inputValue = inputValue .. unicode.char(key1)
+local function handleTouch(_,_,x,y,_,nick)
+    if not ADM[nick] then return end
+    for _,btn in ipairs(state.buttons or {}) do
+        local by = btn.y or 46
+        if y==by and x>=btn.x and x<btn.x+btn.w then
+            if btn.action=="add" then
+                askInput("Название нового предмета:", "add", "")
+            elseif btn.action=="edit" then
+                state.tab="change"; state.redraw=true
+            elseif btn.action=="del" then
+                askConfirm("Удалить предмет?", "del")
+            elseif btn.action=="go" then
+                state.go=true; addLog(state.logs, "Режим: GO"); state.redraw=true
+            elseif btn.action=="stop" then
+                state.go=false; addLog(state.logs, "Режим: STOP"); state.redraw=true
+            elseif btn.action=="name" then
+                askInput("Новое название:", "name", state.filtered[state.select].name)
+            elseif btn.action=="count" then
+                askInput("Новое количество:", "count", tostring(state.filtered[state.select].count or ""))
+            elseif btn.action=="craft" then
+                askInput("Новый размер крафта:", "craft", tostring(state.filtered[state.select].craftSize or ""))
+            elseif btn.action=="back" then
+                state.tab="main"; state.redraw=true
             end
-            redraw = true
-            return
-        end
-        if not changeitem and (guiPath[#guiPath] == "start" or guiPath[#guiPath] == "stop" or guiPath[#guiPath] == "go" or guiPath[#guiPath]=="change") then
-            local searchW = math.floor(WIDTH*0.6)
-            local x = math.floor((WIDTH - searchW)/2)
-            g.fill(x, 43, searchW, 1, " ")
-            if key1 == 8 then
-                inputFind = unicode.sub(inputFind, 1, -2)
-            elseif key1 == 0 and key2 == 211 then
-                inputFind = ""
-            elseif key1 ~= 0 then
-                if inputFind == nil or inputFind == "" then
-                    inputFind = unicode.char(key1)
-                elseif unicode.len(inputFind) < (searchW-10) then
-                    inputFind = inputFind .. unicode.char(key1)
-                end
-            end
-            content = ScrollContent()
-            redraw = true
         end
     end
 end
 
--- Новый автокрафт: логирует каждый реальный заказ
-local function Check()
-    if not go or not dataq then return end
-    for i = 1, #dataq do
-        if not go then break end
-        local item = dataq[i]
-        -- Проверяем, нет ли уже активного заказа
-        if not item.craft or (item.craft.isDone and item.craft.isDone()) or (item.craft.isCanceled and item.craft.isCanceled()) then
-            item.craft = nil
-            local itemsMe = me.getItemDetail({id = item.id, dmg = item.dmg})
-            local qty = 0
-            if itemsMe then
-                qty = itemsMe.basic().qty or 0
-            end
-            local needed = (item.count or 0) - qty
-            if needed > (item.craftSize or 0) then needed = item.craftSize end
-            if needed > 0 then
-                local craftables = me.getCraftables({name = item.id, damage = item.dmg})
-                if craftables.n and craftables.n >= 1 then
-                    local cpus = me.getCpus()
-                    local free = false
-                    for j = 1, #cpus do
-                        if not cpus[j].busy then free = true break end
-                    end
-                    if free then
-                        item.craft = craftables[1].request(needed, false)
-                        AddLog("Крафт: "..(item.name or "?").." x"..needed)
-                    else
-                        AddLog("Нет свободных CPU для крафта "..(item.name or "?"))
-                    end
+-- 7. Автокрафт
+local function checkCraft()
+    if not state.go then return end
+    for _,v in ipairs(state.data) do
+        local itemsMe = me.getItemDetail({id=v.id,dmg=v.dmg})
+        local qty = itemsMe and itemsMe.basic().qty or 0
+        local needed = (v.count or 0) - qty
+        if needed > (v.craftSize or 0) then needed = v.craftSize end
+        if needed > 0 then
+            local craftables = me.getCraftables({name=v.id,damage=v.dmg})
+            if craftables.n and craftables.n>=1 then
+                local cpus = me.getCpus()
+                local free = false
+                for _,cpu in ipairs(cpus) do if not cpu.busy then free=true; break end end
+                if free then
+                    v.craft = craftables[1].request(needed,false)
+                    addLog(state.logs, "Крафт: "..(v.name or "?").." x"..needed)
                 else
-                    AddLog("Нет рецепта: "..(item.name or "?"))
-                end
-            end
-        end
-    end
-end
-
-local function LoadSystem()
-    g.fill(1,1,WIDTH, HEIGHT, " ")
-    dataItems = oc.loadf("BD.txt")
-    content = ScrollContent()
-    event.listen("touch", eButton)
-    event.listen("scroll", eScroll)
-    event.listen("key_down", InputWrite)
-    redraw = true
-    return true
-end
-
-function loop()
-    if LoadSystem() then
-        Main()
-        while true do
-            local ev = {event.pull(0.05)}
-            local now = os.clock()
-            local curTab = guiPath[#guiPath]
-            if curTab ~= prevTab then
-                Main()
-                prevTab = curTab
-                lastDraw = now
-                lastLogUpdate = now
-            end
-            if curTab == "log" then
-                if now - lastLogUpdate >= LOG_UPDATE_INTERVAL then
-                    Main()
-                    lastLogUpdate = now
-                    lastDraw = now
+                    addLog(state.logs, "Нет свободных CPU для крафта "..(v.name or "?"))
                 end
             else
-                if redraw and (now - lastDraw >= DRAW_INTERVAL) then
-                    Main()
-                    lastDraw = now
-                end
-            end
-            if go then
-                if now - lastCraftCheck >= CRAFT_CHECK_INTERVAL then
-                    Check()
-                    lastCraftCheck = now
-                end
+                addLog(state.logs, "Нет рецепта: "..(v.name or "?"))
             end
         end
     end
 end
 
-local ok, err = pcall(loop)
+-- 8. Главный цикл
+local function mainloop()
+    event.listen("touch", handleTouch)
+    event.listen("key_down", function(_,_,_,key,chr) handleKeyDown(key,chr and unicode.char(chr)) end)
+    local lastCheck = os.clock()
+    while true do
+        if state.redraw then render() end
+        if state.go and os.clock()-lastCheck>10 then
+            checkCraft()
+            lastCheck = os.clock()
+        end
+        os.sleep(0.05)
+    end
+end
+
+-- 9. Запуск
+local ok, err = pcall(mainloop)
 if not ok then
+    g.setBackground(COLOR.BG1)
+    g.setForeground(COLOR.ERROR)
     g.set(2, HEIGHT-1, "Ошибка: "..tostring(err))
 end
