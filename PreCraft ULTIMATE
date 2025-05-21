@@ -1,5 +1,3 @@
--- PreCraft ULTIMATE (2025 Refactored Edition)
--- Автор: shify4713, оптимизация и рефактор: GitHub Copilot Chat Assistant
 
 -- 1. Импорты и глобальные переменные
 local component = require("component")
@@ -58,6 +56,7 @@ local function getMoscowTime()
 end
 
 local function addLog(logs, msg)
+    logs = logs or {}
     local line = ("[%s] %s"):format(getMoscowTime(), tostring(msg))
     table.insert(logs, line)
     if #logs > 200 then table.remove(logs, 1) end
@@ -71,7 +70,7 @@ end
 
 -- 3. Стейт и архитектура
 local state = {
-    tab = "main", -- main/change/log
+    tab = "main",
     data = {},
     logs = {},
     redraw = true,
@@ -95,6 +94,9 @@ end
 if not fs.exists(LOG_PATH) then
     local f = io.open(LOG_PATH, "w") if f then f:close() end
 end
+
+state.data = loadTable(DATA_PATH)
+state.logs = loadTable(LOG_PATH)
 
 state.data = loadTable(DATA_PATH)
 state.logs = loadTable(LOG_PATH)
