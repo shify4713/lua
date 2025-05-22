@@ -65,8 +65,6 @@ local COLORS = {
     search_cross = 0xFF5555,
     search_hint = 0x888888,
     bar_shadow = 0x181920,
-    tooltip_bg = 0x44475a, -- Эта переменная не используется, но оставлена на случай если понадобится
-    tooltip_text = 0xF8F8F2, -- Эта переменная не используется
 }
 local WIDTH, HEIGHT = 110, 40
 local craftStatus = "Ожидание..."
@@ -82,7 +80,6 @@ local itemScroll = 1
 local changeitem = false -- Флаг для блокировки UI во время ввода
 local searchActive = false
 local hoveredButton = nil
--- Убраны переменные tooltip и tooltipTimeout
 
 -------------------- Логгирование --------------------
 local function addLog(text, lvl)
@@ -95,12 +92,19 @@ local function safeReadInput(promptText, x, y, defaultColor, promptColor)
     g.fill(x, y, WIDTH - x + 1, 1, " ") -- Очищаем строку для нового приглашения
     uoc.drawText(g, x, y, promptText, promptColor or COLORS.text)
 
-    term.setCursorPos(x + unicode.len(promptText) + 1, y)
-    term.setCursorBlink(true) -- Мигание курсора при вводе остается, так как это стандартное поведение терминала.
+    -- Дополнительная проверка term перед использованием
+    if term and term.setCursorPos and term.setCursorBlink then
+        term.setCursorPos(x + unicode.len(promptText) + 1, y)
+        term.setCursorBlink(true)
+    else
+        addLog("Ошибка: term недоступен для safeReadInput", "ERROR")
+    end
 
     local input = io.read()
 
-    term.setCursorBlink(false)
+    if term and term.setCursorBlink then
+        term.setCursorBlink(false)
+    end
     return input
 end
 
@@ -138,8 +142,8 @@ local function drawItems()
     local totalWidth = WIDTH-4
     local col_name = math.floor(totalWidth * 0.45)
     -- Уменьшаем ширину столбцов "В наличии" и "Держать"
-    local col_now = math.floor(totalWidth * 0.15) -- Было 0.17
-    local col_hold = math.floor(totalWidth * 0.15) -- Было 0.17
+    local col_now = math.floor(totalWidth * 0.14) -- Было 0.15
+    local col_hold = math.floor(totalWidth * 0.14) -- Было 0.15
     local col_once = totalWidth - col_name - col_now - col_hold
 
     g.setForeground(COLORS.select_active)
@@ -180,7 +184,7 @@ local function drawItems()
         g.set(x, row, "│")
         g.set(x+1, row, string.format("%-"..col_name.."s",nameStr))
         g.set(x+col_name+1, row, "│")
-        -- Форматируем числа, чтобы они не вылезали за границы
+        -- Форматируем числа, обрезая, если они слишком длинные
         g.set(x+col_name+2, row, string.format("%"..col_now.."s",unicode.sub(tostring(tonumber(it.current) or 0), 1, col_now)))
         g.set(x+col_name+col_now+2, row, "│")
         g.set(x+col_name+col_now+3, row, string.format("%"..col_hold.."s",unicode.sub(tostring(tonumber(it.count) or 0), 1, col_hold)))
@@ -225,11 +229,9 @@ local function drawSearchBar()
     g.setForeground(COLORS.search_cross)
     g.set(x+w-3, y+1, (search ~= "" and "×" or " "))
 
-    -- Убираем подсказку "Поиск: введите часть названия..."
-    g.setForeground(COLORS.search_hint) -- Используем серый цвет для ввода
+    g.setForeground(COLORS.search_hint)
     local display = search
-    -- Убираем мигание курсора в поле поиска, он мигает только при активном вводе через safeReadInput
-    -- if searchActive then display = display .. "_" end
+    -- Убрано мигание курсора в поле поиска, оно мигает только при активном вводе через safeReadInput
 
     local maxDisplayLen = w-7
     if unicode.len(display) > maxDisplayLen then
@@ -240,12 +242,14 @@ local function drawSearchBar()
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
 
-    -- Убираем мигание курсора при НЕактивном поле поиска
-    if searchActive then
+    -- Дополнительная проверка term перед использованием
+    if searchActive and term and term.setCursorPos and term.setCursorBlink then
         term.setCursorPos(x + 2 + unicode.len(search), y + 1)
         term.setCursorBlink(true)
     else
-        term.setCursorBlink(false)
+        if term and term.setCursorBlink then -- Убедимся, что term есть, прежде чем выключать мигание
+            term.setCursorBlink(false)
+        end
     end
 end
 
@@ -257,14 +261,9 @@ local function drawButtons()
         {name="Добавить", x=WIDTH-15},
     }
     for i,v in ipairs(btns) do
-        -- Убрана логика hoveredButton, чтобы не было анимации при наведении
-        -- Цвет меняется только если кнопка активно нажата (хотя в OpenComputers touch - это уже нажатие)
-        -- Здесь active всегда false, если нет реального "нажатого" состояния
         uoc.animatedButton(g, v.x, HEIGHT-4, 12, 3, v.name, false, COLORS.button, COLORS.buttonActive, COLORS.text)
     end
 end
-
--- Функция drawTooltip полностью удалена
 
 local function draw()
     clear()
@@ -273,7 +272,6 @@ local function draw()
     drawSearchBar()
     drawLogs()
     drawButtons()
-    -- drawTooltip() -- Вызов удален
 end
 
 -------------------- IO и действия --------------------
@@ -484,7 +482,7 @@ end
 -------------------- События --------------------
 event.listen("touch", function(_,_,x,y,_,_)
     if changeitem then return end
-    hoveredButton = nil -- Сбрасываем hoveredButton, так как подсказок нет
+    hoveredButton = nil
     local btns = {
         {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
         {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
@@ -493,7 +491,6 @@ event.listen("touch", function(_,_,x,y,_,_)
     }
     for i,btn in ipairs(btns) do
         if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
-            -- hoveredButton = i -- Это больше не нужно для подсказок
             if i==1 then removeItem()
             elseif i==2 then editItem()
             elseif i==3 then if isCrafting then stopCraft() else doCraft() end
@@ -543,12 +540,6 @@ end)
 
 event.listen("drag", function(_,_,x,y,_,_)
     -- Логика для hoveredButton и tooltip полностью удалена из drag
-    -- Если вам нужно выделение кнопки при наведении (как было раньше), то нужно вернуть
-    -- hoveredButton = i
-    -- tooltip = v.tip
-    -- tooltipTimeout = computer.uptime()
-    -- в цикл for i,btn
-    -- и затем в конце drag event.listen: hoveredButton = nil; tooltip = ""
     draw()
 end)
 
