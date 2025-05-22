@@ -58,13 +58,52 @@ local ok, uoc = pcall(require, "ultimateOC")
 if not ok then
     io.stderr:write("Не удалось загрузить ultimateOC.lua: " .. tostring(uoc) .. "\n")
     uoc = {}
-    function uoc.drawText(x, y, text, color, bold) g.setForeground(color or 0xFFFFFF) g.set(x, y, text) end
-    function uoc.roundRect(x, y, w, h, borderColor, bgColor) g.setBackground(bgColor or 0x000000) g.fill(x, y, w, h, " ") end
-    function uoc.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor) g.setBackground(bgColor) g.fill(x, y, w, h, " ") end
-    function uoc.drawLogs(x, y, logs, lines, color, offset) end
-    function uoc.savef(path, data) local file = io.open(path, "w") if file then file:write(textutils.serialize(data)) file:close() end end
-    function uoc.loadf(path) local file = io.open(path, "r") if not file then return nil end local content = file:read("*a") file:close() return load("return " .. content)() end
-    function uoc.progressBar(x, y, w, progress) end
+    function uoc.drawText(x, y, text, color, bold) 
+        g.setForeground(color or 0xFFFFFF) 
+        g.set(x, y, text) 
+    end
+    function uoc.roundRect(x, y, w, h, borderColor, bgColor) 
+        g.setForeground(borderColor or 0xFFFFFF) 
+        g.setBackground(bgColor or 0x000000) 
+        g.fill(x, y, w, h, " ") 
+    end
+    function uoc.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor) 
+        g.setBackground(hover and activeColor or bgColor) 
+        g.fill(x, y, w, h, " ") 
+        g.setForeground(textColor) 
+        local textX = x + math.floor((w - unicode.len(text)) / 2)
+        local textY = y + math.floor(h / 2)
+        g.set(textX, textY, text) 
+    end
+    function uoc.drawLogs(x, y, logs, lines, color, offset) 
+        g.setForeground(color) 
+        for i = 1, lines do
+            local logIndex = #logs - lines + i - offset
+            if logIndex > 0 then
+                g.set(x, y + i - 1, logs[logIndex] or "")
+            end
+        end
+    end
+    function uoc.savef(path, data) 
+        local file = io.open(path, "w") 
+        if file then 
+            file:write(textutils.serialize(data)) 
+            file:close() 
+        end 
+    end
+    function uoc.loadf(path) 
+        local file = io.open(path, "r") 
+        if not file then return nil end 
+        local content = file:read("*a") 
+        file:close() 
+        return load("return " .. content)() 
+    end
+    function uoc.progressBar(x, y, w, progress) 
+        g.setBackground(0x44475a) 
+        g.fill(x, y, w, 1, " ") 
+        g.setBackground(0x50FA7B) 
+        g.fill(x, y, math.floor(w * progress), 1, " ") 
+    end
 end
 
 -- Проверяем файл данных
@@ -110,11 +149,12 @@ local searchActive = false
 local logOffset = 0
 local lastRequestedItem = nil
 local lastRequestTime = 0
+local buttonHover = nil
 
 -------------------- Логгирование --------------------
 local function addLog(logs, text, lvl)
     lvl = lvl or "INFO"
-    local t = string.format("[%s] %s", lvl, text)
+    local t = string.format("%-7s %s", "[" .. lvl .. "]", text)
     table.insert(logs, t)
     while #logs > 50 do table.remove(logs, 1) end
 end
@@ -156,7 +196,7 @@ local function getFilteredAndSortedItems()
 end
 
 local function getItemsPerPage()
-    return HEIGHT - 18 -- Добавлено больше пространства для логов и кнопок
+    return HEIGHT - 20 -- Увеличено пространство
 end
 
 local function getMaxPages()
@@ -193,7 +233,7 @@ end
 
 local function drawItems()
     local filteredAndSortedItems = getFilteredAndSortedItems()
-    local x, y = 1, 8 -- Сдвинули таблицу ниже
+    local x, y = 1, 8
     local totalWidth = WIDTH - 20
     local col_name = math.floor(totalWidth * 0.35)
     local col_category = math.floor(totalWidth * 0.15)
@@ -319,26 +359,29 @@ local function drawButtons()
         {name = "Добавить", action = "add"},
     }
     for i, btn in ipairs(btns) do
-        local btnY = 8 + (i - 1) * (btnHeight + btnPadding) -- Сдвинуты вниз, чтобы соответствовать таблице
-        uoc.animatedButton(btnX, btnY, btnWidth, btnHeight, btn.name, false, COLORS.button, COLORS.buttonActive, COLORS.text)
+        local btnY = 8 + (i - 1) * (btnHeight + btnPadding)
+        local hover = (buttonHover == btn.action)
+        uoc.animatedButton(btnX, btnY, btnWidth, btnHeight, btn.name, hover, COLORS.button, COLORS.buttonActive, COLORS.text)
     end
     local arrowBtnW = 4
     local arrowBtnH = 3
     local arrowBtnY = 8 + (#btns * (btnHeight + btnPadding))
     local prevArrowBtnX = btnX
-    local nextArrowBtnX = btnX
+    local nextArrowBtnX = btnX + arrowBtnW + 1
     local maxPages = getMaxPages()
     local prevEnabled = (currentPage > 1)
-    uoc.animatedButton(prevArrowBtnX, arrowBtnY, arrowBtnW, arrowBtnH, "<-", false,
+    local prevHover = (buttonHover == "prevPage")
+    uoc.animatedButton(prevArrowBtnX, arrowBtnY, arrowBtnW, arrowBtnH, "<-", prevHover,
         prevEnabled and COLORS.button or COLORS.border,
         prevEnabled and COLORS.buttonActive or COLORS.border,
         prevEnabled and COLORS.text or COLORS.search_hint)
     local nextEnabled = (currentPage < maxPages)
-    uoc.animatedButton(nextArrowBtnX, arrowBtnY + arrowBtnH + 1, arrowBtnW, arrowBtnH, "->", false,
+    local nextHover = (buttonHover == "nextPage")
+    uoc.animatedButton(nextArrowBtnX, arrowBtnY, arrowBtnW, arrowBtnH, "->", nextHover,
         nextEnabled and COLORS.button or COLORS.border,
         nextEnabled and COLORS.buttonActive or COLORS.border,
         nextEnabled and COLORS.text or COLORS.search_hint)
-    local sortBtnY = arrowBtnY + (2 * (arrowBtnH + 1))
+    local sortBtnY = arrowBtnY + arrowBtnH + 2
     local sortBtnW = 12
     local sortIndicatorText = ""
     if settings.sortCriteria == "name" then
@@ -352,10 +395,11 @@ local function drawButtons()
     elseif settings.sortCriteria == "category" then
         sortIndicatorText = "Категория"
     end
-    sortIndicatorText = sortIndicatorText .. (settings.sortAscending and " ^" or " v")
+    sortIndicatorText = sortIndicatorText .. (settings.sortAscending and " ↑" or " ↓")
+    local sortHover = (buttonHover == "sort")
     uoc.animatedButton(btnX, sortBtnY, sortBtnW, arrowBtnH,
-        "Сортировать", false, COLORS.button, COLORS.buttonActive, COLORS.text,
-        sortIndicatorText, COLORS.text)
+        "Сортировать", sortHover, COLORS.button, COLORS.buttonActive, COLORS.text)
+    uoc.drawText(btnX, sortBtnY + 1, sortIndicatorText, COLORS.text)
 end
 
 local function draw()
@@ -675,24 +719,24 @@ local function updateButtonHover(x, y)
     for i, btn in ipairs(btns) do
         local btnY = 8 + (i - 1) * (btnHeight + btnPadding)
         if x >= btnX and x <= btnX + btnWidth - 1 and y >= btnY and y <= btnY + btnHeight - 1 then
-            return true, btn.action
+            return btn.action
         end
     end
     local arrowBtnW = 4
     local arrowBtnH = 3
     local arrowBtnY = 8 + (#btns * (btnHeight + btnPadding))
     local prevArrowBtnX = btnX
-    local nextArrowBtnX = btnX
-    local sortBtnY = arrowBtnY + (2 * (arrowBtnH + 1))
+    local nextArrowBtnX = btnX + arrowBtnW + 1
+    local sortBtnY = arrowBtnY + arrowBtnH + 2
     local sortBtnW = 12
     if x >= prevArrowBtnX and x <= prevArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
-        return true, "prevPage"
-    elseif x >= nextArrowBtnX and x <= nextArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY + arrowBtnH + 1 and y <= arrowBtnY + (2 * arrowBtnH) + 1 then
-        return true, "nextPage"
+        return "prevPage"
+    elseif x >= nextArrowBtnX and x <= nextArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
+        return "nextPage"
     elseif x >= btnX and x <= btnX + sortBtnW - 1 and y >= sortBtnY and y <= sortBtnY + arrowBtnH - 1 then
-        return true, "sort"
+        return "sort"
     end
-    return false, nil
+    return nil
 end
 
 event.listen("touch", function(_, _, x, y, _, _)
@@ -705,7 +749,7 @@ event.listen("touch", function(_, _, x, y, _, _)
         {name = "Крафт всех", action = "craftAll"},
         {name = "Удалить", action = "delete"},
         {name = "Изменить", action = "edit"},
-        {name = isCrafting and "Остановить Eliminar или "Автокрафт", action = "toggleCraft"},
+        {name = isCrafting and "Остановить" or "Автокрафт", action = "toggleCraft"},
         {name = "Добавить", action = "add"},
     }
     for i, btn in ipairs(btns) do
@@ -718,6 +762,7 @@ event.listen("touch", function(_, _, x, y, _, _)
             elseif btn.action == "add" then addItem()
             elseif btn.action == "craftAll" then craftAll()
             end
+            buttonHover = nil
             draw()
             return
         end
@@ -726,23 +771,25 @@ event.listen("touch", function(_, _, x, y, _, _)
     local arrowBtnH = 3
     local arrowBtnY = 8 + (#btns * (btnHeight + btnPadding))
     local prevArrowBtnX = btnX
-    local nextArrowBtnX = btnX
-    local sortBtnY = arrowBtnY + (2 * (arrowBtnH + 1))
+    local nextArrowBtnX = btnX + arrowBtnW + 1
+    local sortBtnY = arrowBtnY + arrowBtnH + 2
     local sortBtnW = 12
     if x >= prevArrowBtnX and x <= prevArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
         addLog(logs, "DEBUG: Кнопка '<-' нажата")
         if currentPage > 1 then
             currentPage = currentPage - 1
             selectedItem = nil
+            buttonHover = nil
             draw()
         end
         return
-    elseif x >= nextArrowBtnX and x <= nextArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY + arrowBtnH + 1 and y <= arrowBtnY + (2 * arrowBtnH) + 1 then
+    elseif x >= nextArrowBtnX and x <= nextArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
         addLog(logs, "DEBUG: Кнопка '->' нажата")
         local maxPages = getMaxPages()
         if currentPage < maxPages then
             currentPage = currentPage + 1
             selectedItem = nil
+            buttonHover = nil
             draw()
         end
         return
@@ -769,6 +816,7 @@ event.listen("touch", function(_, _, x, y, _, _)
         settings.sortCriteria = criteriaList[currentCriteriaIndex]
         currentPage = 1
         selectedItem = nil
+        buttonHover = nil
         save()
         draw()
         return
@@ -779,11 +827,13 @@ event.listen("touch", function(_, _, x, y, _, _)
             search = ""
             currentPage = 1
             selectedItem = nil
+            buttonHover = nil
             draw()
             return
         end
         if x >= 2 + 1 and x <= 2 + (WIDTH - 20) - 4 then
             searchActive = true
+            buttonHover = nil
             draw()
             return
         end
@@ -800,12 +850,24 @@ event.listen("touch", function(_, _, x, y, _, _)
         local actualIndexInFiltered = startIndex + idxOnPage
         if filteredAndSortedItems[actualIndexInFiltered] then
             for k, v in ipairs(dataItems) do
-                if v == filteredAndSortedItems[actualIndexInFiltered] then selectedItem = k break end
+                if v == filteredAndSortedItems[actualIndexInFiltered] then 
+                    selectedItem = k 
+                    break 
+                end
             end
         end
+        buttonHover = nil
         draw()
         return
     end
+    buttonHover = nil
+    draw()
+end)
+
+-- Добавим обработчик движения мыши для эффекта наведения
+event.listen("mouse_move", function(_, _, x, y)
+    if changeitem then return end
+    buttonHover = updateButtonHover(x, y)
     draw()
 end)
 
@@ -829,9 +891,10 @@ event.listen("key_down", function(_, _, key, _, _)
         end
         currentPage = 1
         selectedItem = nil
+        buttonHover = nil
     else
         addLog(logs, "DEBUG: Нажата клавиша: " .. key)
-        if key == 200 then
+        if key == 200 then -- Up arrow
             local currentSelectedItemInFiltered = nil
             local startIndex = (currentPage - 1) * perPage + 1
             local visibleItems = {}
@@ -846,19 +909,26 @@ event.listen("key_down", function(_, _, key, _, _)
                     end
                 end
             end
-            if #visibleItems == 0 then selectedItem = nil
+            if #visibleItems == 0 then 
+                selectedItem = nil
             elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered > 1 then
                 selectedItem = nil
                 for k, v in ipairs(dataItems) do
-                    if v == visibleItems[currentSelectedItemInFiltered - 1] then selectedItem = k break end
+                    if v == visibleItems[currentSelectedItemInFiltered - 1] then 
+                        selectedItem = k 
+                        break 
+                    end
                 end
             elseif #visibleItems > 0 then
                 selectedItem = nil
                 for k, v in ipairs(dataItems) do
-                    if v == visibleItems[#visibleItems] then selectedItem = k break end
+                    if v == visibleItems[#visibleItems] then 
+                        selectedItem = k 
+                        break 
+                    end
                 end
             end
-        elseif key == 208 then
+        elseif key == 208 then -- Down arrow
             local currentSelectedItemInFiltered = nil
             local startIndex = (currentPage - 1) * perPage + 1
             local visibleItems = {}
@@ -873,34 +943,42 @@ event.listen("key_down", function(_, _, key, _, _)
                     end
                 end
             end
-            if #visibleItems == 0 then selectedItem = nil
+            if #visibleItems == 0 then 
+                selectedItem = nil
             elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered < #visibleItems then
                 selectedItem = nil
                 for k, v in ipairs(dataItems) do
-                    if v == visibleItems[currentSelectedItemInFiltered + 1] then selectedItem = k break end
+                    if v == visibleItems[currentSelectedItemInFiltered + 1] then 
+                        selectedItem = k 
+                        break 
+                    end
                 end
             elseif #visibleItems > 0 then
                 selectedItem = nil
                 for k, v in ipairs(dataItems) do
-                    if v == visibleItems[1] then selectedItem = k break end
+                    if v == visibleItems[1] then 
+                        selectedItem = k 
+                        break 
+                    end
                 end
             end
-        elseif key == 203 then
+        elseif key == 203 then -- Left arrow
             if currentPage > 1 then
                 currentPage = currentPage - 1
                 selectedItem = nil
             end
-        elseif key == 205 then
+        elseif key == 205 then -- Right arrow
             if currentPage < maxPages then
                 currentPage = currentPage + 1
                 selectedItem = nil
             end
-        elseif key == 200 and not searchActive then
+        elseif key == 200 and not searchActive then -- Up arrow for logs
             logOffset = math.min(logOffset + 1, #logs - 5)
-        elseif key == 208 and not searchActive then
+        elseif key == 208 and not searchActive then -- Down arrow for logs
             logOffset = math.max(logOffset - 1, 0)
         end
     end
+    buttonHover = nil
     draw()
 end)
 
