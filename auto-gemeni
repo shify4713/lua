@@ -3,90 +3,15 @@ local fs = require("filesystem")
 local shell = require("shell")
 local event = require("event")
 local unicode = require("unicode")
+local term = require("term") -- Возвращено к оригинальной инициализации
 local computer = require("computer")
+local g = component.gpu
+local me = component.me_interface
 
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
-
--- Инициализация GPU и Terminal с обработкой ошибок
-local g = component.gpu -- Получаем компонент GPU напрямую
-local terminal          -- Эта переменная будет содержать либо реальный компонент term, либо заглушка
-
--- Проверяем, существует ли GPU компонент
-if not g then
-    (io.stderr or io.output()):write("КРИТИЧЕСКАЯ ОШИБКА: Компонент GPU (видеокарта) не найден!\n")
-    (io.stderr or io.output()):write("Программа не может работать без GPU. Убедитесь, что видеокарта установлена и подключена.\n")
-    -- Создаем заглушку для g, чтобы избежать дальнейших ошибок, хотя UI не будет работать
-    g = {
-        setBackground = function() end, fill = function() end, setForeground = function() end,
-        set = function() end, setResolution = function() end, getResolution = function() return 1,1 end,
-        isAvailable = function() return false end -- Заглушка всегда возвращает false
-    }
-    -- Также создаем заглушку для terminal, так как без GPU он точно не будет работать
-    terminal = {
-        setCursorPos = function(x, y) end,
-        setCursorBlink = function(blink) end,
-        isAvailable = function() return false end, -- Заглушка всегда возвращает false
-        write = function() end,
-        read = function() return "" end,
-        getCursorPos = function() return 1,1 end,
-        getCursorBlink = function() return false end,
-        getSize = function() return 1,1 end,
-        clear = function() end,
-        clearLine = function() end,
-        scroll = function() end
-    }
-else
-    -- GPU есть, пытаемся загрузить терминал
-    local term_load_ok, term_instance_or_error = pcall(require, "term")
-
-    if term_load_ok and term_instance_or_error then
-        if type(term_instance_or_error) == "table" and term_instance_or_error.isAvailable and term_instance_or_error:isAvailable() then
-            terminal = term_instance_or_error
-        else
-            local err_out = io.stderr or io.output()
-            err_out:write("ПРЕДУПРЕЖДЕНИЕ: Компонент terminal не удалось загрузить или он недоступен.\n")
-            if not term_load_ok then
-                err_out:write("Причина ошибки при загрузке: " .. tostring(term_instance_or_error) .. "\n")
-            elseif type(term_instance_or_error) ~= "table" then
-                 err_out:write("Причина: require('term') вернул не таблицу (тип: " .. type(term_instance_or_error) .. ").\n")
-            elseif not term_instance_or_error.isAvailable then
-                err_out:write("Причина: у компонента terminal отсутствует функция isAvailable().\n")
-            else -- not term_instance_or_error:isAvailable()
-                err_out:write("Причина: terminal:isAvailable() вернул false.\n")
-            end
-            err_out:write("Пользовательский интерфейс программы может быть нарушен. Проверьте настройки OpenComputers (экран, GPU).\n")
-
-            terminal = {
-                setCursorPos = function(x, y) end,
-                setCursorBlink = function(blink) end,
-                isAvailable = function() return false end,
-                write = function() end, read = function() return "" end,
-                getCursorPos = function() return 1,1 end, getCursorBlink = function() return false end,
-                getSize = function() return 1,1 end, clear = function() end,
-                clearLine = function() end, scroll = function() end
-            }
-        end
-    else
-        local err_out = io.stderr or io.output()
-        err_out:write("ПРЕДУПРЕЖДЕНИЕ: Компонент terminal не удалось загрузить.\n")
-        err_out:write("Причина ошибки при загрузке: " .. tostring(term_instance_or_error) .. "\n")
-        err_out:write("Пользовательский интерфейс программы может быть нарушен. Проверьте настройки OpenComputers (экран, GPU).\n")
-
-        terminal = {
-            setCursorPos = function(x, y) end,
-            setCursorBlink = function(blink) end,
-            isAvailable = function() return false end,
-            write = function() end, read = function() return "" end,
-            getCursorPos = function() return 1,1 end, getCursorBlink = function() return false end,
-            getSize = function() return 1,1 end, clear = function() end,
-            clearLine = function() end, scroll = function() end
-        }
-    end
-end
-
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Загрузка или скачивание библиотеки
 if not fs.exists(LIB_PATH) then
@@ -99,7 +24,6 @@ if not ok then
 end
 
 -- Инициализация ME интерфейса
-local me = component.me_interface
 if not me then
     io.stderr:write("Ошибка: ME интерфейс не найден. Убедитесь, что он подключен.\n")
     os.exit(1)
@@ -135,7 +59,7 @@ local COLORS = {
 }
 local WIDTH, HEIGHT = 110, 40
 local craftStatus = "Ожидание..."
-local nextCraftUpdate = 0 -- Используем computer.uptime()
+local nextCraftUpdate = 0 -- Используем computer.uptime() для времени
 local isCrafting = false
 
 -------------------- Переменные --------------------
@@ -148,47 +72,29 @@ local changeitem = false -- Флаг для блокировки UI во вре�
 local searchActive = false
 local hoveredButton = nil
 local tooltip = ""
-local tooltipTimeout = 0 -- Используем computer.uptime()
+local tooltipTimeout = 0 -- Используем computer.uptime() для времени
 
 -------------------- Логгирование --------------------
+-- Теперь addLog использует uoc.addLog напрямую, без "реального времени"
 local function addLog(text, lvl)
     uoc.addLog(logs, text, lvl)
 end
 
 -------------------- Ввод данных (блокирующий UI) --------------------
+-- Возвращена к использованию term.setCursor и io.read, как в вашем коде
+-- Но добавлена очистка строки перед вводом, чтобы избежать наложения текста
 local function safeReadInput(promptText, x, y, defaultColor, promptColor)
-    if terminal.isAvailable and terminal:isAvailable() then
-        g.setBackground(COLORS.bg)
-        g.fill(x, y, WIDTH - x + 1, 1, " ") -- Очищаем строку для нового приглашения (+1 для точной очистки)
-        uoc.drawText(x, y, promptText, promptColor or COLORS.text)
-        terminal.setCursorPos(x + unicode.len(promptText) + 1, y)
-        terminal.setCursorBlink(true)
-        io.write("\027[?25h") -- ANSI показать курсор
-
-        local input = ""
-        while true do
-            g.setBackground(COLORS.bg)
-            g.fill(x + unicode.len(promptText) + 1, y, WIDTH - (x + unicode.len(promptText) + 1) + 1, 1, " ") -- Очищаем область ввода
-            uoc.drawText(x + unicode.len(promptText) + 1, y, input, defaultColor or COLORS.text)
-            terminal.setCursorPos(x + unicode.len(promptText) + 1 + unicode.len(input), y)
-
-            local _, _, keyCode, charStr = event.pull("key_down")
-            if keyCode == 28 then -- Enter
-                break
-            elseif keyCode == 14 then -- Backspace
-                input = unicode.sub(input, 1, math.max(0, unicode.len(input) - 1))
-            elseif charStr and unicode.len(charStr) == 1 then
-                input = input .. charStr
-            end
-        end
-
-        io.write("\027[?25l") -- ANSI спрятать курсор
-        terminal.setCursorBlink(false)
-        return input
-    else
-        addLog("Ввод невозможен: терминал недоступен.", "WARN")
-        return ""
-    end
+    g.setBackground(COLORS.bg)
+    g.fill(x, y, WIDTH - x + 1, 1, " ") -- Очищаем строку для нового приглашения
+    uoc.drawText(x, y, promptText, promptColor or COLORS.text)
+    
+    term.setCursor(x + unicode.len(promptText) + 1, y)
+    term.setCursorBlink(true)
+    
+    local input = io.read()
+    
+    term.setCursorBlink(false)
+    return input
 end
 
 -------------------- Визуал --------------------
@@ -217,9 +123,10 @@ local function drawHeader()
 end
 
 local function drawLogs()
-    -- Логи под строкой поиска (строка поиска занимает HEIGHT-13, HEIGHT-12, HEIGHT-11)
-    -- Начинаем логи с HEIGHT-10, оставляем 4 строки для логов
-    uoc.drawLogs(3, HEIGHT-10, logs, 4, COLORS.log)
+    -- Логи теперь под строкой поиска.
+    -- Строка поиска занимает y = HEIGHT-13, HEIGHT-12, HEIGHT-11.
+    -- Логи начинаются с HEIGHT-9, чтобы было 4 строки.
+    uoc.drawLogs(3, HEIGHT-9, logs, 4, COLORS.log)
 end
 
 local function drawItems()
@@ -262,7 +169,7 @@ local function drawItems()
             table.insert(showItems, item)
         end
     end
-    local perPage = HEIGHT-24 -- Количество строк, которые помещаются в таблице
+    local perPage = HEIGHT-24 -- Количество строк, которые помещаются в таблице (HEIGHT-24)
     for i = itemScroll, math.min(#showItems, itemScroll+perPage-1) do
         local it = showItems[i]
         local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem])
@@ -282,7 +189,7 @@ local function drawItems()
         g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
         g.setBackground(COLORS.bg)
     end
-    -- Заполняем оставшиеся строки пустыми, если элементов меньше perPage
+    -- Заполняем оставшиеся строки пустыми, если элементов меньше perPage, чтобы очистить старый текст
     for i = math.min(#showItems, itemScroll + perPage - 1) + 1, itemScroll + perPage - 1 do
         local row = y + 2 + (i - itemScroll) + 1
         g.setBackground(COLORS.bg)
@@ -303,7 +210,7 @@ local function drawItems()
         local barTop = y+3 + math.floor((perPage-barLen) * (itemScroll-1) / math.max(1,#showItems-perPage))
         g.setForeground(COLORS.select_active)
         -- Очищаем область скроллбара
-        for i=0,perPage do g.set(WIDTH-2, y+3+i, "│") end
+        for i=0,perPage do g.set(WIDTH-2, y+3+i, "│") end -- Очищаем предыдущий скроллбар
         g.setForeground(COLORS.ok)
         for i=0,barLen-1 do
             g.set(WIDTH-2, barTop+i, "█")
@@ -314,7 +221,6 @@ local function drawItems()
         for i=0,perPage do g.set(WIDTH-2, y+3+i, " ") end
     end
 end
-
 
 local function drawSearchBar()
     local x, y, w, h = 3, HEIGHT-13, WIDTH-6, 3
@@ -327,6 +233,7 @@ local function drawSearchBar()
 
     local display = search
     if display == "" then display = "Поиск: введите часть названия..." end
+    if searchActive then display = display .. "_" end -- Добавляем курсор только при активном поиске
 
     local maxDisplayLen = w-7 -- Максимальная длина отображаемого текста
     if unicode.len(display) > maxDisplayLen then
@@ -338,14 +245,12 @@ local function drawSearchBar()
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
 
-    -- Устанавливаем курсор только если activeSearch и терминал доступен
-    if searchActive and terminal.isAvailable() then
-        terminal.setCursorPos(x + 2 + unicode.len(search), y + 1)
-        terminal.setCursorBlink(true)
-        io.write("\027[?25h") -- ANSI показать курсор
+    -- Устанавливаем курсор только если activeSearch
+    if searchActive then
+        term.setCursorPos(x + 2 + unicode.len(search), y + 1)
+        term.setCursorBlink(true)
     else
-        terminal.setCursorBlink(false)
-        io.write("\027[?25l") -- ANSI спрятать курсор
+        term.setCursorBlink(false)
     end
 end
 
@@ -529,7 +434,7 @@ local function autoCraftLoop()
                         addLog("Ошибка getCpus: " .. tostring(all_cpus_details), "ERROR")
                     end
 
-                    local assigned_cpus_in_this_scan = {} -- CPU, которые уже были назначены в этом цикле
+                    local assigned_cpus_in_this_scan = {} -- CPU, которые уже были назначены в этом цикле (для "1 крафт на 1 CPU")
 
                     for i, item_entry in ipairs(dataItems) do
                         local count = tonumber(item_entry.count) or 0
@@ -538,7 +443,7 @@ local function autoCraftLoop()
 
                         if current < count then -- Если текущее количество меньше желаемого
                             local freeCpuForThisItem = nil
-                            -- Ищем свободный CPU для текущего предмета
+                            -- Ищем свободный CPU для текущего предмета, который еще не был назначен в этом цикле
                             for _, cpu_name_avail in ipairs(available_cpus_for_this_scan) do
                                 local is_assigned_already = false
                                 for _, assigned_name in ipairs(assigned_cpus_in_this_scan) do
@@ -549,7 +454,7 @@ local function autoCraftLoop()
                                 end
                                 if not is_assigned_already then
                                     freeCpuForThisItem = cpu_name_avail
-                                    table.insert(assigned_cpus_in_this_scan, freeCpuForThisItem)
+                                    table.insert(assigned_cpus_in_this_scan, freeCpuForThisItem) -- Помечаем CPU как занятый в этом цикле
                                     break
                                 end
                             end
@@ -565,12 +470,13 @@ local function autoCraftLoop()
                                     if delta > 0 then
                                         if craftables_data[1] and type(craftables_data[1].request) == "function" then
                                             -- Запрашиваем крафт
+                                            -- Важно: первым аргументом request является сам объект craftables_data[1] (self)
                                             local succ_req, req_res = pcall(craftables_data[1].request, craftables_data[1], delta, false, freeCpuForThisItem)
                                             if succ_req and req_res then
                                                 craftStatus = "Крафт: "..(item_entry.name or "<??>")
                                                 addLog("Крафт "..delta.."x "..(item_entry.name or "<??>").." на CPU "..tostring(freeCpuForThisItem),"INFO")
                                                 -- НЕ используем break здесь, чтобы дать шанс другим предметам в этом же цикле найти СВОБОДНЫЙ CPU.
-                                                -- Logic '1 craft per 1 CPU' is handled by `assigned_cpus_in_this_scan`.
+                                                -- Логика "1 крафт на 1 ЦПУ" уже обрабатывается через `assigned_cpus_in_this_scan`.
                                             else
                                                 craftStatus = "Ошибка: запрос крафта"
                                                 addLog("Ошибка запроса крафта "..(item_entry.name or "<??>").." (" .. tostring(req_res) .. ")","ERROR")
@@ -606,8 +512,8 @@ end
 
 -------------------- События --------------------
 event.listen("touch", function(_,_,x,y,_,_)
-    if changeitem then return end -- Блокируем ввод пока идет редактирование/добавление
-    hoveredButton = nil -- Сбрасываем активную кнопку при клике
+    if changeitem then return end
+    hoveredButton = nil
     local btns = {
         {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
         {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
@@ -690,7 +596,7 @@ event.listen("drag", function(_,_,x,y,_,_)
 end)
 
 event.listen("key_down", function(_,_,key,_,_)
-    if changeitem then return end -- Блокируем ввод пока идет редактирование/добавление
+    if changeitem then return end
     local showItems = {}
     for i,item in ipairs(dataItems) do
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
