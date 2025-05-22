@@ -6,8 +6,9 @@ local unicode = require("unicode")
 local computer = require("computer")
 
 -- Прямая инициализация GPU и Term. Если их нет, g или term будут nil.
+-- Добавим nil, чтобы избежать ошибок, если компоненты отсутствуют на старте.
 local g = component.gpu
-local term = require("term")
+local term = component.term or require("term") -- Попытка получить term через component, затем require
 local me = component.me_interface
 
 -- Проверка наличия компонентов
@@ -63,7 +64,7 @@ local COLORS = {
     search_bg = 0x282B36,
     search_border = 0x00BFFF,
     search_cross = 0xFF5555,
-    search_hint = 0x888888,
+    search_hint = 0x888888, -- Теперь используется для текста "Поиск: ..."
     bar_shadow = 0x181920,
 }
 local WIDTH, HEIGHT = 110, 40
@@ -79,7 +80,7 @@ local selectedItem = nil
 local itemScroll = 1
 local changeitem = false -- Флаг для блокировки UI во время ввода
 local searchActive = false
-local hoveredButton = nil
+local currentActiveButton = nil -- Для отслеживания активно нажатой кнопки
 
 -------------------- Логгирование --------------------
 local function addLog(text, lvl)
@@ -88,20 +89,30 @@ end
 
 -------------------- Ввод данных (блокирующий UI) --------------------
 local function safeReadInput(promptText, x, y, defaultColor, promptColor)
+    -- Повторная попытка получить term, если он стал nil
+    if not term then
+        term = component.term or require("term")
+        if not term then
+            addLog("Критическая ошибка: term недоступен, не могу принять ввод.", "ERROR")
+            return nil
+        end
+    end
+
     g.setBackground(COLORS.bg)
     g.fill(x, y, WIDTH - x + 1, 1, " ") -- Очищаем строку для нового приглашения
     uoc.drawText(g, x, y, promptText, promptColor or COLORS.text)
 
-    -- Дополнительная проверка term перед использованием
+    -- Если term доступен, управляем курсором
     if term and term.setCursorPos and term.setCursorBlink then
         term.setCursorPos(x + unicode.len(promptText) + 1, y)
         term.setCursorBlink(true)
     else
-        addLog("Ошибка: term недоступен для safeReadInput", "ERROR")
+        addLog("Внимание: term недоступен для управления курсором при вводе.", "WARN")
     end
 
     local input = io.read()
 
+    -- Выключаем мигание курсора после ввода
     if term and term.setCursorBlink then
         term.setCursorBlink(false)
     end
@@ -141,9 +152,9 @@ local function drawItems()
     local x, y = 2, 8
     local totalWidth = WIDTH-4
     local col_name = math.floor(totalWidth * 0.45)
-    -- Уменьшаем ширину столбцов "В наличии" и "Держать"
-    local col_now = math.floor(totalWidth * 0.14) -- Было 0.15
-    local col_hold = math.floor(totalWidth * 0.14) -- Было 0.15
+    -- Дополнительно уменьшаем ширину столбцов
+    local col_now = math.floor(totalWidth * 0.13) -- Было 0.14
+    local col_hold = math.floor(totalWidth * 0.13) -- Было 0.14
     local col_once = totalWidth - col_name - col_now - col_hold
 
     g.setForeground(COLORS.select_active)
@@ -229,39 +240,46 @@ local function drawSearchBar()
     g.setForeground(COLORS.search_cross)
     g.set(x+w-3, y+1, (search ~= "" and "×" or " "))
 
+    -- Возвращаем надпись "Поиск: введите часть названия..."
     g.setForeground(COLORS.search_hint)
     local display = search
-    -- Убрано мигание курсора в поле поиска, оно мигает только при активном вводе через safeReadInput
+    if display == "" and not searchActive then
+        display = "Поиск: введите часть названия..."
+    end
 
     local maxDisplayLen = w-7
     if unicode.len(display) > maxDisplayLen then
-        display = "..." .. unicode.sub(display, unicode.len(display) - maxDisplayLen + 4)
+        display = unicode.sub(display, 1, maxDisplayLen-4) .. "..." -- Обрезаем с конца, если слишком длинно
     end
 
     g.set(x+2, y+1, display)
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
 
-    -- Дополнительная проверка term перед использованием
+    -- Управляем миганием курсора
     if searchActive and term and term.setCursorPos and term.setCursorBlink then
+        -- Если поле поиска активно и есть ввод, курсор мигает за вводом
         term.setCursorPos(x + 2 + unicode.len(search), y + 1)
         term.setCursorBlink(true)
     else
-        if term and term.setCursorBlink then -- Убедимся, что term есть, прежде чем выключать мигание
+        -- В противном случае, курсор выключен
+        if term and term.setCursorBlink then
             term.setCursorBlink(false)
         end
     end
 end
 
+
 local function drawButtons()
     local btns = {
-        {name="Удалить", x=WIDTH-60},
-        {name="Изменить", x=WIDTH-45},
-        {name=isCrafting and "Остановить" or "Автокрафт", x=WIDTH-30},
-        {name="Добавить", x=WIDTH-15},
+        {name="Удалить", x=WIDTH-60, id=1},
+        {name="Изменить", x=WIDTH-45, id=2},
+        {name=isCrafting and "Остановить" or "Автокрафт", x=WIDTH-30, id=3},
+        {name="Добавить", x=WIDTH-15, id=4},
     }
     for i,v in ipairs(btns) do
-        uoc.animatedButton(g, v.x, HEIGHT-4, 12, 3, v.name, false, COLORS.button, COLORS.buttonActive, COLORS.text)
+        -- Передаем true, если это активно нажатая кнопка, для изменения цвета
+        uoc.animatedButton(g, v.x, HEIGHT-4, 12, 3, v.name, currentActiveButton == v.id, COLORS.button, COLORS.buttonActive, COLORS.text)
     end
 end
 
@@ -289,9 +307,12 @@ local function reload()
                 end
             end
         else
+            -- Если getItemsInNetwork вернул пустой список или ошибку, пробуем getItemDetail
+            -- Это для случаев, когда предмет есть, но его нет в сети в данный момент (qty = 0)
+            -- или когда его вообще нет, но нам нужен name, id, dmg для отображения
             local ok2, d = pcall(me.getItemDetail, {id = item.id, dmg = item.dmg})
             if ok2 and d then
-                qty = d.qty or d.size or 0
+                qty = d.qty or d.size or 0 -- Обновляем qty, если получили детали
             end
         end
         item.current = qty
@@ -312,12 +333,15 @@ end
 local function addItem()
     changeitem = true
     clear()
-    uoc.drawText(g, 10,HEIGHT-7,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
+    -- Корректировка позиций для полей ввода
+    local inputX = 10
+    local inputY = HEIGHT - 10 -- Поднимаем чуть выше, чтобы не было смещения
+    uoc.drawText(g, inputX, inputY, "Вставьте предмет в 1-й слот ME интерфейса и введите параметры.", COLORS.ok)
 
-    local name = safeReadInput("Название: ", 10, HEIGHT-6, COLORS.text, COLORS.text)
-    local count_str = safeReadInput("Держать (число): ", 10, HEIGHT-5, COLORS.text, COLORS.text)
+    local name = safeReadInput("Название: ", inputX, inputY + 1, COLORS.text, COLORS.text)
+    local count_str = safeReadInput("Держать (число): ", inputX, inputY + 2, COLORS.text, COLORS.text)
     local count = tonumber(count_str) or 0
-    local craftSize_str = safeReadInput("Крафт за раз (число): ", 10, HEIGHT-4, COLORS.text, COLORS.text)
+    local craftSize_str = safeReadInput("Крафт за раз (число): ", inputX, inputY + 3, COLORS.text, COLORS.text)
     local craftSize = tonumber(craftSize_str) or 1
 
     local stack = nil
@@ -341,18 +365,21 @@ local function editItem()
     local item = dataItems[selectedItem]
     changeitem = true
     clear()
-    uoc.drawText(g, 10,HEIGHT-7,"Изменение: "..(item.name or "<??>"),COLORS.ok)
+    -- Корректировка позиций для полей ввода
+    local inputX = 10
+    local inputY = HEIGHT - 10 -- Поднимаем чуть выше
+    uoc.drawText(g, inputX, inputY, "Изменение: "..(item.name or "<??>"),COLORS.ok)
 
-    local new_name = safeReadInput("Новое имя (Enter пропустить): ", 10, HEIGHT-6, COLORS.text, COLORS.text)
+    local new_name = safeReadInput("Новое имя (Enter пропустить): ", inputX, inputY + 1, COLORS.text, COLORS.text)
     if new_name and new_name ~= "" then
         item.name = new_name
     end
 
-    local count_str = safeReadInput("Новое держать (число, Enter пропустить): ", 10, HEIGHT-5, COLORS.text, COLORS.text)
+    local count_str = safeReadInput("Новое держать (число, Enter пропустить): ", inputX, inputY + 2, COLORS.text, COLORS.text)
     local count = tonumber(count_str)
     if count_str ~= "" and count then item.count = count end
 
-    local cs_str = safeReadInput("Новый крафт за раз (число, Enter пропустить): ", 10, HEIGHT-4, COLORS.text, COLORS.text)
+    local cs_str = safeReadInput("Новый крафт за раз (число, Enter пропустить): ", inputX, inputY + 3, COLORS.text, COLORS.text)
     local cs = tonumber(cs_str)
     if cs_str ~= "" and cs then item.craftSize = cs end
 
@@ -482,15 +509,17 @@ end
 -------------------- События --------------------
 event.listen("touch", function(_,_,x,y,_,_)
     if changeitem then return end
-    hoveredButton = nil
+    currentActiveButton = nil -- Сбрасываем активную кнопку при каждом клике
+
     local btns = {
-        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3},
+        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3, id=1},
+        {x=WIDTH-45, y=HEIGHT-4, w=12, h=3, id=2},
+        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3, id=3},
+        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3, id=4},
     }
     for i,btn in ipairs(btns) do
         if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
+            currentActiveButton = btn.id -- Устанавливаем активно нажатую кнопку
             if i==1 then removeItem()
             elseif i==2 then editItem()
             elseif i==3 then if isCrafting then stopCraft() else doCraft() end
@@ -500,11 +529,13 @@ event.listen("touch", function(_,_,x,y,_,_)
             return
         end
     end
+
     local search_x, search_y, search_w, search_h = 3, HEIGHT-13, WIDTH-6, 3
     if y >= search_y and y <= search_y + search_h - 1 then
         if x >= search_x + search_w - 3 and x <= search_x + search_w - 1 and search ~= "" then
             search = ""
             addLog("Поиск очищен.", "INFO")
+            searchActive = false -- Сбрасываем активность поиска при очистке
             draw()
             return
         end
@@ -516,6 +547,11 @@ event.listen("touch", function(_,_,x,y,_,_)
     else
         searchActive = false
     end
+    -- Выключаем мигание курсора, если поиск неактивен (это повторная мера безопасности)
+    if not searchActive and term and term.setCursorBlink then
+        term.setCursorBlink(false)
+    end
+
     local showItems = {}
     for i,item in ipairs(dataItems) do
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
@@ -539,7 +575,8 @@ event.listen("touch", function(_,_,x,y,_,_)
 end)
 
 event.listen("drag", function(_,_,x,y,_,_)
-    -- Логика для hoveredButton и tooltip полностью удалена из drag
+    -- В Drag не должно быть мигания, так как это не активное взаимодействие с полем ввода
+    -- currentActiveButton = nil -- Сбрасываем активно нажатую кнопку при перетаскивании
     draw()
 end)
 
@@ -559,7 +596,7 @@ event.listen("key_down", function(_,_,key,_,_)
             search = ""
         elseif key == 28 then -- enter
             searchActive = false
-        elseif key >= 32 and key < 128 then
+        elseif key >= 32 and key < 128 then -- Добавляем только печатные символы
             if unicode.len(search) < WIDTH-15 then
                 search = search .. unicode.char(key)
             end
@@ -581,6 +618,11 @@ end)
 g.setResolution(WIDTH,HEIGHT)
 reload()
 draw()
+-- Добавим окончательное отключение мигания курсора на старте, если term доступен
+if term and term.setCursorBlink then
+    term.setCursorBlink(false)
+end
+
 local ok, err = pcall(autoCraftLoop)
 if not ok then
     addLog("Фатальная ошибка: "..tostring(err), "ERROR")
