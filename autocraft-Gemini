@@ -4,7 +4,7 @@ local fs = require("filesystem")
 local shell = require("shell")
 local event = require("event")
 local unicode = require("unicode")
-local term = require("term")
+-- local term = require("term") -- Original line, will be handled below
 local computer = require("computer")
 local g = component.gpu
 local me = component.me_interface
@@ -12,15 +12,39 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/ultimatCraftLib-Gemini"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
+
+-- Enhanced terminal loading with error handling
+local term = require("term")
+if not term then
+  -- Output to stderr if available, otherwise print (which might not be visible if term is broken)
+  local err_out = io.stderr or io.output()
+  err_out:write("CRITICAL ERROR: The terminal component ('term') could not be loaded.\n")
+  err_out:write("The program's UI will likely be broken. Please check your OpenComputers setup (e.g., ensure a Screen and GPU are attached and configured).\n")
+  
+  -- Create a dummy 'term' table to prevent crashes on method calls.
+  -- Functionality relying on these terminal operations will not work.
+  term = {
+    setCursorPos = function(x, y)
+      -- This is a no-operation function. The cursor will not be moved.
+    end,
+    setCursorBlink = function(blink)
+      -- This is a no-operation function. Cursor blinking will not change.
+    end,
+    -- If other 'term' functions were directly used by this script, they would need stubs too.
+    -- Note: io.read() for input might also be affected if the terminal is non-functional.
+    -- This workaround primarily prevents the script from crashing due to 'term' being nil.
+  }
+end
 
 if not fs.exists(LIB_PATH) then
+    -- This command might print to the console, like "Saved data to ..."
     shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
 end
 local ok, uoc = pcall(require, "ultimateOC")
 if not ok then
-    io.stderr:write("Не удалось загрузить ultimateOC.lua: ", tostring(uoc), "\n")
-    os.exit(1)
+    (io.stderr or io.output()):write("Не удалось загрузить ultimateOC.lua: " .. tostring(uoc) .. "\n")
+    os.exit(1) -- Exit if library is essential and fails to load
 end
 
 if not fs.exists(DATA_FILE) then
@@ -246,8 +270,8 @@ local function draw()
     drawLogs()      -- Logs drawn after search bar
     drawButtons()
     drawTooltip()
-    term.setCursorPos(1,1) -- Hide terminal cursor
-    term.setCursorBlink(false)
+    term.setCursorPos(1,1) -- Hide terminal cursor (will use dummy if term failed to load)
+    term.setCursorBlink(false) -- (will use dummy if term failed to load)
 end
 
 -------------------- IO и действия --------------------
@@ -300,21 +324,21 @@ end
 
 local function addItem()
     changeitem = true
-    term.setCursorBlink(true)
+    term.setCursorBlink(true) -- (will use dummy if term failed to load)
     clear()
     uoc.drawText(10,HEIGHT-7,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
     uoc.drawText(10,HEIGHT-6,"Название: ",COLORS.text)
-    term.setCursorPos(20,HEIGHT-6)
-    io.write("\027[?25h") -- Show cursor for io.read
+    term.setCursorPos(20,HEIGHT-6) -- (will use dummy if term failed to load)
+    io.write("\027[?25h") -- Attempt to show cursor via ANSI, might not work if term is broken
     local name = tostring(io.read() or "")
     uoc.drawText(10,HEIGHT-5,"Держать (число): ",COLORS.text)
-    term.setCursorPos(29,HEIGHT-5)
+    term.setCursorPos(29,HEIGHT-5) -- (will use dummy if term failed to load)
     local count = tonumber(io.read()) or 0
     uoc.drawText(10,HEIGHT-4,"Крафт за раз (число): ",COLORS.text)
-    term.setCursorPos(32,HEIGHT-4)
+    term.setCursorPos(32,HEIGHT-4) -- (will use dummy if term failed to load)
     local craftSize = tonumber(io.read()) or 1
-    io.write("\027[?25l") -- Hide cursor
-    term.setCursorBlink(false)
+    io.write("\027[?25l") -- Attempt to hide cursor via ANSI
+    term.setCursorBlink(false) -- (will use dummy if term failed to load)
 
     local stack = nil
     local get_stack_ok, res = pcall(me.getStackInSlot, 1)
@@ -329,7 +353,6 @@ local function addItem()
     end
     changeitem = false
     resetSelection()
-    -- No need to call draw() here, it's in the main loop
 end
 
 local function editItem()
@@ -338,20 +361,20 @@ local function editItem()
     if not item then return addLog(logs,"Ошибка: выбранный предмет не найден!","ERROR") end
 
     changeitem = true
-    term.setCursorBlink(true)
+    term.setCursorBlink(true) -- (will use dummy if term failed to load)
     clear()
     uoc.drawText(10,HEIGHT-7,"Изменение: "..(item.name or "<??>"),COLORS.ok)
-    io.write("\027[?25h") -- Show cursor
+    io.write("\027[?25h") -- Attempt to show cursor
 
     uoc.drawText(10,HEIGHT-6,"Новое имя (Enter пропустить): ",COLORS.text)
-    term.setCursorPos(40,HEIGHT-6)
+    term.setCursorPos(40,HEIGHT-6) -- (will use dummy if term failed to load)
     local name = tostring(io.read() or "")
     if name and name ~= "" then
         item.name = name
     end
 
     uoc.drawText(10,HEIGHT-5,"Новое держать (число, Enter пропустить): ",COLORS.text)
-    term.setCursorPos(54,HEIGHT-5)
+    term.setCursorPos(54,HEIGHT-5) -- (will use dummy if term failed to load)
     local countstr = tostring(io.read() or "")
     if countstr ~= "" then
         local count = tonumber(countstr)
@@ -359,20 +382,19 @@ local function editItem()
     end
 
     uoc.drawText(10,HEIGHT-4,"Новый крафт за раз (число, Enter пропустить): ",COLORS.text)
-    term.setCursorPos(55,HEIGHT-4)
+    term.setCursorPos(55,HEIGHT-4) -- (will use dummy if term failed to load)
     local csstr = tostring(io.read() or "")
     if csstr ~= "" then
         local cs = tonumber(csstr)
         if cs then item.craftSize = cs end
     end
     
-    io.write("\027[?25l") -- Hide cursor
-    term.setCursorBlink(false)
+    io.write("\027[?25l") -- Attempt to hide cursor
+    term.setCursorBlink(false) -- (will use dummy if term failed to load)
     save()
     addLog(logs, "Изменено: "..item.name,"INFO")
     changeitem = false
     resetSelection()
-    -- No need to call draw() here
 end
 
 local function removeItem()
@@ -386,22 +408,19 @@ local function removeItem()
     table.remove(dataItems,selectedItem)
     selectedItem = nil
     save()
-    -- No need to call draw() here
 end
 
 local function doCraft()
     isCrafting = true
     craftStatus = "Автокрафт..."
-    save() -- Save current state if any changes were made before starting
+    save() 
     addLog(logs,"Запущен автокрафт","INFO")
-    -- No need to call draw() here
 end
 
 local function stopCraft()
     isCrafting = false
     craftStatus = "Остановлено"
     addLog(logs, "Остановлен автокрафт","WARN")
-    -- No need to call draw() here
 end
 
 -------------------- Основной цикл автокрафта --------------------
@@ -474,85 +493,78 @@ local function autoCraftLoop()
                                 addLog(logs, "Ошибка: нет рецепта "..(item.name or "<??>"),"ERROR")
                             end
                         else
-                            -- Only log if no CPU was available for this item, don't halt all status
                             addLog(logs, "Инфо: нет свободных CPU для "..(item.name or "<?>").." в этом цикле","INFO")
-                            if craftStatus ~= "Ошибка: запрос крафта" and not craftStatus:find("Крафт:") then -- Avoid overwriting more specific error
+                            if craftStatus ~= "Ошибка: запрос крафта" and not craftStatus:find("Крафт:") then 
                                 craftStatus = "Ожидание CPU..."
                             end
                         end
                     end
                 end
-                save() -- Save any updated current counts (though reload should handle this)
-                nextCraftUpdate = now_time + 5 -- Cooldown before next crafting cycle
+                save() 
+                nextCraftUpdate = now_time + 5 
             end
         end
-        draw() -- Redraw UI continuously
-        os.sleep(0.1) -- Main loop sleep
+        draw() 
+        os.sleep(0.1) 
     end
 end
 
 -------------------- События --------------------
 event.listen("touch", function(_,_,x,y,button_code,_)
-    if changeitem then return end -- Ignore touches if in item add/edit mode
+    if changeitem then return end 
 
     local prevHoveredButton = hoveredButton
-    hoveredButton = nil -- Reset hovered button
+    hoveredButton = nil 
 
     local btns_layout = {
-        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3, id=1}, -- Удалить
-        {x=WIDTH-45, y=HEIGHT-4, w=12, h=3, id=2}, -- Изменить
-        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3, id=3}, -- Автокрафт/Остановить
-        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3, id=4}, -- Добавить
+        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3, id=1}, 
+        {x=WIDTH-45, y=HEIGHT-4, w=12, h=3, id=2}, 
+        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3, id=3}, 
+        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3, id=4}, 
     }
 
     for i,btn_layout_item in ipairs(btns_layout) do
         if x >= btn_layout_item.x and x < btn_layout_item.x+btn_layout_item.w and y >= btn_layout_item.y and y < btn_layout_item.y+btn_layout_item.h then
             hoveredButton = btn_layout_item.id
-            if button_code == 0 then -- Left click
+            if button_code == 0 then 
                 if btn_layout_item.id==1 then removeItem()
                 elseif btn_layout_item.id==2 then editItem()
                 elseif btn_layout_item.id==3 then if isCrafting then stopCraft() else doCraft() end
                 elseif btn_layout_item.id==4 then addItem()
                 end
             end
-            -- draw() -- Will be called by main loop
             return
         end
     end
 
-    -- Search bar interaction
     local searchBarX, searchBarY, searchBarW, searchBarH = 3, HEIGHT-13, WIDTH-6, 3
     if y >= searchBarY and y < searchBarY + searchBarH then
-        -- Click on '×' to clear search
         if x >= searchBarX + searchBarW - 3 and x < searchBarX + searchBarW -1 and search ~= "" then
             if button_code == 0 then
                 search = ""
-                itemScroll = 1 -- Reset scroll on search clear
-                searchActive = false -- Deactivate search on clear
+                itemScroll = 1 
+                searchActive = false 
             end
-        -- Click inside search text area to activate
         elseif x >= searchBarX + 1 and x < searchBarX + searchBarW - 3 then
              if button_code == 0 then
                 searchActive = true
              end
         else
-            if button_code == 0 then searchActive = false end -- Click outside text area but on bar
+            if button_code == 0 then searchActive = false end 
         end
-        -- draw()
         return
     else
-      if button_code == 0 then searchActive = false end -- Click outside search bar deactivates it
+      if button_code == 0 then searchActive = false end 
     end
 
-    -- Item list selection
-    local showItemsTemp = {} -- Temporary table for visible items
+    local showItemsTemp = {} 
     for _,item_entry in ipairs(dataItems) do
         if search == "" or unicode.lower(item_entry.name or ""):find(unicode.lower(search), 1, true) then
             table.insert(showItemsTemp, item_entry)
         end
     end
     local items_per_page_count = HEIGHT-24
-    local itemsListY_start = 8 + 3 -- Table header starts at y=8, 3 rows for header/sep
+    local itemsListY_start = 8 + 3 
     local itemsListY_end = itemsListY_start + items_per_page_count -1
 
     if y >= itemsListY_start and y <= itemsListY_end then
@@ -560,7 +572,6 @@ event.listen("touch", function(_,_,x,y,button_code,_)
             local clicked_idx_in_view = y - itemsListY_start
             local actual_idx_in_showItems = itemScroll + clicked_idx_in_view
             if showItemsTemp[actual_idx_in_showItems] then
-                -- Find the original index in dataItems
                 for k,v_data_item in ipairs(dataItems) do
                     if v_data_item == showItemsTemp[actual_idx_in_showItems] then
                         selectedItem = k
@@ -569,11 +580,9 @@ event.listen("touch", function(_,_,x,y,button_code,_)
                 end
             end
         end
-        -- draw()
         return
     end
-    if prevHoveredButton ~= hoveredButton then -- Redraw if hover state changed
-        -- draw()
+    if prevHoveredButton ~= hoveredButton then 
     end
 end)
 
@@ -596,14 +605,12 @@ event.listen("drag", function(_,_,x,y,_,_)
     end
     if hoveredButton ~= currentHover then
         hoveredButton = currentHover
-        if not hoveredButton then tooltip = "" end -- Clear tooltip if not hovering anymore
-        -- draw() -- Main loop handles drawing
+        if not hoveredButton then tooltip = "" end 
     end
 end)
 
 event.listen("scroll", function(_, _, x, y, direction, _)
     if changeitem then return end
-    -- Check if scroll is over the item list area
     local items_per_page_count = HEIGHT-24
     local itemsListY_start = 8 + 3 
     local itemsListY_end = itemsListY_start + items_per_page_count -1
@@ -616,14 +623,13 @@ event.listen("scroll", function(_, _, x, y, direction, _)
             end
         end
 
-        if direction < 0 then -- Scroll Up
+        if direction < 0 then 
             itemScroll = math.max(1, itemScroll - 1)
-        elseif direction > 0 then -- Scroll Down
+        elseif direction > 0 then 
             if #showItemsTemp > items_per_page_count then
                 itemScroll = math.min(#showItemsTemp - items_per_page_count + 1, itemScroll + 1)
             end
         end
-        -- draw() -- Main loop will draw
     end
 end)
 
@@ -631,65 +637,60 @@ end)
 event.listen("key_down", function(_, _, keyCode, charStr, _)
     if changeitem then return end
 
-    local showItemsFiltered = {} -- Items matching current search
+    local showItemsFiltered = {} 
     for _,item_entry in ipairs(dataItems) do
         if search == "" or unicode.lower(item_entry.name or ""):find(unicode.lower(search), 1, true) then
             table.insert(showItemsFiltered, item_entry)
         end
     end
     local items_per_page_count = HEIGHT-24
-    local search_max_len = (WIDTH-6)-7 -- Max length for search input field, (search bar width - padding/cross icon)
+    local search_max_len = (WIDTH-6)-7 
 
     if searchActive then
-        if keyCode == 14 then -- Backspace
+        if keyCode == 14 then 
             if unicode.len(search) > 0 then
                 search = unicode.sub(search, 1, unicode.len(search) - 1)
             end
-        elseif keyCode == 211 then -- Delete
+        elseif keyCode == 211 then 
             search = ""
-        elseif keyCode == 28 or keyCode == 156 then -- Enter or Numpad Enter
+        elseif keyCode == 28 or keyCode == 156 then 
             searchActive = false
         elseif type(charStr) == "string" and unicode.len(charStr) > 0 then
-            -- Check if it's a printable character (basic check, might need refinement for all control chars)
             local firstByte = string.byte(charStr, 1)
-            if firstByte >= 32 or unicode.len(charStr) > 1 then -- Allow space and multi-byte chars
+            if firstByte >= 32 or unicode.len(charStr) > 1 then 
                  if unicode.len(search) < search_max_len then
                     search = search .. charStr
                 end
             end
         end
-        itemScroll = 1 -- Reset scroll when search query changes
-    else -- Not searchActive (global keybinds like arrows for list scroll)
-        if keyCode == 200 then -- Up arrow
+        itemScroll = 1 
+    else 
+        if keyCode == 200 then 
             itemScroll = math.max(1,itemScroll-1)
-        elseif keyCode == 208 then -- Down arrow
+        elseif keyCode == 208 then 
             if #showItemsFiltered > items_per_page_count then
                 itemScroll = math.min(#showItemsFiltered - items_per_page_count + 1, itemScroll + 1)
             end
-        elseif keyCode == 201 then -- Page Up
+        elseif keyCode == 201 then 
             itemScroll = math.max(1, itemScroll - items_per_page_count)
-        elseif keyCode == 209 then -- Page Down
+        elseif keyCode == 209 then 
              if #showItemsFiltered > items_per_page_count then
                 itemScroll = math.min(#showItemsFiltered - items_per_page_count + 1, itemScroll + items_per_page_count)
             end
-        elseif keyCode == 28 or keyCode == 156 then -- Enter
-            -- Potentially activate edit on selected item if one is selected? Or other action.
-            -- For now, no action on Enter if not searching.
+        elseif keyCode == 28 or keyCode == 156 then 
         end
     end
-    -- draw() -- Main loop handles drawing
 end)
 
 -------------------- Старт --------------------
+-- term.setCursorBlink and term.setCursorPos are called after term is potentially replaced by a dummy
 term.setCursorBlink(false)
 term.setCursorPos(1,1)
-g.setResolution(WIDTH,HEIGHT) -- Set resolution once at start
+g.setResolution(WIDTH,HEIGHT) 
 reload()
--- draw() -- Initial draw will be handled by the first iteration of autoCraftLoop
 
 local final_ok, final_err = pcall(autoCraftLoop)
 if not final_ok then
-    -- Attempt to draw error on screen if GPU is available
     pcall(function()
         clear()
         g.setForeground(COLORS.error)
@@ -697,14 +698,13 @@ if not final_ok then
         local y_pos = math.floor(HEIGHT / 2)
         g.set(math.floor((WIDTH - unicode.len(err_msg)) / 2), y_pos, err_msg)
         
-        -- Also add to logs (if possible) and print to stderr
         local temp_logs = {}
-        addLog(temp_logs, "Фатальная ошибка: "..tostring(final_err), "FATAL")
+        addLog(temp_logs, "Фатальная ошибка: "..tostring(final_err), "FATAL") 
         if temp_logs[1] then
              g.set(math.floor((WIDTH - unicode.len(temp_logs[1])) / 2), y_pos + 1, temp_logs[1])
         end
-        io.stderr:write(err_msg .. "\n")
+        (io.stderr or io.output()):write("LUA SCRIPT FATAL ERROR: " .. err_msg .. "\n")
     end)
     os.sleep(5)
-    computer.shutdown(true) -- Shutdown on fatal error
+    computer.shutdown(true) 
 end
