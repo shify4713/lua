@@ -1,4 +1,3 @@
--- lib/ultimateOC.lua
 local component = require("component")
 local unicode = require("unicode")
 local term = require("term")
@@ -8,136 +7,88 @@ local g = component.gpu
 
 local ultimateOC = {}
 
--- Функция для рисования текста с цветом и опциональным фоном
-function ultimateOC.drawText(x, y, text, color, bgColor)
+-- Функция для рисования текста с цветом и жирным начертанием
+function ultimateOC.drawText(x, y, text, color, bold)
     g.setForeground(color or 0xFFFFFF)
-    if bgColor then
-        g.setBackground(bgColor)
-        -- Заливаем фон под текстом, чтобы избежать "хвостов" от предыдущих отрисовок
-        g.fill(x, y, unicode.len(text), 1, " ")
+    if bold then
+        g.set(x, y, text .. " ")
+        g.set(x, y + 1, string.rep(" ", unicode.len(text)))
     else
-        -- Сброс фона, чтобы не влиять на соседние области, если фон не задан
-        g.setBackground(g.getBackground())
+        g.set(x, y, text)
     end
-    g.set(x, y, tostring(text or "")) -- Убеждаемся, что текст не nil
 end
 
--- Функция для рисования прямоугольника (заливка фоном)
-function ultimateOC.fillRect(x, y, w, h, bgColor, char)
+-- Функция для рисования прямоугольника с закруглёнными углами
+function ultimateOC.roundRect(x, y, w, h, borderColor, bgColor)
     g.setBackground(bgColor or 0x000000)
-    g.fill(x, y, w, h, char or " ")
-end
-
--- Функция для рисования прямоугольника с границами
-function ultimateOC.drawRect(x, y, w, h, borderColor, bgColor)
-    ultimateOC.fillRect(x, y, w, h, bgColor) -- Заливаем фон
+    g.fill(x, y, w, h, " ")
     g.setForeground(borderColor or 0xFFFFFF)
-
-    if w >= 2 and h >= 2 then
-        -- Верхняя линия
-        ultimateOC.drawText(x, y, "╔" .. string.rep("═", w - 2) .. "╗", borderColor)
-        -- Нижняя линия
-        ultimateOC.drawText(x, y + h - 1, "╚" .. string.rep("═", w - 2) .. "╝", borderColor)
-        -- Боковые линии
-        for i = 1, h - 2 do
-            ultimateOC.drawText(x, y + i, "║", borderColor)
-            ultimateOC.drawText(x + w - 1, y + i, "║", borderColor)
-        end
-    elseif w == 1 and h > 0 then -- Вертикальная линия
-        for i = 0, h - 1 do
-            ultimateOC.drawText(x, y + i, "║", borderColor)
-        end
-    elseif h == 1 and w > 0 then -- Горизонтальная линия
-        ultimateOC.drawText(x, y, string.rep("═", w), borderColor)
+    -- Верхняя линия
+    g.set(x, y, "╔" .. string.rep("═", w - 2) .. "╗")
+    -- Нижняя линия
+    g.set(x, y + h - 1, "╚" .. string.rep("═", w - 2) .. "╝")
+    -- Боковые линии
+    for i = 1, h - 2 do
+        g.set(x, y + i, "║")
+        g.set(x + w - 1, y + i, "║")
     end
 end
 
--- Функция для анимированной кнопки (более общая, чем раньше)
-function ultimateOC.animatedButton(x, y, w, h, text, bgColor, textColor, borderColor, subText, subTextColor)
-    -- Отрисовываем фон кнопки
-    ultimateOC.drawRect(x, y, w, h, borderColor, bgColor)
-
-    -- Основной текст
+-- Функция для анимированной кнопки
+function ultimateOC.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor, subText, subTextColor)
+    local bg = hover and activeColor or bgColor
+    g.setBackground(bg)
+    g.fill(x, y, w, h, " ")
+    g.setForeground(textColor or 0xFFFFFF)
     local textLen = unicode.len(text)
     local tx = x + math.floor((w - textLen) / 2)
-    ultimateOC.drawText(tx, y + math.floor(h / 2), text, textColor)
-
-    -- Дополнительный текст (подтекст)
+    g.set(tx, y + math.floor(h / 2), text)
     if subText and subText ~= "" then
         local subTextLen = unicode.len(subText)
         local subTx = x + math.floor((w - subTextLen) / 2)
-        ultimateOC.drawText(subTx, y + math.floor(h / 2) + 1, subText, subTextColor or textColor)
+        g.setForeground(subTextColor or textColor or 0xFFFFFF)
+        g.set(subTx, y + math.floor(h / 2) + 1, subText)
     end
 end
 
 -- Функция для отрисовки логов
-function ultimateOC.drawLogs(x, y, logs, lines, color, offset, bgColor)
-    bgColor = bgColor or 0x1A1B26 -- Цвет фона для логов, по умолчанию такой же, как в auto-gemeni
-
-    -- Очищаем область логов перед отрисовкой
-    local logAreaWidth = term.getWidth() - x - 2
-    ultimateOC.fillRect(x, y, logAreaWidth, lines, bgColor)
-
+function ultimateOC.drawLogs(x, y, logs, lines, color, offset)
     g.setForeground(color or 0x8BE9FD)
     for i = 1, lines do
         local idx = #logs - offset - lines + i
         if idx > 0 and idx <= #logs then
-            local logText = logs[idx]
-            -- Обрезаем текст, если он слишком длинный, чтобы не выходить за границы
-            local maxLen = logAreaWidth
-            if unicode.len(logText) > maxLen then
-                logText = unicode.sub(logText, 1, maxLen - 3) .. "..."
-            end
-            ultimateOC.drawText(x, y + i - 1, logText, color)
+            g.set(x, y + i - 1, logs[idx])
         end
     end
 end
 
 -- Функция для сохранения данных в файл
 function ultimateOC.savef(path, data)
-    local file, err = io.open(path, "w")
+    local file = io.open(path, "w")
     if file then
-        local serializedData = textutils.serialize(data)
-        file:write(serializedData)
+        file:write(textutils.serialize(data))
         file:close()
-        return true
-    else
-        return false, "Не удалось открыть файл для записи: " .. tostring(err)
     end
 end
 
 -- Функция для загрузки данных из файла
 function ultimateOC.loadf(path)
-    local file, err = io.open(path, "r")
-    if not file then return nil, "Файл не найден: " .. path .. " (" .. tostring(err) .. ")" end
+    local file = io.open(path, "r")
+    if not file then return nil end
     local content = file:read("*a")
     file:close()
-    
-    local func, loadErr = load("return " .. content)
-    if not func then
-        return nil, "Ошибка синтаксиса в файле " .. path .. ": " .. tostring(loadErr)
-    end
-    local ok, data = pcall(func)
-    if not ok then
-        return nil, "Ошибка выполнения содержимого файла " .. path .. ": " .. tostring(data)
-    end
-    return data, nil
+    local func, err = load("return " .. content)
+    if not func then return nil end
+    return func()
 end
 
--- Прогресс-бар
-function ultimateOC.progressBar(x, y, w, progress, bgColor, barColor, borderColor)
-    ultimateOC.fillRect(x, y, w, 1, bgColor or 0x2A2E44) -- Заливаем фон прогресс-бара
-
-    local filledWidth = math.floor(w * math.max(0, math.min(1, progress)))
-    if filledWidth > 0 then
-        ultimateOC.fillRect(x, y, filledWidth, 1, barColor or 0x9ECE6A) -- Заливаем прогресс
-    end
-
-    if borderColor then
-        g.setForeground(borderColor)
-        g.set(x, y, "█") -- Левая граница
-        g.set(x + w - 1, y, "█") -- Правая граница
-    end
+-- Функция прогресс-бара
+function ultimateOC.progressBar(x, y, w, progress)
+    local barWidth = math.floor(w * math.max(0, math.min(1, progress)))
+    g.setBackground(0x44475a)
+    g.fill(x, y, w, 1, " ")
+    g.setBackground(0x50FA7B)
+    g.fill(x, y, barWidth, 1, " ")
 end
 
 return ultimateOC
