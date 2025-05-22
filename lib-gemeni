@@ -11,20 +11,17 @@ local ultimateOC = {}
 -- Функция для рисования текста с цветом и жирным начертанием
 function ultimateOC.drawText(x, y, text, color, bold)
     g.setForeground(color or 0xFFFFFF)
-    -- В OpenOS 'g.set' обычно поддерживает только цвет и текст.
-    -- Имитация жирного шрифта через повторное наложение текста или подчеркивание
-    -- может приводить к 'миганию' или 'грязи' при частых перерисовках.
-    -- Лучше использовать только цвет и простой текст.
-    -- Если терминал поддерживает жирный шрифт, можно установить term.setGraphicsMode(term.mode.bold)
-    -- Но это не универсально и может конфликтовать.
-    -- Для OpenOS 1.6.1 и Lua 5.2, прямое "жирное" начертание через GPU.set не всегда есть.
-    -- Просто устанавливаем цвет и выводим текст.
+    -- В OpenOS GPU.set не поддерживает напрямую жирный шрифт.
+    -- Имитация жирного шрифта через повторное наложение или подчеркивание
+    -- может приводить к "грязи" и миганию.
+    -- Лучше просто выводить текст. Если нужна "жирность", используем другой цвет или просто выводим текст.
+    -- term.setGraphicsMode(term.mode.bold) может работать в некоторых терминалах, но не универсально.
     g.set(x, y, text)
-    if bold then -- Если все же хотим какой-то акцент, можно сделать его цветом
-        -- Или использовать более насыщенный цвет
-        g.setForeground(color and (color + 0x111111) or 0xFFFFFF) -- Пример: немного ярче
-        g.set(x,y,text) -- Перерисовываем тем же текстом, но ярче, чтобы имитировать
-    end
+    -- Если всё же хочется какой-то акцент для "жирного", можно сделать так:
+    -- if bold then
+    --     g.setForeground(color and (color + 0x111111) or 0xFFFFFF) -- Делаем цвет чуть ярче
+    --     g.set(x,y,text) -- Перерисовываем тем же текстом, но ярче
+    -- end
 end
 
 -- Функция для рисования прямоугольника с закруглёнными углами
@@ -45,7 +42,6 @@ end
 
 -- Функция для анимированной кнопки (изменено: убран setBackground)
 function ultimateOC.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor, subText, subTextColor)
-    -- Removed the background setting from here, it will be handled by the caller
     g.setForeground(textColor or 0xFFFFFF)
     local textLen = unicode.len(text)
     local tx = x + math.floor((w - textLen) / 2)
@@ -58,22 +54,20 @@ function ultimateOC.animatedButton(x, y, w, h, text, hover, bgColor, activeColor
     end
 end
 
--- Функция для отрисовки логов
+-- Функция для отрисовки логов (ИСПРАВЛЕНО)
 function ultimateOC.drawLogs(x, y, logs, lines, color, offset)
     g.setForeground(color or 0x8BE9FD)
+    g.setBackground(0x23242b) -- Цвет фона логов
     for i = 1, lines do
         local displayLine = i - 1 -- Индекс строки относительно y
-        local idx = #logs - offset - (lines - 1) + displayLine -- Самый новый лог внизу
+        local idx = #logs - (lines - i) - offset -- Логи идут снизу вверх, последние внизу
+        
+        -- Очищаем текущую строку перед выводом нового лога
+        g.fill(x, y + displayLine, term.current.width - x, 1, " ") 
+
         if idx > 0 and idx <= #logs then
             local logText = logs[idx] or ""
-            -- Очищаем текущую строку перед выводом нового лога
-            g.setBackground(0x23242b) -- Цвет фона логов
-            g.fill(x, y + displayLine, term.current.width - x, 1, " ") -- Очищаем до конца строки
             g.set(x, y + displayLine, logText)
-        else
-            -- Если строка пуста, очищаем ее
-            g.setBackground(0x23242b)
-            g.fill(x, y + displayLine, term.current.width - x, 1, " ")
         end
     end
 end
