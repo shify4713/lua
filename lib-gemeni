@@ -1,82 +1,94 @@
 local component = require("component")
-local gpu = component.gpu
 local unicode = require("unicode")
+local term = require("term")
+local fs = require("filesystem")
+
+local g = component.gpu
 
 local ultimateOC = {}
 
+-- Функция для рисования текста с цветом и жирным начертанием
 function ultimateOC.drawText(x, y, text, color, bold)
-    print("DEBUG: drawText at " .. x .. "," .. y .. ": " .. text)
-    gpu.setForeground(color or 0xFFFFFF)
-    gpu.set(x, y, text)
+    g.setForeground(color or 0xFFFFFF)
+    if bold then
+        g.set(x, y, text .. " ")
+        g.set(x, y + 1, string.rep(" ", unicode.len(text)))
+    else
+        g.set(x, y, text)
+    end
 end
 
-function ultimateOC.progressBar(x, y, w, p)
-    print("DEBUG: progressBar at " .. x .. "," .. y .. " width " .. w .. " progress " .. p)
-    gpu.fill(x, y, math.floor(w * p), 1, "█")
-end
-
+-- Функция для рисования прямоугольника с закруглёнными углами
 function ultimateOC.roundRect(x, y, w, h, borderColor, bgColor)
-    print("DEBUG: roundRect at " .. x .. "," .. y .. " size " .. w .. "x" .. h)
-    gpu.setBackground(bgColor or 0x000000)
-    gpu.fill(x, y, w, h, " ")
-    gpu.setForeground(borderColor or 0xFFFFFF)
-    gpu.set(x, y, "╔" .. string.rep("═", w-2) .. "╗")
-    gpu.set(x, y+h-1, "╚" .. string.rep("═", w-2) .. "╝")
-    for i = 1, h-2 do
-        gpu.set(x, y+i, "║")
-        gpu.set(x+w-1, y+i, "║")
+    g.setBackground(bgColor or 0x000000)
+    g.fill(x, y, w, h, " ")
+    g.setForeground(borderColor or 0xFFFFFF)
+    -- Верхняя линия
+    g.set(x, y, "╔" .. string.rep("═", w - 2) .. "╗")
+    -- Нижняя линия
+    g.set(x, y + h - 1, "╚" .. string.rep("═", w - 2) .. "╝")
+    -- Боковые линии
+    for i = 1, h - 2 do
+        g.set(x, y + i, "║")
+        g.set(x + w - 1, y + i, "║")
     end
 end
 
-function ultimateOC.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor, subText, subColor)
-    print("DEBUG: animatedButton at " .. x .. "," .. y .. " text: " .. text)
-    gpu.setBackground(hover and activeColor or bgColor)
-    gpu.fill(x, y, w, h, " ")
-    gpu.setForeground(textColor)
-    local textLen = unicode and unicode.len and unicode.len(text) or string.len(text)
+-- Функция для анимированной кнопки
+function ultimateOC.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor, subText, subTextColor)
+    local bg = hover and activeColor or bgColor
+    g.setBackground(bg)
+    g.fill(x, y, w, h, " ")
+    g.setForeground(textColor or 0xFFFFFF)
+    local textLen = unicode.len(text)
     local tx = x + math.floor((w - textLen) / 2)
-    gpu.set(tx, y + math.floor(h/2), text)
-    if subText then
-        gpu.setForeground(subColor or textColor)
-        local subTextLen = unicode and unicode.len and unicode.len(subText) or string.len(subText)
-        local stx = x + math.floor((w - subTextLen) / 2)
-        gpu.set(stx, y + math.floor(h/2) + 1, subText)
+    g.set(tx, y + math.floor(h / 2), text)
+    if subText and subText ~= "" then
+        local subTextLen = unicode.len(subText)
+        local subTx = x + math.floor((w - subTextLen) / 2)
+        g.setForeground(subTextColor or textColor or 0xFFFFFF)
+        g.set(subTx, y + math.floor(h / 2) + 1, subText)
     end
 end
 
+-- Функция для отрисовки логов
 function ultimateOC.drawLogs(x, y, logs, lines, color, offset)
-    print("DEBUG: drawLogs at " .. x .. "," .. y)
-    gpu.setForeground(color or 0xFFFFFF)
+    g.setForeground(color or 0x8BE9FD)
     for i = 1, lines do
         local idx = #logs - offset - lines + i
         if idx > 0 and idx <= #logs then
-            gpu.set(x, y + i - 1, logs[idx])
+            g.set(x, y + i - 1, logs[idx])
         end
     end
 end
 
-function ultimateOC.addLog(logsTable, msg)
-    print("DEBUG: Adding log: " .. msg)
-    table.insert(logsTable, msg)
-    if #logsTable > 100 then table.remove(logsTable, 1) end
-end
-
-function ultimateOC.loadf(path)
-    print("DEBUG: Loading file: " .. path)
-    local file = io.open(path, "r")
-    if not file then return nil end
-    local content = file:read("*a")
-    file:close()
-    return load("return " .. content)()
-end
-
+-- Функция для сохранения данных в файл
 function ultimateOC.savef(path, data)
-    print("DEBUG: Saving file: " .. path)
     local file = io.open(path, "w")
     if file then
         file:write(textutils.serialize(data))
         file:close()
     end
+end
+
+-- Функция для загрузки данных из файла
+function ultimateOC.loadf(path)
+    local file = io.open(path, "r")
+    if not file then return nil end
+    local content = file:read("*a")
+    file:close()
+    local func, err = load("return " .. content)
+    if not func then return nil end
+    return func()
+end
+
+-- Функция прогресс-бара
+function ultimateOC.progressBar(x, y, w, progress)
+    local barWidth = math.floor(w * math.max(0, math.min(1, progress)))
+    g.setBackground(0x44475a)
+    g.fill(x, y, w, 1, " ")
+    g.setBackground(0x50FA7B)
+    g.fill(x, y, barWidth, 1, " ")
 end
 
 return ultimateOC
