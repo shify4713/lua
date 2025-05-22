@@ -11,22 +11,26 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
+-- Проверяем наличие библиотеки ultimateOC.lua и скачиваем, если ее нет
 if not fs.exists(LIB_PATH) then
     shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
 end
+-- Пытаемся загрузить библиотеку ultimateOC.lua
 local ok, uoc = pcall(require, "ultimateOC")
 if not ok then
     io.stderr:write("Не удалось загрузить ultimateOC.lua: ", tostring(uoc), "\n")
     os.exit(1)
 end
 
+-- Проверяем наличие файла данных и создаем его, если нет
 if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {})
 end
 
 -------------------- Настройки --------------------
+-- Цветовая палитра для интерфейса
 local COLORS = {
     button = 0x00BFFF,
     buttonActive = 0x1E90FF,
@@ -49,40 +53,41 @@ local COLORS = {
     tooltip_bg = 0x44475a,
     tooltip_text = 0xF8F8F2,
 }
-local WIDTH, HEIGHT = 110, 40
-local craftStatus = "Ожидание..."
-local nextCraftUpdate = 0
-local isCrafting = false
+local WIDTH, HEIGHT = 110, 40 -- Размеры окна
+local craftStatus = "Ожидание..." -- Текущий статус крафта
+local nextCraftUpdate = 0 -- Время следующего обновления статуса крафта
+local isCrafting = false -- Флаг, указывающий, активен ли автокрафт
 
 -------------------- Переменные --------------------
-local logs = {}
-local dataItems = {}
-local search = ""
-local selectedItem = nil
-local itemScroll = 1
-local changeitem = false
-local searchActive = false
-local hoveredButton = nil
-local tooltip = ""
-local tooltipTimeout = 0
+local logs = {} -- Массив для хранения логов
+local dataItems = {} -- Массив для хранения данных о предметах
+local search = "" -- Строка поиска
+local selectedItem = nil -- Индекс выбранного предмета
+local itemScroll = 1 -- Позиция прокрутки списка предметов
+local changeitem = false -- Флаг, указывающий, находится ли пользователь в режиме изменения предмета
+local searchActive = false -- Флаг, указывающий, активно ли поле поиска
+local hoveredButton = nil -- Индекс кнопки, на которую наведен курсор
+local tooltip = "" -- Текст всплывающей подсказки
+local tooltipTimeout = 0 -- Время, когда подсказка должна исчезнуть
 
 -------------------- Логгирование --------------------
--- Удалена функция getKyivTime()
+-- Функция для добавления логов. Время было удалено по запросу.
 local function addLog(logs, text, lvl)
     lvl = lvl or "INFO"
-    -- Время удалено из лога
     local t = string.format("[%s] %s", lvl, text)
     table.insert(logs, t)
     while #logs > 50 do table.remove(logs, 1) end
 end
 
 -------------------- Визуал --------------------
+-- Очищает экран
 local function clear()
     g.setBackground(COLORS.bg)
     g.fill(1,1,WIDTH,HEIGHT," ")
     g.setForeground(COLORS.text)
 end
 
+-- Рисует тень для прямоугольника
 local function shadowRect(x, y, w, h)
     g.setBackground(COLORS.bar_shadow)
     g.fill(x+1, y+h, w, 1, " ")
@@ -90,6 +95,7 @@ local function shadowRect(x, y, w, h)
     g.setBackground(COLORS.bg)
 end
 
+-- Рисует заголовок приложения
 local function drawHeader()
     uoc.drawText(3,3,"Ultimate AutoCraft",COLORS.ok,true)
     g.setBackground(COLORS.progress_fg)
@@ -101,24 +107,24 @@ local function drawHeader()
     uoc.progressBar(3,5,WIDTH-6, isCrafting and 0.9 or 0)
 end
 
+-- Рисует логи в нижней части экрана, под поиском
 local function drawLogs()
-    -- Сдвигаем логи ниже таблицы и поиска
     uoc.drawLogs(3, HEIGHT-9, logs, 4, COLORS.log)
 end
 
+-- Рисует список предметов
 local function drawItems()
-    -- Динамически растянутая таблица
-    local x, y = 2, 8 -- чуть ниже
+    local x, y = 2, 8
     local totalWidth = WIDTH-4
     local col_name = math.floor(totalWidth * 0.45)
     local col_now = math.floor(totalWidth * 0.17)
     local col_hold = math.floor(totalWidth * 0.17)
     local col_once = totalWidth - col_name - col_now - col_hold
 
-    -- Верх рамки
+    -- Верх рамки таблицы
     g.setForeground(COLORS.select_active)
     g.set(x, y,      "┌"..string.rep("─",col_name).."┬"..string.rep("─",col_now).."┬"..string.rep("─",col_hold).."┬"..string.rep("─",col_once).."┐")
-    -- Заголовки
+    -- Заголовки колонок
     g.set(x, y+1,    "│")
     g.setForeground(COLORS.ok)
     g.set(x+1, y+1,  string.format("%-"..col_name.."s"," Название"))
@@ -136,10 +142,10 @@ local function drawItems()
     g.set(x+col_name+col_now+col_hold+4, y+1, string.format("%-"..(col_once).."s"," За раз"))
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_now+col_hold+col_once+4, y+1, "│")
-    -- Разделитель
+    -- Разделитель заголовков и строк
     g.set(x, y+2, "├"..string.rep("─",col_name).."┼"..string.rep("─",col_now).."┼"..string.rep("─",col_hold).."┼"..string.rep("─",col_once).."┤")
 
-    -- Строки предметов
+    -- Отображение строк предметов
     local showItems = {}
     for i,item in ipairs(dataItems) do
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
@@ -153,7 +159,7 @@ local function drawItems()
         local row = y+2+(i-itemScroll)+1
         g.setBackground(isSel and COLORS.select_active or COLORS.bg)
         g.setForeground(COLORS.text)
-        -- аккуратно обрезаем строку если длинная
+        -- Обрезаем строку, если она слишком длинная
         local nameStr = unicode.sub((it.name or "<??>"), 1, col_name)
         g.set(x, row, "│")
         g.set(x+1, row, string.format("%-"..col_name.."s",nameStr))
@@ -167,13 +173,13 @@ local function drawItems()
         g.setBackground(COLORS.bg)
     end
 
-    -- Низ рамки
+    -- Низ рамки таблицы
     local lastRow = y+perPage+3
     g.setForeground(COLORS.select_active)
     g.set(x, lastRow, "└"..string.rep("─",col_name).."┴"..string.rep("─",col_now).."┴"..string.rep("─",col_hold).."┴"..string.rep("─",col_once).."┘")
     g.setForeground(COLORS.text)
 
-    -- Скроллбар если нужно
+    -- Скроллбар
     if #showItems > perPage then
         local barLen = math.max(2, math.floor(perPage * perPage / #showItems))
         local barTop = y+3 + math.floor((perPage-barLen) * (itemScroll-1) / math.max(1,#showItems-perPage))
@@ -190,8 +196,9 @@ local function drawItems()
     end
 end
 
+-- Рисует панель поиска
 local function drawSearchBar()
-    local x, y, w, h = 3, HEIGHT-17, WIDTH-6, 3 -- Позиция поиска изменена
+    local x, y, w, h = 3, HEIGHT-17, WIDTH-6, 3 -- Позиция поиска
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
     g.fill(x+1, y+1, w-2, h-2, " ")
@@ -210,6 +217,7 @@ local function drawSearchBar()
     g.setForeground(COLORS.text)
 end
 
+-- Рисует кнопки управления
 local function drawButtons()
     local btns = {
         {name="Удалить", x=WIDTH-60, tip="Удалить выбранный предмет из списка"},
@@ -227,6 +235,7 @@ local function drawButtons()
     end
 end
 
+-- Рисует всплывающую подсказку
 local function drawTooltip()
     if tooltip ~= "" and os.time() - tooltipTimeout < 3 then
         local txt = " "..tooltip.." "
@@ -241,32 +250,37 @@ local function drawTooltip()
     end
 end
 
+-- Основная функция отрисовки всего интерфейса
 local function draw()
     clear()
     drawHeader()
     drawItems()
-    drawSearchBar() -- Вызываем отрисовку поиска перед логами
-    drawLogs()      -- Вызываем отрисовку логов после поиска
+    drawSearchBar()
+    drawLogs()
     drawButtons()
     drawTooltip()
 end
 
 -------------------- IO и действия --------------------
+-- Перезагружает данные о предметах из файла и обновляет их текущее количество
 local function reload()
     local ok, res = pcall(uoc.loadf, DATA_FILE)
     dataItems = ok and res or {}
     for _,item in ipairs(dataItems) do
         local qty = 0
         local stackList = {}
+        -- Пытаемся получить предметы из сети ME по ID и Damage
         pcall(function() stackList = me.getItemsInNetwork({id = item.id, damage = item.dmg}) end)
         if stackList and stackList.n and stackList.n > 0 then
             for _,stack in ipairs(stackList) do
+                -- Проверяем, что это именно тот предмет, который нам нужен
                 if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
                     qty = stack.size or stack.qty or 0
                     break
                 end
             end
         else
+            -- Если не удалось получить из сети, пытаемся получить детали предмета напрямую
             local ok2, d = pcall(me.getItemDetail, {id = item.id, dmg = item.dmg})
             if ok2 and d then
                 qty = d.qty or d.size or 0
@@ -276,17 +290,20 @@ local function reload()
     end
 end
 
+-- Сохраняет текущие данные о предметах в файл
 local function save()
     local ok, err = pcall(uoc.savef, DATA_FILE, dataItems)
     if not ok then addLog(logs, "Ошибка сохранения: "..tostring(err), "ERROR") end
 end
 
+-- Сбрасывает выбранный предмет и поиск
 local function resetSelection()
     search = ""
     itemScroll = 1
     selectedItem = nil
 end
 
+-- Добавляет новый предмет в список для автокрафта
 local function addItem()
     changeitem = true
     clear()
@@ -315,6 +332,7 @@ local function addItem()
     draw()
 end
 
+-- Редактирует выбранный предмет
 local function editItem()
     if not selectedItem then return addLog(logs,"Не выбран предмет!","ERROR") end
     local item = dataItems[selectedItem]
@@ -347,6 +365,7 @@ local function editItem()
     draw()
 end
 
+-- Удаляет выбранный предмет из списка
 local function removeItem()
     if not selectedItem then return addLog(logs,"Не выбран предмет!","ERROR") end
     addLog(logs, "Удалён: "..(dataItems[selectedItem].name or "<??>"),"WARN")
@@ -356,6 +375,7 @@ local function removeItem()
     draw()
 end
 
+-- Запускает автокрафт
 local function doCraft()
     isCrafting = true
     craftStatus = "Автокрафт..."
@@ -364,6 +384,7 @@ local function doCraft()
     draw()
 end
 
+-- Останавливает автокрафт
 local function stopCraft()
     isCrafting = false
     craftStatus = "Остановлено"
@@ -376,42 +397,52 @@ local function autoCraftLoop()
     while true do
         if isCrafting then
             local now = computer.uptime()
+            -- Проверяем, пришло ли время для следующего обновления крафта
             if now >= nextCraftUpdate then
-                reload()
-                local craftedThisCycle = false -- Флаг для отслеживания, был ли крафт в этом цикле
+                addLog(logs, "Начало цикла автокрафта...", "DEBUG")
+                reload() -- Обновляем текущие количества предметов
+                local craftedThisCycle = false -- Флаг, чтобы крафтить только 1 предмет за цикл
                 for i, item in ipairs(dataItems) do
                     local count = tonumber(item.count) or 0
                     local craftSize = tonumber(item.craftSize) or 1
                     local current = tonumber(item.current) or 0
 
-                    if current < count and not craftedThisCycle then -- Проверяем флаг
+                    -- Если текущее количество меньше требуемого и в этом цикле еще не было крафта
+                    if current < count and not craftedThisCycle then
+                        addLog(logs, "Предмет нуждается в крафте: "..(item.name or "<??>").." (Текущее: "..current..", Нужно: "..count..")", "DEBUG")
                         local ok2, cpus = pcall(me.getCpus)
                         cpus = ok2 and cpus or {}
                         local freeCpu = nil
+                        -- Ищем свободный CPU
                         for _,cpu in ipairs(cpus) do
                             if not cpu.busy then freeCpu = cpu.name break end
                         end
 
                         if freeCpu then
+                            addLog(logs, "Найден свободный CPU: "..tostring(freeCpu), "DEBUG")
                             local ok3, craftables = pcall(me.getCraftables, {name=item.id, damage=item.dmg})
                             craftables = ok3 and craftables or {n=0}
+                            -- Проверяем, есть ли рецепт для предмета
                             if craftables.n and craftables.n >= 1 then
+                                addLog(logs, "Найден рецепт для: "..(item.name or "<??>"), "DEBUG")
+                                -- Вычисляем, сколько нужно скрафтить, но всегда запрашиваем 1
                                 local delta = math.min(craftSize, count - current)
                                 if delta > 0 then
                                     -- Запрашиваем крафт только 1 единицы, чтобы использовать 1 ЦПУ за проверку
                                     local succ, req = pcall(function() return craftables[1].request(1, false, freeCpu) end)
                                     if succ and req then
                                         craftStatus = "Крафт: "..(item.name or "<??>")
-                                        addLog(logs, "Крафт 1x "..(item.name or "<??>").." на CPU "..tostring(freeCpu),"INFO")
+                                        addLog(logs, "Успешный запрос крафта 1x "..(item.name or "<??>").." на CPU "..tostring(freeCpu),"INFO")
                                         craftedThisCycle = true -- Устанавливаем флаг, чтобы не крафтить больше в этом цикле
                                     else
-                                        craftStatus = "Ошибка: запрос крафта"
-                                        addLog(logs, "Ошибка: не удалось отправить крафт "..(item.name or "<??>"),"ERROR")
+                                        craftStatus = "Ошибка: не удалось отправить крафт "..(item.name or "<??>").." (succ: "..tostring(succ)..", req: "..tostring(req)..")","ERROR")
                                     end
+                                else
+                                    addLog(logs, "Delta (количество для крафта) <= 0 для: "..(item.name or "<??>"), "DEBUG")
                                 end
                             else
                                 craftStatus = "Ошибка: нет рецепта "..(item.name or "<??>")
-                                addLog(logs, "Ошибка: нет рецепта "..(item.name or "<??>"),"ERROR")
+                                addLog(logs, "Ошибка: нет рецепта "..(item.name or "<??>").." (craftables.n: "..tostring(craftables.n)..")","ERROR")
                             end
                         else
                             craftStatus = "Ошибка: нет свободных CPU"
@@ -419,18 +450,20 @@ local function autoCraftLoop()
                         end
                     end
                 end
-                save()
-                nextCraftUpdate = now + 5
+                save() -- Сохраняем обновленные данные
+                nextCraftUpdate = now + 5 -- Устанавливаем время для следующего обновления
+                addLog(logs, "Конец цикла автокрафта.", "DEBUG")
             end
         end
-        draw()
-        os.sleep(0.2)
+        draw() -- Перерисовываем интерфейс
+        os.sleep(0.2) -- Небольшая задержка, чтобы не нагружать CPU
     end
 end
 
 -------------------- События --------------------
+-- Обработчик события касания (клика)
 event.listen("touch", function(_,_,x,y,_,_)
-    if changeitem then return end
+    if changeitem then return end -- Если идет изменение предмета, игнорируем касания
     hoveredButton = nil
     local btns = {
         {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
@@ -450,14 +483,16 @@ event.listen("touch", function(_,_,x,y,_,_)
             return
         end
     end
-    -- Поле поиска (WIDTH-6 x 3, левый верхний угол 3,HEIGHT-17)
-    if y >= HEIGHT-17 and y <= HEIGHT-15 then -- Позиция поиска изменена
+    -- Обработка касания поля поиска
+    if y >= HEIGHT-17 and y <= HEIGHT-15 then
         searchActive = false
+        -- Кнопка очистки поиска (крестик)
         if x >= 3+(WIDTH-6)-3 and x <= 3+(WIDTH-6)-1 and search ~= "" then
             search = ""
             draw()
             return
         end
+        -- Активация поля поиска
         if x >= 3+1 and x <= 3+(WIDTH-6)-4 then
             searchActive = true
             draw()
@@ -466,14 +501,14 @@ event.listen("touch", function(_,_,x,y,_,_)
     else
         searchActive = false
     end
-    -- Список предметов (выбор)
+    -- Обработка выбора предмета в списке
     local showItems = {}
     for i,item in ipairs(dataItems) do
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
             table.insert(showItems, item)
         end
     end
-    local perPage = HEIGHT-24 - 7 -- Учитываем место под поиск и логи
+    local perPage = HEIGHT-24 - 7
     local itemsStartY = 11
     local itemsEndY = itemsStartY + perPage - 1
     if y >= itemsStartY and y <= itemsEndY then
@@ -489,6 +524,7 @@ event.listen("touch", function(_,_,x,y,_,_)
     draw()
 end)
 
+-- Обработчик события перетаскивания (для подсказок кнопок)
 event.listen("drag", function(_,_,x,y,_,_)
     local btns = {
         {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
@@ -510,15 +546,16 @@ event.listen("drag", function(_,_,x,y,_,_)
     draw()
 end)
 
+-- Обработчик события нажатия клавиши
 event.listen("key_down", function(_,_,key,_,_)
-    if changeitem then return end
+    if changeitem then return end -- Если идет изменение предмета, игнорируем нажатия клавиш
     local showItems = {}
     for i,item in ipairs(dataItems) do
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
             table.insert(showItems, item)
         end
     end
-    local perPage = HEIGHT-24 - 7 -- Учитываем место под поиск и логи
+    local perPage = HEIGHT-24 - 7
     if searchActive then
         if key == 14 then -- backspace
             search = search:sub(1,-2)
@@ -526,16 +563,16 @@ event.listen("key_down", function(_,_,key,_,_)
             search = ""
         elseif key == 28 then -- enter
             searchActive = false
-        elseif key >= 32 and key < 128 then
+        elseif key >= 32 and key < 128 then -- Ввод символов
             if unicode.len(search) < WIDTH-15 then
                 search = search .. unicode.char(key)
             end
         end
         itemScroll = 1
     else
-        if key == 200 then -- up
+        if key == 200 then -- up arrow
             itemScroll = math.max(1,itemScroll-1)
-        elseif key == 208 then -- down
+        elseif key == 208 then -- down arrow
             if #showItems > perPage then
                 itemScroll = math.min(#showItems-perPage+1,itemScroll+1)
             end
@@ -545,10 +582,10 @@ event.listen("key_down", function(_,_,key,_,_)
 end)
 
 -------------------- Старт --------------------
-g.setResolution(WIDTH,HEIGHT)
-reload()
-draw()
-local ok, err = pcall(autoCraftLoop)
+g.setResolution(WIDTH,HEIGHT) -- Устанавливаем разрешение GPU
+reload() -- Загружаем начальные данные
+draw() -- Отрисовываем интерфейс
+local ok, err = pcall(autoCraftLoop) -- Запускаем основной цикл автокрафта
 if not ok then
     addLog(logs, "Фатальная ошибка: "..tostring(err), "ERROR")
     draw()
