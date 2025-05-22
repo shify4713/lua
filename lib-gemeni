@@ -69,24 +69,39 @@ function M.roundRect(x, y, w, h, borderColor, bgColor)
     gpu.fill(x+1, y+1, w-2, h-2, " ")
 end
 
--- Рисует простую кнопку
-function M.drawButton(x, y, w, h, text, buttonColor, textColor)
+-- Рисует кнопку, опционально с подтекстом
+function M.drawButton(x, y, w, h, text, buttonColor, textColor, subText, subTextColor)
     buttonColor = buttonColor or 0x00BFFF
     textColor = textColor or 0xFFFFFF
     gpu.setBackground(buttonColor)
-    gpu.fill(x, y, w, h, " ")
+    gpu.fill(x, y, w, h, " ") -- Заливаем всю область кнопки
+
     gpu.setForeground(textColor)
     local textWidth = unicode.len(text)
     local textX = x + math.floor((w - textWidth) / 2)
-    local textY = y + math.floor((h - 1) / 2)
+    local textY = y + math.floor((h - 1) / 2) -- Центр по вертикали для основной надписи
+    
+    -- Если есть подтекст, основную надпись смещаем вверх
+    if subText then
+        textY = y + math.floor((h - 2) / 2) -- Смещаем на одну строку вверх, чтобы освободить место для подтекста
+    end
     gpu.set(textX, textY, text)
+
+    if subText then
+        subTextColor = subTextColor or textColor -- По умолчанию цвет подтекста как у основного
+        gpu.setForeground(subTextColor)
+        local subTextWidth = unicode.len(subText)
+        local subTextX = x + math.floor((w - subTextWidth) / 2)
+        local subTextY = textY + 1 -- Подтекст на следующей строке
+        gpu.set(subTextX, subTextY, subText)
+    end
 end
 
 -- Анимированная кнопка (упрощена до вызова drawButton для стабильности)
-function M.animatedButton(x, y, w, h, text, hover, buttonColor, buttonActiveColor, textColor)
+function M.animatedButton(x, y, w, h, text, hover, buttonColor, buttonActiveColor, textColor, subText, subTextColor)
     -- Для стабильности и избежания мерцания, просто рисуем статичную кнопку.
     -- Состояние 'hover' игнорируется.
-    M.drawButton(x, y, w, h, text, buttonColor, textColor)
+    M.drawButton(x, y, w, h, text, buttonColor, textColor, subText, subTextColor)
 end
 
 -- Рисует полосу прогресса
