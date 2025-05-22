@@ -1,68 +1,69 @@
--- lib-gemeni.txt
+-- /lib/ultimateOC.lua
+-- Библиотека универсальных функций для OpenComputers UI
+
 local component = require("component")
 local unicode = require("unicode")
 local term = require("term")
 local fs = require("filesystem")
 
-local g = component.gpu
+local g = component.gpu -- Объект GPU для отрисовки
 
 local ultimateOC = {}
 
--- Функция для рисования текста с цветом и жирным начертанием
-function ultimateOC.drawText(x, y, text, color, bold)
+-- Функция для рисования текста с цветом.
+-- В OpenOS GPU.set не поддерживает напрямую жирный шрифт, поэтому параметр 'bold' удален.
+function ultimateOC.drawText(x, y, text, color)
     g.setForeground(color or 0xFFFFFF)
-    -- В OpenOS GPU.set не поддерживает напрямую жирный шрифт.
-    -- Имитация жирного шрифта через повторное наложение или подчеркивание
-    -- может приводить к "грязи" и миганию.
-    -- Лучше просто выводить текст. Если нужна "жирность", используем другой цвет или просто выводим текст.
-    -- term.setGraphicsMode(term.mode.bold) может работать в некоторых терминалах, но не универсально.
     g.set(x, y, text)
-    -- Если всё же хочется какой-то акцент для "жирного", можно сделать так:
-    -- if bold then
-    --     g.setForeground(color and (color + 0x111111) or 0xFFFFFF) -- Делаем цвет чуть ярче
-    --     g.set(x,y,text) -- Перерисовываем тем же текстом, но ярче
-    -- end
 end
 
--- Функция для рисования прямоугольника с закруглёнными углами
+-- Функция для рисования прямоугольника с закругленными углами
 function ultimateOC.roundRect(x, y, w, h, borderColor, bgColor)
     g.setBackground(bgColor or 0x000000)
     g.fill(x, y, w, h, " ")
     g.setForeground(borderColor or 0xFFFFFF)
-    -- Верхняя линия
-    g.set(x, y, "╔" .. string.rep("═", w - 2) .. "╗")
-    -- Нижняя линия
-    g.set(x, y + h - 1, "╚" .. string.rep("═", w - 2) .. "╝")
-    -- Боковые линии
+    
+    -- Рисуем углы и горизонтальные линии
+    g.set(x, y, "╔" .. string.rep("═", w - 2) .. "╗")         -- Верхняя линия
+    g.set(x, y + h - 1, "╚" .. string.rep("═", w - 2) .. "╝") -- Нижняя линия
+    
+    -- Рисуем вертикальные линии
     for i = 1, h - 2 do
         g.set(x, y + i, "║")
         g.set(x + w - 1, y + i, "║")
     end
 end
 
--- Функция для анимированной кнопки (изменено: убран setBackground)
+-- Функция для отрисовки анимированной кнопки
+-- (исправлено: добавлен setBackground и fill для корректной отрисовки фона кнопки)
 function ultimateOC.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor, subText, subTextColor)
+    g.setBackground(hover and activeColor or bgColor) -- Устанавливаем фон кнопки в зависимости от наведения
+    g.fill(x, y, w, h, " ") -- Заполняем фон кнопки
+
     g.setForeground(textColor or 0xFFFFFF)
     local textLen = unicode.len(text)
     local tx = x + math.floor((w - textLen) / 2)
-    g.set(tx, y + math.floor(h / 2), text)
+    g.set(tx, y + math.floor(h / 2), text) -- Отрисовываем основной текст
+
     if subText and subText ~= "" then
         local subTextLen = unicode.len(subText)
         local subTx = x + math.floor((w - subTextLen) / 2)
         g.setForeground(subTextColor or textColor or 0xFFFFFF)
-        g.set(subTx, y + math.floor(h / 2) + 1, subText)
+        g.set(subTx, y + math.floor(h / 2) + 1, subText) -- Отрисовываем подтекст
     end
 end
 
--- Функция для отрисовки логов (ИСПРАВЛЕНО)
+-- Функция для отрисовки логов
+-- (улучшено: очищает строку перед выводом нового лога для предотвращения артефактов)
 function ultimateOC.drawLogs(x, y, logs, lines, color, offset)
     g.setForeground(color or 0x8BE9FD)
     g.setBackground(0x23242b) -- Цвет фона логов
     for i = 1, lines do
-        local displayLine = i - 1 -- Индекс строки относительно y
-        local idx = #logs - (lines - i) - offset -- Логи идут снизу вверх, последние внизу
+        local displayLine = i - 1 -- Индекс строки относительно y (0-based for drawing)
+        -- Логи отображаются снизу вверх: последние элементы в таблице logs отображаются внизу UI
+        local idx = #logs - (lines - i) - offset 
         
-        -- Очищаем текущую строку перед выводом нового лога
+        -- Очищаем текущую строку перед выводом нового лога, чтобы не было наложения текста
         g.fill(x, y + displayLine, term.current.width - x, 1, " ") 
 
         if idx > 0 and idx <= #logs then
@@ -72,13 +73,15 @@ function ultimateOC.drawLogs(x, y, logs, lines, color, offset)
     end
 end
 
--- Функция для сохранения данных в файл
+-- Функция для сохранения данных в файл в сериализованном виде
 function ultimateOC.savef(path, data)
     local file = io.open(path, "w")
     if file then
         file:write(textutils.serialize(data))
         file:close()
+        return true
     end
+    return false
 end
 
 -- Функция для загрузки данных из файла
@@ -87,17 +90,19 @@ function ultimateOC.loadf(path)
     if not file then return nil end
     local content = file:read("*a")
     file:close()
-    local func, err = load("return " .. content)
-    if not func then error(err) end
+    local func, err = load("return " .. content) -- Безопасно загружаем данные
+    if not func then 
+        error("Ошибка при десериализации данных: " .. tostring(err)) 
+    end
     return func()
 end
 
--- Функция для прогресс-бара
+-- Функция для отрисовки прогресс-бара
 function ultimateOC.progressBar(x, y, w, progress)
-    g.setBackground(0x44475a)
+    g.setBackground(0x44475a) -- Цвет фона (пустой части) прогресс-бара
     g.fill(x, y, w, 1, " ")
-    g.setBackground(0x50FA7B)
+    g.setBackground(0x50FA7B) -- Цвет заполненной части прогресс-бара
     g.fill(x, y, math.floor(w * progress), 1, " ")
-END
+end
 
 return ultimateOC
