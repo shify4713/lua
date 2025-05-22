@@ -26,7 +26,7 @@ function M.loadf(path)
     return tbl or {}
 end
 
--- Гибкий фильтр предметов по подстроге (поиск не зависит от регистра)
+-- Гибкий фильтр предметов по подстроке (поиск не зависит от регистра)
 function M.filterItems(tbl, query)
     if not query or query == "" then return tbl end
     local res = {}
@@ -35,7 +35,7 @@ function M.filterItems(tbl, query)
         if item.name and unicode.lower(item.name):find(query, 1, true) then
             table.insert(res, item)
         end
-    }
+    end
     return res
 end
 
@@ -96,24 +96,30 @@ function M.drawText(x, y, text, color, shadow)
     gpu.set(x, y, text)
 end
 
--- Быстрый логгер: добавляет строку в массив (до 50 записей) без времени
+-- Быстрый логгер: добавляет строку в массив (до 50 записей)
+-- Изменено: удалена привязка к "реальному" времени
 function M.addLog(logs, text, lvl)
     lvl = lvl or "INFO"
+    -- Удалена строка с os.date и getKyivTime
     local t = string.format("[%s] %s", lvl, text) -- Форматируем строку лога без времени
     table.insert(logs, t)
     while #logs > 50 do table.remove(logs, 1) end
 end
 
 -- Рисует список логов (на экране)
+-- Изменено: очистка области логов перед отрисовкой
 function M.drawLogs(x, y, logs, count, color)
     count = count or 10
     color = color or 0x8BE9FD
     local logY = y
-    -- Очищаем область логов перед отрисовкой
-    gpu.setBackground(0x23242b) -- Используем фоновый цвет
+    local resX, resY = gpu.getResolution() -- Получаем текущее разрешение GPU
+    
+    -- Очищаем область логов перед отрисовкой, чтобы не было "мусора"
+    gpu.setBackground(0x23242b) -- Цвет фона
     for i = 0, count-1 do
-        gpu.fill(x, y + i, gpu.getResolution() - x, 1, " ")
+        gpu.fill(x, y + i, resX - x + 1, 1, " ") -- Очищаем строку от X до конца экрана
     end
+
     for i = math.max(1,#logs-count+1), #logs do
         M.drawText(x, logY, logs[i], color)
         logY = logY + 1
