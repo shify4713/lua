@@ -11,7 +11,7 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Проверяем наличие библиотеки ultimateOC.lua и скачиваем, ТОЛЬКО если ее нет
 if not fs.exists(LIB_PATH) then
@@ -351,7 +351,8 @@ local function drawButtons()
     elseif sortCriteria == "craftSize" then
         sortIndicatorText = "За раз"
     end
-    sortIndicatorText = sortIndicatorText .. (sortAscending and " ↑" or " ↓")
+    -- Изменено: используем ASCII-символы для стрелок
+    sortIndicatorText = sortIndicatorText .. (sortAscending and " ^" or " v")
 
     -- Вызов модифицированной drawButton с подтекстом
     uoc.animatedButton(sortBtnX, arrowBtnY, sortBtnW, arrowBtnH, 
@@ -758,12 +759,13 @@ event.listen("touch", function(_,_,x,y,_,_)
                 currentCriteriaIndex = i
                 break
             end
-            if i == #criteriaList then -- Если дошли до конца списка, но не нашли текущий критерий (например, если он был сброшен)
+            -- Если дошли до конца списка, но не нашли текущий критерий (например, если он был сброшен)
+            if i == #criteriaList and v ~= sortCriteria then 
                 currentCriteriaIndex = 0 -- Устанавливаем индекс перед первым элементом, чтобы перейти к первому
             end
         end
 
-        -- Переходим к следующему критерию или сбрасываем на первый
+        -- Переходим к следующему критерию или меняем направление
         currentCriteriaIndex = currentCriteriaIndex + 1
         if currentCriteriaIndex > #criteriaList then
             currentCriteriaIndex = 1 -- Возвращаемся к первому критерию
@@ -847,6 +849,7 @@ event.listen("key_down", function(_,_,key,_,_ )
     local maxPages = getMaxPages()
 
     if searchActive then
+        addLog(logs, "DEBUG: Ввод в поиске, клавиша: " .. key)
         if key == 14 then -- backspace
             search = search:sub(1,-2)
         elseif key == 211 then -- delete
@@ -861,6 +864,7 @@ event.listen("key_down", function(_,_,key,_,_ )
         currentPage = 1 -- Сбрасываем страницу при изменении поиска
         selectedItem = nil -- Сбрасываем выбранный элемент
     else
+        addLog(logs, "DEBUG: Нажата клавиша: " .. key)
         if key == 200 then -- up arrow (выбор элемента на текущей странице)
             local currentSelectedItemInFiltered = nil
             local startIndex = (currentPage - 1) * perPage + 1
