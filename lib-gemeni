@@ -28,13 +28,15 @@ end
 
 -- Рисует текст с опциональной тенью
 function M.drawText(x, y, text, color, shadow)
+    local originalBg = gpu.getBackground() -- Сохраняем текущий фон
     color = color or 0xFFFFFF -- По умолчанию белый
     gpu.setForeground(color)
     if shadow then
         gpu.setBackground(0x282A36) -- Цвет тени
         gpu.set(x+1, y+1, text)
+        gpu.setBackground(originalBg) -- Восстанавливаем оригинальный фон после отрисовки тени
     end
-    gpu.setBackground(0x000000) -- Прозрачный фон для текста
+    -- НЕ устанавливаем фон для основного текста. Вызывающая функция (например, drawItems) отвечает за фон.
     gpu.set(x, y, text)
 end
 
