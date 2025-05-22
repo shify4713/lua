@@ -1,7 +1,8 @@
 -- ultimateOC.lua - Улучшенная библиотека для визуала OpenComputers
 local fs = require("filesystem")
 local unicode = require("unicode")
-local gpu = require("component").gpu
+-- Удаляем: local gpu = require("component").gpu  <-- ВАЖНОЕ ИЗМЕНЕНИЕ
+-- Удаляем: local term = require("term")          <-- ВАЖНОЕ ИЗМЕНЕНИЕ
 
 local M = {}
 
@@ -40,88 +41,90 @@ function M.filterItems(tbl, query)
 end
 
 -- Закруглённый прямоугольник c опциональной цветной рамкой
-function M.roundRect(x, y, w, h, borderColor, fillColor)
+-- Теперь принимает 'gpu' как аргумент
+function M.roundRect(gpu_obj, x, y, w, h, borderColor, fillColor)
     borderColor = borderColor or 0x44475a
     fillColor = fillColor or 0x1B1D23
     -- Заливка
     if fillColor then
-        gpu.setBackground(fillColor)
-        gpu.fill(x, y, w, h, " ")
+        gpu_obj.setBackground(fillColor)
+        gpu_obj.fill(x, y, w, h, " ")
     end
     -- Рамка
-    gpu.setForeground(borderColor)
-    gpu.set(x+1, y, string.rep("─", w-2))
-    gpu.set(x+1, y+h-1, string.rep("─", w-2))
+    gpu_obj.setForeground(borderColor)
+    gpu_obj.set(x+1, y, string.rep("─", w-2))
+    gpu_obj.set(x+1, y+h-1, string.rep("─", w-2))
     for i = y+1, y+h-2 do
-        gpu.set(x, i, "│")
-        gpu.set(x+w-1, i, "│")
+        gpu_obj.set(x, i, "│")
+        gpu_obj.set(x+w-1, i, "│")
     end
-    gpu.set(x, y, "╭")
-    gpu.set(x+w-1, y, "╮")
-    gpu.set(x, y+h-1, "╰")
-    gpu.set(x+w-1, y+h-1, "╯")
+    gpu_obj.set(x, y, "╭")
+    gpu_obj.set(x+w-1, y, "╮")
+    gpu_obj.set(x, y+h-1, "╰")
+    gpu_obj.set(x+w-1, y+h-1, "╯")
 end
 
 -- Прогресс-бар (цветной)
-function M.progressBar(x, y, w, percent, fg, bg)
+-- Теперь принимает 'gpu' как аргумент
+function M.progressBar(gpu_obj, x, y, w, percent, fg, bg)
     fg = fg or 0x50FA7B
     bg = bg or 0x44475a
-    gpu.setBackground(bg)
-    gpu.fill(x, y, w, 1, " ")
-    gpu.setBackground(fg)
-    gpu.fill(x, y, math.max(0, math.floor(w * percent)), 1, " ")
-    gpu.setBackground(0x1B1D23)
+    gpu_obj.setBackground(bg)
+    gpu_obj.fill(x, y, w, 1, " ")
+    gpu_obj.setBackground(fg)
+    gpu_obj.fill(x, y, math.max(0, math.floor(w * percent)), 1, " ")
+    gpu_obj.setBackground(0x1B1D23)
 end
 
 -- Анимированная кнопка (с закруглением, цветами и "нажатием")
-function M.animatedButton(x, y, w, h, text, active, baseColor, hoverColor, textColor)
+-- Теперь принимает 'gpu' как аргумент
+function M.animatedButton(gpu_obj, x, y, w, h, text, active, baseColor, hoverColor, textColor)
     baseColor = baseColor or 0x00BFFF
     hoverColor = hoverColor or 0x1E90FF
     textColor = textColor or 0xFFFFFF
     local color = active and hoverColor or baseColor
-    M.roundRect(x, y, w, h, color, color)
-    gpu.setForeground(textColor)
-    gpu.set(x + math.floor((w-unicode.len(text))/2), y + math.floor(h/2), text)
-    gpu.setBackground(0x1B1D23)
+    M.roundRect(gpu_obj, x, y, w, h, color, color) -- Передаем gpu_obj в roundRect
+    gpu_obj.setForeground(textColor)
+    gpu_obj.set(x + math.floor((w-unicode.len(text))/2), y + math.floor(h/2), text)
+    gpu_obj.setBackground(0x1B1D23)
 end
 
 -- Тень под текстом
-function M.drawText(x, y, text, color, shadow)
+-- Теперь принимает 'gpu' как аргумент
+function M.drawText(gpu_obj, x, y, text, color, shadow)
     color = color or 0xF8F8F2
     if shadow then
-        gpu.setForeground(0x282A36)
-        gpu.set(x+1, y+1, text)
+        gpu_obj.setForeground(0x282A36)
+        gpu_obj.set(x+1, y+1, text)
     end
-    gpu.setForeground(color)
-    gpu.set(x, y, text)
+    gpu_obj.setForeground(color)
+    gpu_obj.set(x, y, text)
 end
 
 -- Быстрый логгер: добавляет строку в массив (до 50 записей)
--- Изменено: удалена привязка к "реальному" времени
 function M.addLog(logs, text, lvl)
     lvl = lvl or "INFO"
-    -- Удалена строка с os.date и getKyivTime
-    local t = string.format("[%s] %s", lvl, text) -- Форматируем строку лога без времени
+    local t = string.format("[%s] %s", lvl, text)
     table.insert(logs, t)
     while #logs > 50 do table.remove(logs, 1) end
 end
 
 -- Рисует список логов (на экране)
--- Изменено: очистка области логов перед отрисовкой
-function M.drawLogs(x, y, logs, count, color)
+-- Теперь принимает 'gpu' как аргумент
+function M.drawLogs(gpu_obj, x, y, logs, count, color)
     count = count or 10
     color = color or 0x8BE9FD
     local logY = y
-    local resX, resY = gpu.getResolution() -- Получаем текущее разрешение GPU
-    
+    local resX, resY = gpu_obj.getResolution() -- Получаем текущее разрешение GPU
+
     -- Очищаем область логов перед отрисовкой, чтобы не было "мусора"
-    gpu.setBackground(0x23242b) -- Цвет фона
+    gpu_obj.setBackground(0x23242b) -- Цвет фона
     for i = 0, count-1 do
-        gpu.fill(x, y + i, resX - x + 1, 1, " ") -- Очищаем строку от X до конца экрана
+        gpu_obj.fill(x, y + i, resX - x + 1, 1, " ") -- Очищаем строку от X до конца экрана
     end
 
     for i = math.max(1,#logs-count+1), #logs do
-        M.drawText(x, logY, logs[i], color)
+        M.drawText(gpu_obj, x, logY, logs[i], color)
         logY = logY + 1
     end
 end
@@ -138,15 +141,16 @@ function M.scrollArray(tbl, scroll, perPage)
 end
 
 -- Цветной выделенный элемент (фон+текст)
-function M.selectLine(x, y, w, text, selected, color, selColor, textColor)
+-- Теперь принимает 'gpu' как аргумент
+function M.selectLine(gpu_obj, x, y, w, text, selected, color, selColor, textColor)
     color = color or 0x23262E
     selColor = selColor or 0x00BFFF
     textColor = textColor or 0xF8F8F2
-    gpu.setBackground(selected and selColor or color)
-    gpu.setForeground(textColor)
-    gpu.fill(x, y, w, 1, " ")
-    gpu.set(x+1, y, text)
-    gpu.setBackground(0x1B1D23)
+    gpu_obj.setBackground(selected and selColor or color)
+    gpu_obj.setForeground(textColor)
+    gpu_obj.fill(x, y, w, 1, " ")
+    gpu_obj.set(x+1, y, text)
+    gpu_obj.setBackground(0x1B1D23)
 end
 
 return M
