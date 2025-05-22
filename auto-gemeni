@@ -5,20 +5,45 @@ local event = require("event")
 local unicode = require("unicode")
 local computer = require("computer")
 
--- Прямая инициализация GPU и Term. Если их нет, g или term будут nil.
--- Это возвращает к более "оригинальному" способу, который может обойти некоторые проблемы инициализации OpenOS.
-local g = component.gpu
-local term = require("term") -- Возвращаемся к прямому require
+-- Глобальные переменные для компонентов, которые будут обновляться динамически
+local g
+local term
+local me = component.me_interface -- ME interface редко вызывает такие проблемы, поэтому его можно оставить здесь.
 
--- Проверка наличия компонентов
+-- Вспомогательная функция для надежного получения компонента
+local function getComponent(type_name)
+    local comp = component[type_name]
+    if comp and type(comp) == "table" then
+        return comp
+    end
+    -- Попытка получить компонент по типу, если прямое обращение не удалось
+    local addr = component.list(type_name)()
+    if addr then
+        comp = component.proxy(addr)
+        if comp and type(comp) == "table" then
+            return comp
+        end
+    end
+    -- Если это терм, попробуем еще require
+    if type_name == "term" then
+        local ok, t = pcall(require, "term")
+        if ok and t and type(t) == "table" then
+            return t
+        end
+    end
+    return nil
+end
+
+-- Инициализация компонентов на старте, с использованием новой функции
+g = getComponent("gpu")
+term = getComponent("term")
+
+-- Проверка наличия КРИТИЧЕСКИХ компонентов
 if not g then
     io.stderr:write("Ошибка: GPU не найден. Убедитесь, что он подключен.\n")
     os.exit(1)
 end
-if not term then
-    io.stderr:write("Ошибка: Terminal не найден. Убедитесь, что он подключен.\n")
-    os.exit(1)
-end
+-- Term менее критичен для запуска, но критичен для ввода. Будем его проверять позже.
 if not me then
     io.stderr:write("Ошибка: ME интерфейс не найден. Убедитесь, что он подключен.\n")
     os.exit(1)
@@ -28,7 +53,7 @@ end
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua" -- Обновите, если загружаете мою версию
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Загрузка или скачивание библиотеки
 if not fs.exists(LIB_PATH) then
@@ -63,7 +88,7 @@ local COLORS = {
     search_bg = 0x282B36,
     search_border = 0x00BFFF,
     search_cross = 0xFF5555,
-    search_hint = 0x888888, -- Теперь используется для текста "Поиск: ..."
+    search_hint = 0x888888,
     bar_shadow = 0x181920,
 }
 local WIDTH, HEIGHT = 110, 40
@@ -88,10 +113,12 @@ end
 
 -------------------- Ввод данных (блокирующий UI) --------------------
 local function safeReadInput(promptText, x, y, defaultColor, promptColor)
-    -- ДОБАВЛЕНА: Проверка на существование term и его методов перед использованием
+    -- Повторная попытка получить term внутри функции, чтобы гарантировать актуальность
+    term = getComponent("term")
+
     if not (term and type(term) == "table" and term.setCursorPos and term.setCursorBlink) then
-        addLog("Критическая ошибка: term недоступен для safeReadInput, невозможно управлять курсором. (О1)", "ERROR")
-        -- Попытаемся продолжить без мигающего курсора
+        addLog("Критическая ошибка: term недоступен для safeReadInput. Ввод может быть затруднен.", "ERROR")
+        -- Продолжаем, но без управления курсором
     end
 
     g.setBackground(COLORS.bg)
@@ -182,7 +209,16 @@ local function drawItems()
     for i = itemScroll, math.min(#showItems, itemScroll+perPage-1) do
         local it = showItems[i]
         -- Проверяем, что selectedItem соответствует выбранному элементу в dataItems
-        local isSel = (selectedItem and dataItems[selectedItem] and it == dataItems[selectedItem])
+        -- Ищем именно в dataItems, а не showItems, чтобы selectedItem был индексом в основном списке
+        local isSel = false
+        if selectedItem and dataItems[selectedItem] then
+            for k, v in ipairs(showItems) do
+                if v == dataItems[selectedItem] and v == it then -- Нашли выбранный элемент в отфильтрованном списке
+                    isSel = true
+                    break
+                end
+            end
+        end
         local row = y+2+(i-itemScroll)+1
         g.setBackground(isSel and COLORS.select_active or COLORS.bg)
         g.setForeground(COLORS.text)
@@ -191,7 +227,6 @@ local function drawItems()
         g.set(x+1, row, string.format("%-"..col_name.."s",nameStr))
         g.set(x+col_name+1, row, "│")
         -- Форматируем числа, обрезая с конца, если они слишком длинные
-        -- Использование string.format с %s и unicode.sub для обрезки
         g.set(x+col_name+2, row, string.format("%"..col_now.."s",unicode.sub(tostring(tonumber(it.current) or 0), 1, col_now)))
         g.set(x+col_name+col_now+2, row, "│")
         g.set(x+col_name+col_now+3, row, string.format("%"..col_hold.."s",unicode.sub(tostring(tonumber(it.count) or 0), 1, col_hold)))
@@ -254,6 +289,7 @@ local function drawSearchBar()
     g.setForeground(COLORS.text)
 
     -- Управляем миганием курсора, только если поле активно и term доступен
+    term = getComponent("term") -- Повторная попытка получить term
     if searchActive and term and type(term) == "table" and term.setCursorPos and term.setCursorBlink then
         term.setCursorPos(x + 2 + unicode.len(search), y + 1)
         term.setCursorBlink(true)
@@ -279,6 +315,14 @@ local function drawButtons()
 end
 
 local function draw()
+    -- Получаем GPU прямо перед отрисовкой, на случай если он потерялся
+    g = getComponent("gpu")
+    if not g then
+        -- Если GPU все равно недоступен, мы не можем рисовать.
+        -- Логируем и, возможно, завершаем работу.
+        addLog("Критическая ошибка: GPU недоступен для отрисовки. Завершение.", "ERROR")
+        os.exit(1)
+    end
     clear()
     drawHeader()
     drawItems()
@@ -461,7 +505,7 @@ local function autoCraftLoop()
                             end
 
                             if freeCpuForThisItem then
-                                local craftables_ok, craftables_data = pcall(me.getCraftables, {name=item_entry.id, damage=item.dmg})
+                                local craftables_ok, craftables_data = pcall(me.getCraftables, {name=item_entry.id, damage=item_entry.dmg})
                                 craftables_data = craftables_ok and craftables_data or {n=0}
                                 if not craftables_ok then addLog("Ошибка getCraftables: " .. tostring(craftables_data), "ERROR") end
 
@@ -546,6 +590,7 @@ event.listen("touch", function(_,_,x,y,_,_)
         searchActive = false
     end
     -- Выключаем мигание курсора, если поиск неактивен, и term доступен
+    term = getComponent("term") -- Повторная попытка получить term
     if not searchActive and term and type(term) == "table" and term.setCursorBlink then
         term.setCursorBlink(false)
     end
@@ -562,7 +607,8 @@ event.listen("touch", function(_,_,x,y,_,_)
     if y >= itemsStartY and y <= itemsEndY then
         local idx_in_shown_items = y-itemsStartY+1
         if showItems[idx_in_shown_items] then
-            -- Найдем индекс выбранного элемента в исходном dataItems
+            -- Теперь, чтобы selectedItem был индексом в dataItems, а не showItems
+            -- Проходим по dataItems и ищем объект, который совпадает с выбранным из showItems
             local actual_selected_item_index = nil
             for k,v in ipairs(dataItems) do
                 if v == showItems[idx_in_shown_items] then
@@ -581,7 +627,6 @@ event.listen("touch", function(_,_,x,y,_,_)
 end)
 
 event.listen("drag", function(_,_,x,y,_,_)
-    -- currentActiveButton = nil -- Сбрасываем активно нажатую кнопку при перетаскивании (можно раскомментировать, если нужно)
     draw()
 end)
 
@@ -620,10 +665,18 @@ event.listen("key_down", function(_,_,key,_,_)
 end)
 
 -------------------- Старт --------------------
+-- Устанавливаем разрешение только после того, как убедились, что GPU доступен
+g = getComponent("gpu")
+if not g then
+    io.stderr:write("Фатальная ошибка: GPU не инициализирован для setResolution. Завершение.\n")
+    os.exit(1)
+end
 g.setResolution(WIDTH,HEIGHT)
+
 reload()
 draw()
 -- Добавим окончательное отключение мигания курсора на старте, если term доступен
+term = getComponent("term") -- Повторная попытка получить term
 if term and type(term) == "table" and term.setCursorBlink then
     term.setCursorBlink(false)
 end
