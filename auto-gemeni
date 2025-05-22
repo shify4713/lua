@@ -29,8 +29,25 @@ if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {})
 end
 
+-------------------- Реальное UTC+3 (по Киеву) --------------------
+-- UTC + 3 часа: всегда актуальное время по Киеву без зависимости от OpenOS RTC (всегда по мировым стандартам)
+local function getKyivTime()
+    -- Текущее "реальное" мировое время через API worldtimeapi (если есть интернет)
+    local handle = io.popen("wget -qO- https://worldtimeapi.org/api/timezone/Europe/Kyiv.txt 2>/dev/null")
+    if handle then
+        local text = handle:read("*a")
+        handle:close()
+        local h, m, s = text:match("datetime:%s*%d+%-%d+%-%d+T(%d+):(%d+):(%d+)")
+        if h and m and s then
+            return string.format("%02d:%02d:%02d", tonumber(h), tonumber(m), tonumber(s))
+        end
+    end
+    -- Если нет интернета, fallback: просто UTC+3, не майнкрафт-время, а по настоящему времени
+    local t = os.date("!*t", os.time() + 3*3600)
+    return string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
+end
+
 -------------------- Настройки --------------------
--- Цветовая палитра для интерфейса
 local COLORS = {
     button = 0x00BFFF,
     buttonActive = 0x1E90FF,
@@ -65,11 +82,11 @@ local itemScroll = 1 -- Позиция прокрутки списка пред�
 local changeitem = false -- Флаг, указывающий, находится ли пользователь в режиме изменения предмета
 local searchActive = false -- Флаг, указывающий, активно ли поле поиска
 
--------------------- Логгирование --------------------
--- Функция для добавления логов. Время было удалено по запросу.
+-------------------- Логгирование с реальным временем --------------------
 local function addLog(logs, text, lvl)
     lvl = lvl or "INFO"
-    local t = string.format("[%s] %s", lvl, text)
+    local now = getKyivTime() -- Возвращено использование getKyivTime
+    local t = string.format("[%s][%s] %s", now, lvl, text)
     table.insert(logs, t)
     while #logs > 50 do table.remove(logs, 1) end
 end
@@ -369,6 +386,102 @@ local function stopCraft()
     draw()
 end
 
+-------------------- Вспомогательная функция для крафта --------------------
+-- Эта функция пытается заказать крафт для одного предмета
+local function tryCraftItem(itemToCraft) -- Переименовал параметр для ясности
+    local count = tonumber(itemToCraft.count) or 0
+    local craftSize = tonumber(itemToCraft.craftSize) or 1
+    local current = tonumber(itemToCraft.current) or 0
+
+    if current < count then
+        addLog(logs, "Предмет нуждается в крафте: "..(itemToCraft.name or "<??>").." (Текущее: "..current..", Нужно: "..count..")", "DEBUG")
+
+        local cpus_ok, cpus = pcall(me.getCpus)
+        if not cpus_ok then
+            addLog(logs, "Ошибка получения списка CPU: "..tostring(cpus), "ERROR")
+            craftStatus = "Ошибка: ME CPU"
+            return false -- Крафт не сделан
+        end
+        cpus = cpus or {}
+
+        -- Проверяем, крафтится ли уже этот конкретный предмет из нашей таблицы
+        local isThisItemBeingCrafted = false
+        local craftingJobs_ok, craftingJobs = pcall(me.getCraftingJobs)
+        if craftingJobs_ok and craftingJobs and craftingJobs.n then
+            for _, job in ipairs(craftingJobs) do
+                -- Сравниваем ID и Damage выходного предмета задания крафта с нашим предметом
+                if job.output and job.output.id == itemToCraft.id and
+                   (itemToCraft.dmg == nil or job.output.damage == itemToCraft.dmg) then
+                    isThisItemBeingCrafted = true
+                    break
+                end
+            end
+        end
+
+        if isThisItemBeingCrafted then
+            addLog(logs, "Предмет '"..(itemToCraft.name or "<??>").."' уже крафтится в ME-сети. Ожидание завершения.", "INFO")
+            craftStatus = "Крафт в процессе: "..(itemToCraft.name or "<??>")
+            return false -- Не отправляем новый запрос, так как этот предмет уже крафтится
+        end
+
+        local freeCpu = nil
+        -- Ищем свободный CPU
+        for _,cpu in ipairs(cpus) do
+            if not cpu.busy then freeCpu = cpu.name break end
+        end
+
+        if freeCpu then
+            addLog(logs, "Найден свободный CPU: "..tostring(freeCpu), "DEBUG")
+
+            local craftables_ok, craftables = pcall(me.getCraftables, {name=itemToCraft.id, damage=itemToCraft.dmg})
+            if not craftables_ok then
+                addLog(logs, "Ошибка получения рецептов для ".. (itemToCraft.name or "<??>") ..": "..tostring(craftables), "ERROR")
+                craftStatus = "Ошибка: ME Рецепты"
+                return false -- Крафт не сделан
+            end
+            craftables = craftables or {n=0}
+
+            -- Проверяем, есть ли рецепт для предмета
+            if craftables.n and craftables.n >= 1 then
+                addLog(logs, "Найден рецепт для: "..(itemToCraft.name or "<??>"), "DEBUG")
+                -- Вычисляем, сколько нужно скрафтить, основываясь на craftSize
+                local delta = math.min(craftSize, count - current)
+                if delta > 0 then
+                    -- Запрашиваем крафт с количеством 'delta'
+                    local succ, req = pcall(function() return craftables[1].request(delta, false, freeCpu) end)
+                    if succ then -- Запрос был отправлен без Lua-ошибки
+                        if req then -- ME-система подтвердила крафт (вернула IItemInfo)
+                            craftStatus = "Крафт: "..(itemToCraft.name or "<??>")
+                            addLog(logs, "Успешный запрос крафта " .. delta .. "x " .. (itemToCraft.name or "<??>") .. " на CPU " .. tostring(freeCpu) .. ". (Примечание: AE2 может использовать несколько CPU и крафтить полную партию по рецепту.)", "INFO")
+                            return true -- Крафт успешно запрошен
+                        else -- ME-система отклонила крафт (например, нет ресурсов)
+                            craftStatus = "Ошибка: крафт отклонен ME"
+                            addLog(logs, "Ошибка: ME отклонил крафт " .. delta .. "x " .. (itemToCraft.name or "<??>") .. " (нет ресурсов/другая причина).", "ERROR")
+                            return false -- Крафт не сделан
+                        end
+                    else -- Произошла ошибка pcall при отправке запроса
+                        craftStatus = "Ошибка: запрос крафта"
+                        addLog(logs, "Ошибка: не удалось отправить крафт " .. (itemToCraft.name or "<??>") .. " (ошибка pcall: " .. tostring(req) .. ").", "ERROR")
+                        return false -- Крафт не сделан
+                    end
+                else
+                    addLog(logs, "Delta (количество для крафта) <= 0 для: "..(itemToCraft.name or "<??>"), "DEBUG")
+                    return false -- Крафт не сделан
+                end
+            else
+                craftStatus = "Ошибка: нет рецепта "..(itemToCraft.name or "<??>")
+                addLog(logs, "Ошибка: нет рецепта "..(itemToCraft.name or "<??>").." (craftables.n: "..tostring(craftables.n)..")","ERROR")
+                return false -- Крафт не сделан
+            end
+        else
+            craftStatus = "Ошибка: нет свободных CPU"
+            addLog(logs, "Ошибка: нет свободных CPU","ERROR")
+            return false -- Крафт не сделан
+        end
+    end
+    return false -- Крафт не нужен или не удалось сделать
+end
+
 -------------------- Основной цикл автокрафта --------------------
 local function autoCraftLoop()
     while true do
@@ -378,79 +491,19 @@ local function autoCraftLoop()
             if now >= nextCraftUpdate then
                 addLog(logs, "Начало цикла автокрафта...", "DEBUG")
                 reload() -- Обновляем текущие количества предметов
-                local craftedThisCycle = false -- Флаг, чтобы крафтить только 1 предмет за цикл
+                local craftMadeThisCycle = false -- Флаг, чтобы крафтить только 1 предмет за цикл
                 for i, item in ipairs(dataItems) do
-                    local count = tonumber(item.count) or 0
-                    local craftSize = tonumber(item.craftSize) or 1
-                    local current = tonumber(item.current) or 0
-
-                    -- Если текущее количество меньше требуемого и в этом цикле еще не было крафта
-                    if current < count and not craftedThisCycle then
-                        addLog(logs, "Предмет нуждается в крафте: "..(item.name or "<??>").." (Текущее: "..current..", Нужно: "..count..")", "DEBUG")
-
-                        local cpus_ok, cpus = pcall(me.getCpus)
-                        if not cpus_ok then
-                            addLog(logs, "Ошибка получения списка CPU: "..tostring(cpus), "ERROR")
-                            craftStatus = "Ошибка: ME CPU"
-                            break -- Выходим из цикла по предметам, попробуем снова в следующем цигле
-                        end
-                        cpus = cpus or {} -- Убедимся, что cpus - это таблица
-
-                        local freeCpu = nil
-                        -- Ищем свободный CPU
-                        for _,cpu in ipairs(cpus) do
-                            if not cpu.busy then freeCpu = cpu.name break end
-                        end
-
-                        if freeCpu then
-                            addLog(logs, "Найден свободный CPU: "..tostring(freeCpu), "DEBUG")
-
-                            local craftables_ok, craftables = pcall(me.getCraftables, {name=item.id, damage=item.dmg})
-                            if not craftables_ok then
-                                addLog(logs, "Ошибка получения рецептов для ".. (item.name or "<??>") ..": "..tostring(craftables), "ERROR")
-                                craftStatus = "Ошибка: ME Рецепты"
-                                break -- Выходим из цикла по предметам
-                            end
-                            craftables = craftables or {n=0} -- Убедимся, что craftables - это таблица с полем n
-
-                            -- Проверяем, есть ли рецепт для предмета
-                            if craftables.n and craftables.n >= 1 then
-                                addLog(logs, "Найден рецепт для: "..(item.name or "<??>"), "DEBUG")
-                                -- Всегда запрашиваем 1 единицу, чтобы минимизировать использование CPU
-                                local deltaToRequest = 1 
-                                if deltaToRequest > 0 then
-                                    -- Запрашиваем крафт только 1 единицы, чтобы использовать 1 ЦПУ за проверку
-                                    local succ, req = pcall(function() return craftables[1].request(deltaToRequest, false, freeCpu) end)
-                                    if succ then -- Запрос был отправлен без Lua-ошибки
-                                        if req then -- ME-система подтвердила крафт (вернула IItemInfo)
-                                            craftStatus = "Крафт: "..(item.name or "<??>")
-                                            addLog(logs, "Успешный запрос крафта " .. deltaToRequest .. "x " .. (item.name or "<??>") .. " на CPU " .. tostring(freeCpu) .. ". (Примечание: AE2 может крафтить полную партию по рецепту.)", "INFO")
-                                            craftedThisCycle = true -- Устанавливаем флаг, чтобы не крафтить больше в этом цикле
-                                            break -- Останавливаемся после одного успешного крафта в этом цикле
-                                        else -- ME-система отклонила крафт (например, нет ресурсов)
-                                            craftStatus = "Ошибка: крафт отклонен ME"
-                                            addLog(logs, "Ошибка: ME отклонил крафт " .. deltaToRequest .. "x " .. (item.name or "<??>") .. " (нет ресурсов/другая причина).", "ERROR")
-                                        end
-                                    else -- Произошла ошибка pcall при отправке запроса
-                                        craftStatus = "Ошибка: запрос крафта"
-                                        addLog(logs, "Ошибка: не удалось отправить крафт " .. (item.name or "<??>") .. " (ошибка pcall: " .. tostring(req) .. ").", "ERROR")
-                                    end
-                                else
-                                    addLog(logs, "Delta (количество для крафта) <= 0 для: "..(item.name or "<??>"), "DEBUG")
-                                end
-                            else
-                                craftStatus = "Ошибка: нет рецепта "..(item.name or "<??>")
-                                addLog(logs, "Ошибка: нет рецепта "..(item.name or "<??>").." (craftables.n: "..tostring(craftables.n)..")","ERROR")
-                            end
-                        else
-                            craftStatus = "Ошибка: нет свободных CPU"
-                            addLog(logs, "Ошибка: нет свободных CPU","ERROR")
+                    -- Если в этом цикле еще не было сделано запроса на крафт
+                    if not craftMadeThisCycle then
+                        if tryCraftItem(item) then
+                            craftMadeThisCycle = true -- Устанавливаем флаг, что крафт был сделан
+                            break -- Прерываем цикл по предметам, чтобы обработать только один крафт за раз
                         end
                     end
                 end
                 save() -- Сохраняем обновленные данные
-                nextCraftUpdate = now + 5 -- Устанавливаем время для следующего обновления
-                addLog(logs, "Конец цикла автокрафта.", "DEBUG")
+                nextCraftUpdate = now + 15 -- Устанавливаем время для следующего обновления (15 секунд)
+                addLog(logs, "Конец цикла автокрафта. Крафт сделан в этом цикле: " .. tostring(craftMadeThisCycle), "DEBUG")
             end
         end
         draw() -- Перерисовываем интерфейс
