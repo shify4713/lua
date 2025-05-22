@@ -9,7 +9,7 @@ local computer = require("computer")
 -- Paths and library
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Check component availability
 local function checkComponents()
@@ -90,9 +90,7 @@ local function getFilteredAndSortedItems()
     local filtered = {}
     for _, item in ipairs(dataItems) do
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
-            if not item.category then
-                item.category = "No Category"
-            end
+            if not item.category then item.category = "No Category" end
             table.insert(filtered, item)
         end
     end
@@ -109,7 +107,7 @@ local function getFilteredAndSortedItems()
             valB = tonumber(b.count) or 0
         elseif settings.sortCriteria == "craftSize" then
             valA = tonumber(a.craftSize) or 0
-            valB = tonumber(a.craftSize) or 0
+            valB = tonumber(b.craftSize) or 0
         elseif settings.sortCriteria == "category" then
             valA = unicode.lower(a.category or "No Category")
             valB = unicode.lower(b.category or "No Category")
@@ -189,23 +187,23 @@ local function drawItems()
         "┬" .. string.rep("─", colWidths.craftSize) .. "┐")
     gpu.set(x, y + 1, "│")
     gpu.setForeground(COLORS.ok)
-    gpu.set(x + 1, y + 1, string.format("%-" .. colWidths.name .. "s", " Name"))
+    gpu.set(x + 1, y + 1, string.format("%-" .. colWidths.name .. "s", "Name"))
     gpu.setForeground(COLORS.select_active)
     gpu.set(x + colWidths.name + 1, y + 1, "│")
     gpu.setForeground(COLORS.ok)
-    gpu.set(x + colWidths.name + 2, y + 1, string.format("%-" .. colWidths.category .. "s", " Category"))
+    gpu.set(x + colWidths.name + 2, y + 1, string.format("%-" .. colWidths.category .. "s", "Category"))
     gpu.setForeground(COLORS.select_active)
     gpu.set(x + colWidths.name + colWidths.category + 2, y + 1, "│")
     gpu.setForeground(COLORS.ok)
-    gpu.set(x + colWidths.name + colWidths.category + 3, y + 1, string.format("%-" .. colWidths.current .. "s", " Current"))
+    gpu.set(x + colWidths.name + colWidths.category + 3, y + 1, string.format("%-" .. colWidths.current .. "s", "Current"))
     gpu.setForeground(COLORS.select_active)
     gpu.set(x + colWidths.name + colWidths.category + colWidths.current + 3, y + 1, "│")
     gpu.setForeground(COLORS.ok)
-    gpu.set(x + colWidths.name + colWidths.category + colWidths.current + 4, y + 1, string.format("%-" .. colWidths.count .. "s", " Keep"))
+    gpu.set(x + colWidths.name + colWidths.category + colWidths.current + 4, y + 1, string.format("%-" .. colWidths.count .. "s", "Keep"))
     gpu.setForeground(COLORS.select_active)
     gpu.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.count + 4, y + 1, "│")
     gpu.setForeground(COLORS.ok)
-    gpu.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.count + 5, y + 1, string.format("%-" .. colWidths.craftSize .. "s", " Batch"))
+    gpu.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.count + 5, y + 1, string.format("%-" .. colWidths.craftSize .. "s", "Batch"))
     gpu.setForeground(COLORS.select_active)
     gpu.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.count + colWidths.craftSize + 5, y + 1, "│")
     gpu.set(x, y + 2, "├" .. string.rep("─", colWidths.name) .. "┼" .. string.rep("─", colWidths.category) ..
@@ -299,9 +297,8 @@ local function drawSearchBar()
     gpu.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
     local display = search == "" and "Search: type part of name..." or search
     if searchActive then display = display .. "_" end
-    local maxLen = w - 7
-    if unicode.len(display) > maxLen then
-        display = unicode.sub(display, unicode.len(display) - maxLen + 2)
+    if unicode.len(display) > w - 7 then
+        display = unicode.sub(display, unicode.len(display) - (w - 8), -1)
     end
     gpu.set(x + 2, y + 1, display)
     gpu.setBackground(COLORS.bg)
@@ -310,7 +307,7 @@ local function drawSearchBar()
 end
 
 local function drawButtons()
-    local btnState = isCrafting .. "|" .. settings.sortCriteria .. "|" .. settings.sortAscending
+    local btnState = isCrafting .. "|" .. settings.sortCriteria .. "|" .. tostring(settings.sortAscending)
     if lastDrawnState.buttons == btnState then return end
     local btns = {
         {name = "Craft All", x = WIDTH - 75, action = "craftAll", hover = false},
@@ -358,7 +355,7 @@ end
 local function reload()
     local ok, data = pcall(uoc.loadf, DATA_FILE)
     if not ok then
-        uoc.addLog(logs, "ERROR: Failed to load BD.txt: " .. tostring(data), "ERROR")
+        uoc.addLog(logs, "ERROR: Failed to load BD.txt: " .. tostring(data))
         dataItems = {}
         settings = {sortCriteria = "name", sortAscending = true}
     else
@@ -411,7 +408,7 @@ end
 local function save()
     local ok, err = pcall(uoc.savef, DATA_FILE, {items = dataItems, settings = settings})
     if not ok then
-        uoc.addLog(logs, "ERROR: Failed to save: " .. tostring(err), "ERROR")
+        uoc.addLog(logs, "ERROR: Failed to save: " .. tostring(err))
     end
 end
 
@@ -454,7 +451,7 @@ local function addItem()
         currentPage = getMaxPages()
         selectedItem = nil
     else
-        uoc.addLog(logs, "ERROR: No item in slot 1!", "ERROR")
+        uoc.addLog(logs, "ERROR: No item in slot 1!")
     end
     changeItem = false
     draw()
@@ -462,7 +459,7 @@ end
 
 local function editItem()
     if not selectedItem then
-        uoc.addLog(logs, "ERROR: No item selected!", "ERROR")
+        uoc.addLog(logs, "ERROR: No item selected!")
         return
     end
     local item = dataItems[selectedItem]
@@ -494,7 +491,7 @@ end
 
 local function removeItem()
     if not selectedItem then
-        uoc.addLog(logs, "ERROR: No item selected!", "ERROR")
+        uoc.addLog(logs, "ERROR: No item selected!")
         return
     end
     uoc.addLog(logs, "WARN: Removed: " .. (dataItems[selectedItem].name or "<?>"))
@@ -522,7 +519,7 @@ local function tryCraftItem(item)
 
     local ok, cpus = pcall(me.getCpus)
     if not ok then
-        uoc.addLog(logs, "ERROR: Failed to get CPUs: " .. tostring(cpus), "ERROR")
+        uoc.addLog(logs, "ERROR: Failed to get CPUs: " .. tostring(cpus))
         craftStatus = "Error: ME CPU"
         return false
     end
@@ -535,7 +532,7 @@ local function tryCraftItem(item)
         end
     end
     if not freeCpu then
-        uoc.addLog(logs, "ERROR: No free CPUs available", "ERROR")
+        uoc.addLog(logs, "ERROR: No free CPUs available")
         craftStatus = "Error: No free CPUs"
         return false
     end
@@ -543,13 +540,13 @@ local function tryCraftItem(item)
     uoc.addLog(logs, "DEBUG: Found free CPU: " .. tostring(freeCpu))
     local ok, craftables = pcall(me.getCraftables, {name = item.id, damage = item.dmg})
     if not ok then
-        uoc.addLog(logs, "ERROR: Failed to get craftables: " .. tostring(craftables), "ERROR")
+        uoc.addLog(logs, "ERROR: Failed to get craftables: " .. tostring(craftables))
         craftStatus = "Error: ME Recipes"
         return false
     end
     craftables = craftables or {n = 0}
     if craftables.n < 1 then
-        uoc.addLog(logs, "ERROR: No recipe for " .. (item.name or "<?>"), "ERROR")
+        uoc.addLog(logs, "ERROR: No recipe for " .. (item.name or "<?>"))
         craftStatus = "Error: No recipe for " .. (item.name or "<?>")
         return false
     end
@@ -575,7 +572,7 @@ local function tryCraftItem(item)
         lastRequestTime = computer.uptime()
         return true
     else
-        uoc.addLog(logs, "ERROR: Failed to craft " .. (item.name or "<?>") .. ": " .. tostring(req), "ERROR")
+        uoc.addLog(logs, "ERROR: Failed to craft " .. (item.name or "<?>") .. ": " .. tostring(req))
         craftStatus = "Error: Craft rejected"
         return false
     end
@@ -622,7 +619,7 @@ local function autoCraftLoop()
                 uoc.addLog(logs, "DEBUG: AutoCraft cycle")
                 local ok, err = pcall(reload)
                 if not ok then
-                    uoc.addLog(logs, "ERROR: Reload failed: " .. tostring(err), "ERROR")
+                    uoc.addLog(logs, "ERROR: Reload failed: " .. tostring(err))
                     craftStatus = "Error: Data update"
                 else
                     local craftedThisCycle = false
@@ -893,14 +890,14 @@ gpu.setResolution(WIDTH, HEIGHT)
 uoc.addLog(logs, "DEBUG: Program started")
 local ok, err = pcall(reload)
 if not ok then
-    uoc.addLog(logs, "ERROR: Initial load failed: " .. tostring(err), "ERROR")
+    uoc.addLog(logs, "ERROR: Initial load failed: " .. tostring(err))
     draw()
     while true do os.sleep(1) end
 end
 draw()
 local ok, err = pcall(autoCraftLoop)
 if not ok then
-    uoc.addLog(logs, "ERROR: Fatal error in autoCraftLoop: " .. tostring(err), "ERROR")
+    uoc.addLog(logs, "ERROR: Fatal error in autoCraftLoop: " .. tostring(err))
     draw()
     while true do os.sleep(1) end
 end
