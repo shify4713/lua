@@ -11,7 +11,7 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Проверяем наличие библиотеки ultimateOC.lua и скачиваем, ТОЛЬКО если ее нет
 if not fs.exists(LIB_PATH) then
@@ -279,7 +279,7 @@ local function draw()
     drawSearchBar()
     drawLogs()
     drawButtons()
-    -- Вызов drawTooltip() удален
+    os.sleep(0) -- Добавлено для стабильной отрисовки
 end
 
 -------------------- IO и действия --------------------
@@ -562,7 +562,7 @@ local function tryCraftItem(itemToCraft)
             end
         else
             craftStatus = "Ошибка: нет рецепта "..(itemToCraft.name or "<??>")
-            addLog(logs, "ERROR: Нет рецепта для "..(itemToCraft.name or "<??>").." (craftables.n: "..tostring(craftables.n)..")")
+            addLog(logs, "ERROR: Нет рецепта для "..(itemToToCraft.name or "<??>").." (craftables.n: "..tostring(craftables.n)..")")
             return false -- Крафт не сделан
         end
     else
@@ -655,6 +655,8 @@ event.listen("touch", function(_,_,x,y,_,_)
         if showItems[idx] then
             for k,v in ipairs(dataItems) do
                 if v == showItems[idx] then selectedItem = k break end
+            -- else -- Если выбранный элемент не найден в showItems, сбрасываем selectedItem
+            --     selectedItem = nil
             end
         end
         draw()
@@ -704,12 +706,17 @@ event.listen("key_down", function(_,_,key,_,_)
         end
         itemScroll = 1
     else
+        addLog(logs, "DEBUG: Попытка прокрутки. Всего предметов: " .. #showItems .. ", на странице: " .. perPage)
         if key == 200 then -- up arrow
+            local oldScroll = itemScroll
             itemScroll = math.max(1,itemScroll-1)
+            addLog(logs, "DEBUG: Прокрутка вверх. Старая позиция: " .. oldScroll .. ", Новая позиция: " .. itemScroll)
         elseif key == 208 then -- down arrow
+            local oldScroll = itemScroll
             if #showItems > perPage then
                 itemScroll = math.min(#showItems-perPage+1,itemScroll+1)
             end
+            addLog(logs, "DEBUG: Прокрутка вниз. Старая позиция: " .. oldScroll .. ", Новая позиция: " .. itemScroll)
         end
     end
     draw()
