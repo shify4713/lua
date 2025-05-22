@@ -11,7 +11,7 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/auto-gemeni"
 
 -- Проверяем наличие библиотеки ultimateOC.lua и скачиваем, если ее нет
 if not fs.exists(LIB_PATH) then
