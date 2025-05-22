@@ -69,6 +69,10 @@ local currentPage = 1 -- Текущая страница прокрутки сп
 local changeitem = false -- Флаг, указывающий, находится ли пользователь в режиме изменения предмета
 local searchActive = false -- Флаг, указывающий, активно ли поле поиска
 
+-- Глобальные переменные для сортировки
+local sortCriteria = "name" -- Текущий критерий сортировки: "name", "current", "count", "craftSize"
+local sortAscending = true -- true = по возрастанию, false = по убыванию
+
 -- Глобальные переменные для контроля последнего запрошенного крафта (для предотвращения дублирования)
 local lastRequestedItem = nil -- Хранит {id, dmg, expectedOutput} последнего успешно запрошенного предмета для крафта
 local lastRequestTime = 0    -- Хранит computer.uptime(), когда lastRequestedItem был установлен
@@ -83,13 +87,38 @@ local function addLog(logs, text, lvl)
 end
 
 -------------------- Вспомогательные функции для постраничной навигации --------------------
-local function getFilteredItems()
+local function getFilteredAndSortedItems()
     local filtered = {}
     for i,item in ipairs(dataItems) do
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
             table.insert(filtered, item)
         end
     end
+
+    -- Сортировка отфильтрованных элементов
+    table.sort(filtered, function(a, b)
+        local valA, valB
+        if sortCriteria == "name" then
+            valA = unicode.lower(a.name or "")
+            valB = unicode.lower(b.name or "")
+        elseif sortCriteria == "current" then
+            valA = tonumber(a.current) or 0
+            valB = tonumber(b.current) or 0
+        elseif sortCriteria == "count" then
+            valA = tonumber(a.count) or 0
+            valB = tonumber(b.count) or 0
+        elseif sortCriteria == "craftSize" then
+            valA = tonumber(a.craftSize) or 0
+            valB = tonumber(b.craftSize) or 0
+        end
+
+        if sortAscending then
+            return valA < valB
+        else
+            return valA > valB
+        end
+    end)
+
     return filtered
 end
 
@@ -98,7 +127,7 @@ local function getItemsPerPage()
 end
 
 local function getMaxPages()
-    local filteredItems = getFilteredItems()
+    local filteredItems = getFilteredAndSortedItems()
     local perPage = getItemsPerPage()
     return math.max(1, math.ceil(#filteredItems / perPage))
 end
@@ -179,12 +208,12 @@ local function drawItems()
     g.set(x, y+2, "├"..string.rep("─",col_name).."┼"..string.rep("─",col_now).."┼"..string.rep("─",col_hold).."┼"..string.rep("─",col_once).."┤")
 
     -- Отображение строк предметов
-    local filteredItems = getFilteredItems()
+    local filteredAndSortedItems = getFilteredAndSortedItems()
     local perPage = getItemsPerPage()
     local startIndex = (currentPage - 1) * perPage + 1
     
-    for i = startIndex, math.min(#filteredItems, startIndex + perPage - 1) do
-        local it = filteredItems[i]
+    for i = startIndex, math.min(#filteredAndSortedItems, startIndex + perPage - 1) do
+        local it = filteredAndSortedItems[i]
         local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem])
         local row = y+2+(i-startIndex)+1 -- Относительная позиция строки на текущей странице
         
@@ -233,7 +262,7 @@ local function drawItems()
         g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
     end
     -- Очищаем оставшиеся строки на странице, если их меньше, чем perPage
-    for i = math.min(#filteredItems, startIndex + perPage - 1) + 1, startIndex + perPage - 1 do
+    for i = math.min(#filteredAndSortedItems, startIndex + perPage - 1) + 1, startIndex + perPage - 1 do
         local row = y+2+(i-startIndex)+1
         g.setBackground(COLORS.bg)
         g.fill(x, row, totalWidth + 2, 1, " ")
@@ -306,6 +335,25 @@ local function drawButtons()
                        nextEnabled and COLORS.button or COLORS.border, 
                        nextEnabled and COLORS.buttonActive or COLORS.border, 
                        nextEnabled and COLORS.text or COLORS.search_hint)
+
+    -- Кнопка "Сортировать"
+    local sortBtnX = prevArrowBtnX + arrowBtnW + arrowBtnPadding + arrowBtnW + arrowBtnPadding + 2 -- Размещаем после стрелок
+    local sortBtnW = 14 -- Ширина кнопки сортировки
+    local sortBtnText = "Сортировать"
+    local sortIndicator = ""
+    if sortCriteria == "name" then
+        sortIndicator = "Название"
+    elseif sortCriteria == "current" then
+        sortIndicator = "В наличии"
+    elseif sortCriteria == "count" then
+        sortIndicator = "Держать"
+    elseif sortCriteria == "craftSize" then
+        sortIndicator = "За раз"
+    end
+    sortIndicator = sortIndicator .. (sortAscending and " ↑" or " ↓")
+
+    uoc.animatedButton(sortBtnX, arrowBtnY, sortBtnW, arrowBtnH, sortBtnText, false, COLORS.button, COLORS.buttonActive, COLORS.text)
+    uoc.drawText(sortBtnX + math.floor((sortBtnW - unicode.len(sortIndicator)) / 2), arrowBtnY + 1, sortIndicator, COLORS.text)
 end
 
 local function draw()
@@ -655,6 +703,8 @@ event.listen("touch", function(_,_,x,y,_,_)
     local arrowBtnY = HEIGHT-4
     local prevArrowBtnX = 2
     local nextArrowBtnX = prevArrowBtnX + arrowBtnW + 1 -- Отступ 1 между кнопками
+    local sortBtnX = prevArrowBtnX + arrowBtnW + arrowBtnPadding + arrowBtnW + arrowBtnPadding + 2
+    local sortBtnW = 14
 
     -- Проверяем кнопки основных действий
     for i,btn in ipairs(btns) do
@@ -690,12 +740,43 @@ event.listen("touch", function(_,_,x,y,_,_)
         return
     end
 
+    -- Проверяем кнопку "Сортировать"
+    if x >= sortBtnX and x <= sortBtnX + sortBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
+        local criteriaList = {"name", "current", "count", "craftSize"}
+        local currentCriteriaIndex = 1
+        for i, v in ipairs(criteriaList) do
+            if v == sortCriteria then
+                currentCriteriaIndex = i
+                break
+            end
+        end
+
+        if currentCriteriaIndex < #criteriaList then
+            sortCriteria = criteriaList[currentCriteriaIndex + 1]
+            sortAscending = true -- Сбрасываем на возрастание при смене критерия
+        else
+            -- Если это последний критерий, переключаем порядок или возвращаемся к первому
+            if sortAscending then
+                sortAscending = false
+            else
+                sortCriteria = criteriaList[1]
+                sortAscending = true
+            end
+        end
+        currentPage = 1 -- Сбрасываем на первую страницу при сортировке
+        selectedItem = nil -- Сбрасываем выбранный элемент
+        draw()
+        return
+    end
+
     -- Обработка касания поля поиска
     if y >= HEIGHT-17 and y <= HEIGHT-15 then
         searchActive = false
         -- Кнопка очистки поиска (крестик)
         if x >= 3+(WIDTH-6)-3 and x <= 3+(WIDTH-6)-1 and search ~= "" then
             search = ""
+            currentPage = 1 -- Сбрасываем страницу при очистке поиска
+            selectedItem = nil
             draw()
             return
         end
@@ -710,18 +791,18 @@ event.listen("touch", function(_,_,x,y,_,_)
     end
 
     -- Обработка выбора предмета в списке
-    local filteredItems = getFilteredItems()
+    local filteredAndSortedItems = getFilteredAndSortedItems()
     local perPage = getItemsPerPage()
     local startIndex = (currentPage - 1) * perPage + 1
     local itemsStartY = 11
     local itemsEndY = itemsStartY + perPage - 1
     if y >= itemsStartY and y <= itemsEndY then
         local idxOnPage = (y-itemsStartY) -- Индекс элемента на текущей строке (от 0 до perPage-1)
-        local actualIndexInFiltered = startIndex + idxOnPage -- Фактический индекс в filteredItems
-        if filteredItems[actualIndexInFiltered] then
+        local actualIndexInFiltered = startIndex + idxOnPage -- Фактический индекс в filteredAndSortedItems
+        if filteredAndSortedItems[actualIndexInFiltered] then
             -- Находим фактический индекс в dataItems
             for k,v in ipairs(dataItems) do
-                if v == filteredItems[actualIndexInFiltered] then selectedItem = k break end
+                if v == filteredAndSortedItems[actualIndexInFiltered] then selectedItem = k break end
             end 
         end
         draw()
@@ -751,7 +832,7 @@ end)
 event.listen("key_down", function(_,_,key,_,_ )
     if changeitem then return end -- Если идет изменение предмета, игнорируем нажатия клавиш
     
-    local filteredItems = getFilteredItems()
+    local filteredAndSortedItems = getFilteredAndSortedItems()
     local perPage = getItemsPerPage()
     local maxPages = getMaxPages()
 
@@ -774,8 +855,8 @@ event.listen("key_down", function(_,_,key,_,_ )
             local currentSelectedItemInFiltered = nil
             local startIndex = (currentPage - 1) * perPage + 1
             local visibleItems = {}
-            for i = startIndex, math.min(#filteredItems, startIndex + perPage - 1) do
-                table.insert(visibleItems, filteredItems[i])
+            for i = startIndex, math.min(#filteredAndSortedItems, startIndex + perPage - 1) do
+                table.insert(visibleItems, filteredAndSortedItems[i])
             end
 
             if selectedItem then
@@ -803,8 +884,8 @@ event.listen("key_down", function(_,_,key,_,_ )
             local currentSelectedItemInFiltered = nil
             local startIndex = (currentPage - 1) * perPage + 1
             local visibleItems = {}
-            for i = startIndex, math.min(#filteredItems, startIndex + perPage - 1) do
-                table.insert(visibleItems, filteredItems[i])
+            for i = startIndex, math.min(#filteredAndSortedItems, startIndex + perPage - 1) do
+                table.insert(visibleItems, filteredAndSortedItems[i])
             end
 
             if selectedItem then
