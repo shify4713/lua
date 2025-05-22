@@ -12,8 +12,8 @@ local ultimateOC = {}
 function ultimateOC.drawText(x, y, text, color, bold)
     g.setForeground(color or 0xFFFFFF)
     if bold then
-        g.set(x, y, text .. " ")
-        g.set(x, y + 1, string.rep(" ", unicode.len(text)))
+        g.set(x, y, text)
+        g.set(x, y + 1, string.rep("─", unicode.len(text))) -- Подчеркивание для жирного текста
     else
         g.set(x, y, text)
     end
