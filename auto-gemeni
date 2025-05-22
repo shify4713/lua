@@ -11,7 +11,7 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Проверяем наличие библиотеки ultimateOC.lua и скачиваем, ТОЛЬКО если ее нет
 if not fs.exists(LIB_PATH) then
@@ -146,7 +146,7 @@ local function drawItems()
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_now+col_hold+col_once+4, y+1, "│")
     -- Разделитель заголовков и строк
-    g.set(x, y+2, "├"..string.rep("─",col_name).."┼"..string.rep("─",",col_now).."┼"..string.rep("─",col_hold).."┼"..string.rep("─",col_once).."┤")
+    g.set(x, y+2, "├"..string.rep("─",col_name).."┼"..string.rep("─",col_now).."┼"..string.rep("─",col_hold).."┼"..string.rep("─",col_once).."┤")
 
     -- Отображение строк предметов
     local showItems = {}
