@@ -70,6 +70,7 @@ end
 -- Проверяем файл данных
 if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {items = {}, settings = {sortCriteria = "name", sortAscending = true}})
+    io.stdout:write("DEBUG: Создан новый файл BD.txt\n")
 end
 
 -------------------- Настройки --------------------
@@ -155,7 +156,7 @@ local function getFilteredAndSortedItems()
 end
 
 local function getItemsPerPage()
-    return HEIGHT - 14
+    return HEIGHT - 16 -- Увеличено пространство для логов и кнопок
 end
 
 local function getMaxPages()
@@ -179,14 +180,14 @@ end
 
 local function drawHeader()
     io.stdout:write("DEBUG: Рисование заголовка\n")
-    uoc.drawText(2, 2, "Ultimate AutoCraft", COLORS.ok, true)
+    uoc.drawText(2, 1, "Ultimate AutoCraft", COLORS.ok, true)
     g.setBackground(COLORS.progress_fg)
-    g.fill(1, 3, WIDTH, 1, " ")
+    g.fill(1, 2, WIDTH, 1, " ")
     g.setBackground(COLORS.bg)
-    uoc.drawText(WIDTH - 34, 2, "Статус: " .. craftStatus,
+    uoc.drawText(2, 3, "Статус: " .. craftStatus,
         (craftStatus:find("Ошибка") and COLORS.error) or COLORS.ok)
     if uoc.progressBar then
-        uoc.progressBar(2, 4, WIDTH - 2, isCrafting and 0.9 or 0)
+        uoc.progressBar(2, 4, WIDTH - 20, isCrafting and 0.9 or 0)
     end
     local maxPages = getMaxPages()
     uoc.drawText(2, 5, "Страница: " .. currentPage .. "/" .. maxPages, COLORS.text)
@@ -196,7 +197,7 @@ local function drawItems()
     io.stdout:write("DEBUG: Рисование предметов\n")
     local filteredAndSortedItems = getFilteredAndSortedItems()
     local x, y = 1, 6
-    local totalWidth = WIDTH - 2
+    local totalWidth = WIDTH - 20 -- Оставляем место для кнопок справа
     local col_name = math.floor(totalWidth * 0.35)
     local col_category = math.floor(totalWidth * 0.15)
     local col_now = math.floor(totalWidth * 0.15)
@@ -284,8 +285,8 @@ end
 
 local function drawSearchBar()
     io.stdout:write("DEBUG: Рисование строки поиска\n")
-    local x, y = 2, HEIGHT - 8
-    local w, h = WIDTH - 4, 3
+    local x, y = 2, HEIGHT - 10
+    local w, h = WIDTH - 20, 3
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
     g.fill(x + 1, y + 1, w - 2, h - 2, " ")
@@ -306,15 +307,16 @@ end
 
 local function drawLogs()
     io.stdout:write("DEBUG: Рисование логов\n")
-    uoc.drawLogs(2, HEIGHT - 4, logs, 3, COLORS.log, logOffset)
+    local logLines = 5
+    uoc.drawLogs(2, HEIGHT - logLines, logs, logLines, COLORS.log, logOffset)
 end
 
 local function drawButtons()
     io.stdout:write("DEBUG: Рисование кнопок\n")
     local btnWidth = 12
     local btnHeight = 3
-    local btnY = HEIGHT - 3
-    local btnPadding = 2
+    local btnX = WIDTH - btnWidth - 2
+    local btnPadding = 1
     local btns = {
         {name = "Крафт всех", action = "craftAll"},
         {name = "Удалить", action = "delete"},
@@ -322,17 +324,15 @@ local function drawButtons()
         {name = isCrafting and "Остановить" or "Автокрафт", action = "toggleCraft"},
         {name = "Добавить", action = "add"},
     }
-    local totalBtnWidth = (#btns * btnWidth) + ((#btns - 1) * btnPadding)
-    local startX = math.floor((WIDTH - totalBtnWidth) / 2)
     for i, btn in ipairs(btns) do
-        local btnX = startX + (i - 1) * (btnWidth + btnPadding)
+        local btnY = 2 + (i - 1) * (btnHeight + btnPadding)
         uoc.animatedButton(btnX, btnY, btnWidth, btnHeight, btn.name, false, COLORS.button, COLORS.buttonActive, COLORS.text)
     end
     local arrowBtnW = 4
     local arrowBtnH = 3
-    local arrowBtnY = btnY
-    local prevArrowBtnX = 2
-    local nextArrowBtnX = prevArrowBtnX + arrowBtnW + 1
+    local arrowBtnY = 2 + (#btns * (btnHeight + btnPadding))
+    local prevArrowBtnX = btnX
+    local nextArrowBtnX = btnX
     local maxPages = getMaxPages()
     local prevEnabled = (currentPage > 1)
     uoc.animatedButton(prevArrowBtnX, arrowBtnY, arrowBtnW, arrowBtnH, "<-", false,
@@ -340,12 +340,12 @@ local function drawButtons()
         prevEnabled and COLORS.buttonActive or COLORS.border,
         prevEnabled and COLORS.text or COLORS.search_hint)
     local nextEnabled = (currentPage < maxPages)
-    uoc.animatedButton(nextArrowBtnX, arrowBtnY, arrowBtnW, arrowBtnH, "->", false,
+    uoc.animatedButton(nextArrowBtnX, arrowBtnY + arrowBtnH + 1, arrowBtnW, arrowBtnH, "->", false,
         nextEnabled and COLORS.button or COLORS.border,
         nextEnabled and COLORS.buttonActive or COLORS.border,
         nextEnabled and COLORS.text or COLORS.search_hint)
-    local sortBtnX = nextArrowBtnX + arrowBtnW + 2
-    local sortBtnW = 14
+    local sortBtnY = arrowBtnY + (2 * (arrowBtnH + 1))
+    local sortBtnW = 12
     local sortIndicatorText = ""
     if settings.sortCriteria == "name" then
         sortIndicatorText = "Название"
@@ -359,7 +359,7 @@ local function drawButtons()
         sortIndicatorText = "Категория"
     end
     sortIndicatorText = sortIndicatorText .. (settings.sortAscending and " ^" or " v")
-    uoc.animatedButton(sortBtnX, arrowBtnY, sortBtnW, arrowBtnH,
+    uoc.animatedButton(btnX, sortBtnY, sortBtnW, arrowBtnH,
         "Сортировать", false, COLORS.button, COLORS.buttonActive, COLORS.text,
         sortIndicatorText, COLORS.text)
 end
@@ -377,6 +377,7 @@ end
 
 -------------------- IO и действия --------------------
 local function reload()
+    io.stdout:write("DEBUG: Загрузка данных из BD.txt\n")
     local ok, res = pcall(uoc.loadf, DATA_FILE)
     if not ok then
         addLog(logs, "ERROR: Ошибка загрузки BD.txt: " .. tostring(res))
@@ -386,6 +387,7 @@ local function reload()
         res = res or {items = {}, settings = {sortCriteria = "name", sortAscending = true}}
         dataItems = res.items or {}
         settings = res.settings or {sortCriteria = "name", sortAscending = true}
+        io.stdout:write("DEBUG: Загружено " .. #dataItems .. " предметов\n")
     end
     clampPage()
     for _, item in ipairs(dataItems) do
@@ -421,6 +423,7 @@ local function reload()
             end
         end
         item.current = qty
+        io.stdout:write("DEBUG: Обновлено количество для " .. (item.name or "<??>") .. ": " .. qty .. "\n")
     end
     if lastRequestedItem and computer.uptime() - lastRequestTime > 30 then
         addLog(logs, "WARN: Таймаут ожидания для '" .. (lastRequestedItem.id or "<??>") .. "'. Сброс lastRequestedItem.")
@@ -430,8 +433,13 @@ local function reload()
 end
 
 local function save()
+    io.stdout:write("DEBUG: Сохранение данных в BD.txt\n")
     local ok, err = pcall(uoc.savef, DATA_FILE, {items = dataItems, settings = settings})
-    if not ok then addLog(logs, "ERROR: Ошибка сохранения: " .. tostring(err)) end
+    if not ok then
+        addLog(logs, "ERROR: Ошибка сохранения: " .. tostring(err))
+    else
+        io.stdout:write("DEBUG: Данные успешно сохранены\n")
+    end
 end
 
 local function resetSelection()
@@ -446,10 +454,10 @@ local function addItem()
     uoc.drawText(2, HEIGHT - 8, "Вставьте предмет в 1-й слот ME интерфейса и введите параметры.", COLORS.ok)
     uoc.drawText(2, HEIGHT - 7, "Название: ", COLORS.text)
     term.setCursor(12, HEIGHT - 7)
-    local name = tostring(term.read())
+    local name = tostring(term.read()):gsub("\n", "")
     uoc.drawText(2, HEIGHT - 6, "Категория: ", COLORS.text)
     term.setCursor(12, HEIGHT - 6)
-    local category = tostring(term.read())
+    local category = tostring(term.read()):gsub("\n", "")
     uoc.drawText(2, HEIGHT - 5, "Держать (число): ", COLORS.text)
     term.setCursor(15, HEIGHT - 5)
     local count = tonumber(term.read()) or 0
@@ -487,17 +495,17 @@ local function editItem()
     uoc.drawText(2, HEIGHT - 8, "Изменение: " .. (item.name or "<??>"), COLORS.ok)
     uoc.drawText(2, HEIGHT - 7, "Новое имя (Enter пропустить): ", COLORS.text)
     term.setCursor(28, HEIGHT - 7)
-    local name = tostring(term.read())
+    local name = tostring(term.read()):gsub("\n", "")
     uoc.drawText(2, HEIGHT - 6, "Новая категория (Enter пропустить): ", COLORS.text)
     term.setCursor(28, HEIGHT - 6)
-    local category = tostring(term.read())
+    local category = tostring(term.read()):gsub("\n", "")
     uoc.drawText(2, HEIGHT - 5, "Новое держать (число, Enter пропустить): ", COLORS.text)
     term.setCursor(36, HEIGHT - 5)
-    local countstr = tostring(term.read())
+    local countstr = tostring(term.read()):gsub("\n", "")
     local count = tonumber(countstr)
     uoc.drawText(2, HEIGHT - 4, "Новый крафт за раз (число, Enter пропустить): ", COLORS.text)
     term.setCursor(37, HEIGHT - 4)
-    local csstr = tostring(term.read())
+    local csstr = tostring(term.read()):gsub("\n", "")
     local cs = tonumber(csstr)
     if name and name ~= "" then item.name = name end
     if category and category ~= "" then item.category = category end
@@ -655,7 +663,7 @@ local function autoCraftLoop()
             end
         end
         draw()
-        os.sleep(0.2)
+        os.sleep(0.5) -- Увеличено для снижения частоты перерисовки
     end
 end
 
@@ -663,8 +671,8 @@ end
 local function updateButtonHover(x, y)
     local btnWidth = 12
     local btnHeight = 3
-    local btnY = HEIGHT - 3
-    local btnPadding = 2
+    local btnX = WIDTH - btnWidth - 2
+    local btnPadding = 1
     local btns = {
         {name = "Крафт всех", action = "craftAll"},
         {name = "Удалить", action = "delete"},
@@ -672,26 +680,24 @@ local function updateButtonHover(x, y)
         {name = isCrafting and "Остановить" or "Автокрафт", action = "toggleCraft"},
         {name = "Добавить", action = "add"},
     }
-    local totalBtnWidth = (#btns * btnWidth) + ((#btns - 1) * btnPadding)
-    local startX = math.floor((WIDTH - totalBtnWidth) / 2)
     for i, btn in ipairs(btns) do
-        local btnX = startX + (i - 1) * (btnWidth + btnPadding)
+        local btnY = 2 + (i - 1) * (btnHeight + btnPadding)
         if x >= btnX and x <= btnX + btnWidth - 1 and y >= btnY and y <= btnY + btnHeight - 1 then
             return true, btn.action
         end
     end
     local arrowBtnW = 4
     local arrowBtnH = 3
-    local arrowBtnY = btnY
-    local prevArrowBtnX = 2
-    local nextArrowBtnX = prevArrowBtnX + arrowBtnW + 1
-    local sortBtnX = nextArrowBtnX + arrowBtnW + 2
-    local sortBtnW = 14
+    local arrowBtnY = 2 + (#btns * (btnHeight + btnPadding))
+    local prevArrowBtnX = btnX
+    local nextArrowBtnX = btnX
+    local sortBtnY = arrowBtnY + (2 * (arrowBtnH + 1))
+    local sortBtnW = 12
     if x >= prevArrowBtnX and x <= prevArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
         return true, "prevPage"
-    elseif x >= nextArrowBtnX and x <= nextArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
+    elseif x >= nextArrowBtnX and x <= nextArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY + arrowBtnH + 1 and y <= arrowBtnY + (2 * arrowBtnH) + 1 then
         return true, "nextPage"
-    elseif x >= sortBtnX and x <= sortBtnX + sortBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
+    elseif x >= btnX and x <= btnX + sortBtnW - 1 and y >= sortBtnY and y <= sortBtnY + arrowBtnH - 1 then
         return true, "sort"
     end
     return false, nil
@@ -701,8 +707,8 @@ event.listen("touch", function(_, _, x, y, _, _)
     if changeitem then return end
     local btnWidth = 12
     local btnHeight = 3
-    local btnY = HEIGHT - 3
-    local btnPadding = 2
+    local btnX = WIDTH - btnWidth - 2
+    local btnPadding = 1
     local btns = {
         {name = "Крафт всех", action = "craftAll"},
         {name = "Удалить", action = "delete"},
@@ -710,10 +716,8 @@ event.listen("touch", function(_, _, x, y, _, _)
         {name = isCrafting and "Остановить" or "Автокрафт", action = "toggleCraft"},
         {name = "Добавить", action = "add"},
     }
-    local totalBtnWidth = (#btns * btnWidth) + ((#btns - 1) * btnPadding)
-    local startX = math.floor((WIDTH - totalBtnWidth) / 2)
     for i, btn in ipairs(btns) do
-        local btnX = startX + (i - 1) * (btnWidth + btnPadding)
+        local btnY = 2 + (i - 1) * (btnHeight + btnPadding)
         if x >= btnX and x <= btnX + btnWidth - 1 and y >= btnY and y <= btnY + btnHeight - 1 then
             addLog(logs, "DEBUG: Кнопка '" .. btn.name .. "' нажата")
             if btn.action == "delete" then removeItem()
@@ -728,11 +732,11 @@ event.listen("touch", function(_, _, x, y, _, _)
     end
     local arrowBtnW = 4
     local arrowBtnH = 3
-    local arrowBtnY = btnY
-    local prevArrowBtnX = 2
-    local nextArrowBtnX = prevArrowBtnX + arrowBtnW + 1
-    local sortBtnX = nextArrowBtnX + arrowBtnW + 2
-    local sortBtnW = 14
+    local arrowBtnY = 2 + (#btns * (btnHeight + btnPadding))
+    local prevArrowBtnX = btnX
+    local nextArrowBtnX = btnX
+    local sortBtnY = arrowBtnY + (2 * (arrowBtnH + 1))
+    local sortBtnW = 12
     if x >= prevArrowBtnX and x <= prevArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
         addLog(logs, "DEBUG: Кнопка '<-' нажата")
         if currentPage > 1 then
@@ -741,7 +745,7 @@ event.listen("touch", function(_, _, x, y, _, _)
             draw()
         end
         return
-    elseif x >= nextArrowBtnX and x <= nextArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
+    elseif x >= nextArrowBtnX and x <= nextArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY + arrowBtnH + 1 and y <= arrowBtnY + (2 * arrowBtnH) + 1 then
         addLog(logs, "DEBUG: Кнопка '->' нажата")
         local maxPages = getMaxPages()
         if currentPage < maxPages then
@@ -750,7 +754,7 @@ event.listen("touch", function(_, _, x, y, _, _)
             draw()
         end
         return
-    elseif x >= sortBtnX and x <= sortBtnX + sortBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
+    elseif x >= btnX and x <= btnX + sortBtnW - 1 and y >= sortBtnY and y <= sortBtnY + arrowBtnH - 1 then
         addLog(logs, "DEBUG: Кнопка 'Сортировать' нажата")
         local criteriaList = {"name", "category", "current", "count", "craftSize"}
         local currentCriteriaIndex = 1
@@ -777,16 +781,16 @@ event.listen("touch", function(_, _, x, y, _, _)
         draw()
         return
     end
-    if y >= HEIGHT - 8 and y <= HEIGHT - 6 then
+    if y >= HEIGHT - 10 and y <= HEIGHT - 8 then
         searchActive = false
-        if x >= 2 + (WIDTH - 4) - 3 and x <= 2 + (WIDTH - 4) - 1 and search ~= "" then
+        if x >= 2 + (WIDTH - 20) - 3 and x <= 2 + (WIDTH - 20) - 1 and search ~= "" then
             search = ""
             currentPage = 1
             selectedItem = nil
             draw()
             return
         end
-        if x >= 2 + 1 and x <= 2 + (WIDTH - 4) - 4 then
+        if x >= 2 + 1 and x <= 2 + (WIDTH - 20) - 4 then
             searchActive = true
             draw()
             return
@@ -827,7 +831,7 @@ event.listen("key_down", function(_, _, key, _, _)
         elseif key == 28 then
             searchActive = false
         elseif key >= 32 and key < 128 then
-            if unicode.len(search) < WIDTH - 15 then
+            if unicode.len(search) < WIDTH - 25 then
                 search = search .. unicode.char(key)
             end
         end
@@ -900,7 +904,7 @@ event.listen("key_down", function(_, _, key, _, _)
                 selectedItem = nil
             end
         elseif key == 200 and not searchActive then
-            logOffset = math.min(logOffset + 1, #logs - 3)
+            logOffset = math.min(logOffset + 1, #logs - 5)
         elseif key == 208 and not searchActive then
             logOffset = math.max(logOffset - 1, 0)
         end
