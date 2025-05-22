@@ -50,8 +50,7 @@ local COLORS = {
     search_cross = 0xFF5555,
     search_hint = 0x888888,
     bar_shadow = 0x181920,
-    tooltip_bg = 0x44475a,
-    tooltip_text = 0xF8F8F2,
+    -- Удалены переменные для всплывающих подсказок: tooltip_bg, tooltip_text
 }
 local WIDTH, HEIGHT = 110, 40 -- Размеры окна
 local craftStatus = "Ожидание..." -- Текущий статус крафта
@@ -66,7 +65,7 @@ local selectedItem = nil -- Индекс выбранного предмета
 local itemScroll = 1 -- Позиция прокрутки списка предметов
 local changeitem = false -- Флаг, указывающий, находится ли пользователь в режиме изменения предмета
 local searchActive = false -- Флаг, указывающий, активно ли поле поиска
--- Удалены переменные для всплывающих подсказок: tooltip, tooltipTimeout
+-- Удалены переменные для всплывающих подсказок: hoveredButton, tooltip, tooltipTimeout
 
 -------------------- Логгирование --------------------
 -- Функция для добавления логов. Время было удалено по запросу.
@@ -224,13 +223,12 @@ local function drawButtons()
         {name="Добавить", x=WIDTH-15},
     }
     for i,v in ipairs(btns) do
-        local hover = hoveredButton == i
+        local hover = false -- Подсказки удалены, поэтому hover всегда false для отображения
         uoc.animatedButton(v.x, HEIGHT-4, 12, 3, v.name, hover, COLORS.button, COLORS.buttonActive, COLORS.text)
-        -- Удалены строки, связанные с tooltip
     end
 end
 
--- Удалена функция drawTooltip()
+-- Функция drawTooltip() полностью удалена
 
 local function draw()
     clear()
@@ -239,7 +237,7 @@ local function draw()
     drawSearchBar()
     drawLogs()
     drawButtons()
-    -- Удален вызов drawTooltip()
+    -- Вызов drawTooltip() удален
 end
 
 -------------------- IO и действия --------------------
@@ -420,20 +418,20 @@ local function autoCraftLoop()
                             -- Проверяем, есть ли рецепт для предмета
                             if craftables.n and craftables.n >= 1 then
                                 addLog(logs, "Найден рецепт для: "..(item.name or "<??>"), "DEBUG")
-                                -- Вычисляем, сколько нужно скрафтить
-                                local delta = math.min(craftSize, count - current)
-                                if delta > 0 then
-                                    -- Запрашиваем крафт с количеством 'delta'
-                                    local succ, req = pcall(function() return craftables[1].request(delta, false, freeCpu) end)
+                                -- Вычисляем, сколько нужно скрафтить, но запрашиваем всегда 1 для "1 CPU"
+                                local deltaToRequest = 1 -- Всегда запрашиваем 1 единицу
+                                if deltaToRequest > 0 then
+                                    -- Запрашиваем крафт только 1 единицы, чтобы использовать 1 ЦПУ за проверку
+                                    local succ, req = pcall(function() return craftables[1].request(deltaToRequest, false, freeCpu) end)
                                     if succ then -- Запрос был отправлен без Lua-ошибки
                                         if req then -- ME-система подтвердила крафт (вернула IItemInfo)
                                             craftStatus = "Крафт: "..(item.name or "<??>")
-                                            addLog(logs, "Успешный запрос крафта " .. delta .. "x " .. (item.name or "<??>") .. " на CPU " .. tostring(freeCpu), "INFO")
+                                            addLog(logs, "Успешный запрос крафта " .. deltaToRequest .. "x " .. (item.name or "<??>") .. " на CPU " .. tostring(freeCpu), "INFO")
                                             craftedThisCycle = true -- Устанавливаем флаг, чтобы не крафтить больше в этом цикле
                                             break -- Останавливаемся после одного успешного крафта в этом цикле
                                         else -- ME-система отклонила крафт (например, нет ресурсов)
                                             craftStatus = "Ошибка: крафт отклонен ME"
-                                            addLog(logs, "Ошибка: ME отклонил крафт " .. delta .. "x " .. (item.name or "<??>") .. " (нет ресурсов/другая причина)", "ERROR")
+                                            addLog(logs, "Ошибка: ME отклонил крафт " .. deltaToRequest .. "x " .. (item.name or "<??>") .. " (нет ресурсов/другая причина)", "ERROR")
                                         end
                                     else -- Произошла ошибка pcall при отправке запроса
                                         craftStatus = "Ошибка: запрос крафта"
@@ -466,7 +464,7 @@ end
 -- Обработчик события касания (клика)
 event.listen("touch", function(_,_,x,y,_,_)
     if changeitem then return end -- Если идет изменение предмета, игнорируем касания
-    hoveredButton = nil
+    -- Удалена переменная hoveredButton
     local btns = {
         {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
         {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
@@ -475,7 +473,7 @@ event.listen("touch", function(_,_,x,y,_,_)
     }
     for i,btn in ipairs(btns) do
         if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
-            hoveredButton = i
+            -- Удалена установка hoveredButton
             if i==1 then removeItem()
             elseif i==2 then editItem()
             elseif i==3 then if isCrafting then stopCraft() else doCraft() end
@@ -536,14 +534,12 @@ event.listen("drag", function(_,_,x,y,_,_)
     }
     for i,btn in ipairs(btns) do
         if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
-            hoveredButton = i
-            -- Удалены строки, связанные с tooltipTimeout и tooltip
+            -- Удалена установка hoveredButton, tooltipTimeout, tooltip
             draw()
             return
         end
     end
-    hoveredButton = nil
-    -- Удалены строки, связанные с tooltip
+    -- Удалены сброс hoveredButton, tooltip
     draw()
 end)
 
