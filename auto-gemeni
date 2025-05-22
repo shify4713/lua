@@ -159,7 +159,7 @@ local function drawItems()
         g.setForeground(COLORS.text)
         
         -- Обрезаем строку названия, если она слишком длинная
-        local nameStr = unicode.sub((it.name or "<??>"), 1, col_name)
+        local nameStr = tostring(it.name or "<??>")
         if unicode.len(nameStr) > col_name then
             nameStr = unicode.sub(nameStr, 1, col_name - 1) .. "…"
         end
@@ -291,7 +291,7 @@ local function reload()
             end
         end
 
-        -- ДОБАВЛЕНО: Учитываем предметы, которые уже находятся в процессе крафта
+        -- Учитываем предметы, которые уже находятся в процессе крафта
         local craftingJobs_ok, craftingJobs = pcall(me.getCraftingJobs)
         if craftingJobs_ok and craftingJobs and craftingJobs.n then
             for _, job in ipairs(craftingJobs) do
@@ -543,7 +543,7 @@ local function autoCraftLoop()
     while true do
         if isCrafting then
             local now = computer.uptime()
-            -- Проверяем, пришло ли время для следующего обновления крафта
+            -- Проверяем, пришло ли время для следующего обновления статуса крафта
             if now >= nextCraftUpdate then
                 addLog(logs, "DEBUG: Начало цикла автокрафта...")
                 reload() -- Обновляем текущие количества предметов
