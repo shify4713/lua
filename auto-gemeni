@@ -3,29 +3,15 @@ local fs = require("filesystem")
 local shell = require("shell")
 local event = require("event")
 local unicode = require("unicode")
-local term = require("term") -- Оригинальная инициализация term
+local term = require("term")
 local computer = require("computer")
-local g = component.gpu -- Оригинальная инициализация gpu
+local g = component.gpu
 local me = component.me_interface
-
--- Проверки на наличие компонентов (как в вашем оригинале, но с более явными сообщениями)
-if not g then
-    io.stderr:write("Ошибка: GPU не найден. Убедитесь, что он подключен к монитору.\n")
-    os.exit(1)
-end
-if not term then
-    io.stderr:write("Ошибка: Terminal (дисплей) не найден. Убедитесь, что монитор подключен.\n")
-    os.exit(1)
-end
-if not me then
-    io.stderr:write("Ошибка: ME интерфейс не найден. Убедитесь, что он подключен.\n")
-    os.exit(1)
-end
 
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni" -- Убедитесь, что это ваша ссылка
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 if not fs.exists(LIB_PATH) then
     shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
@@ -43,7 +29,7 @@ end
 -------------------- Настройки --------------------
 local COLORS = {
     button = 0x00BFFF,
-    buttonActive = 0x1E90FF, -- Для сохранения оригинального поведения кнопки (если не должна "мигать"), можно изменить на 0x00BFFF
+    buttonActive = 0x1E90FF,
     border = 0x44475a,
     text = 0xF8F8F2,
     shadow = 0x282A36,
@@ -74,43 +60,20 @@ local dataItems = {}
 local search = ""
 local selectedItem = nil
 local itemScroll = 1
-local changeitem = false -- Флаг для блокировки UI во время ввода
+local changeitem = false
 local searchActive = false
 local hoveredButton = nil
 local tooltip = ""
 local tooltipTimeout = 0
-local cursorBlinkActive = false -- Новая переменная для контроля мигания курсора
 
--------------------- Логгирование (без времени, как вы просили) --------------------
-local function addLog(text, lvl) -- Изменил сигнатуру: logs передавать не нужно
+-------------------- Логгирование --------------------
+-- Удалена функция getKyivTime()
+local function addLog(logs, text, lvl)
     lvl = lvl or "INFO"
-    local t = string.format("[%s] %s", lvl, text) -- Убрано время
+    -- Время удалено из лога
+    local t = string.format("[%s] %s", lvl, text)
     table.insert(logs, t)
     while #logs > 50 do table.remove(logs, 1) end
-end
-
--------------------- Ввод данных (блокирующий UI) --------------------
--- Адаптированная safeReadInput, которая использует term.setCursor
-local function safeReadInput(promptText, promptX, promptY, inputX, inputY, defaultColor, promptColor)
-    g.setBackground(COLORS.bg)
-    g.fill(promptX, promptY, WIDTH - promptX + 1, 1, " ") -- Очищаем строку для приглашения
-    uoc.drawText(promptX, promptY, promptText, promptColor or COLORS.text)
-
-    -- Включаем мигание курсора
-    cursorBlinkActive = true
-    if term and term.setCursorPos and term.setCursorBlink then
-        term.setCursorPos(inputX, inputY)
-        term.setCursorBlink(true)
-    end
-
-    local input = io.read()
-
-    -- Выключаем мигание курсора после ввода
-    cursorBlinkActive = false
-    if term and term.setCursorBlink then
-        term.setCursorBlink(false)
-    end
-    return input
 end
 
 -------------------- Визуал --------------------
@@ -125,7 +88,7 @@ local function shadowRect(x, y, w, h)
     g.fill(x+1, y+h, w, 1, " ")
     g.fill(x+w, y, 1, h, " ")
     g.setBackground(COLORS.bg)
-end -- <-- ДОБАВЬТЕ ЭТОТ "end"
+end
 
 local function drawHeader()
     uoc.drawText(3,3,"Ultimate AutoCraft",COLORS.ok,true)
@@ -139,148 +102,112 @@ local function drawHeader()
 end
 
 local function drawLogs()
-    -- Сдвигаем логи ниже таблицы и поля поиска
-    -- Количество логов теперь определяется высотой области, а не фиксированным числом 4
-    local logAreaHeight = 4 -- Зарезервировано 4 строки для логов
-    uoc.drawLogs(3, HEIGHT - logAreaHeight + 1, logs, logAreaHeight, COLORS.log)
-}
+    -- Сдвигаем логи ниже таблицы и поиска
+    uoc.drawLogs(3, HEIGHT-9, logs, 4, COLORS.log)
+end
 
 local function drawItems()
-    local x, y = 2, 8
+    -- Динамически растянутая таблица
+    local x, y = 2, 8 -- чуть ниже
     local totalWidth = WIDTH-4
-    -- Используем оригинальные пропорции, как в вашем коде
     local col_name = math.floor(totalWidth * 0.45)
     local col_now = math.floor(totalWidth * 0.17)
     local col_hold = math.floor(totalWidth * 0.17)
     local col_once = totalWidth - col_name - col_now - col_hold
 
-    -- Заголовок таблицы
+    -- Верх рамки
     g.setForeground(COLORS.select_active)
     g.set(x, y,      "┌"..string.rep("─",col_name).."┬"..string.rep("─",col_now).."┬"..string.rep("─",col_hold).."┬"..string.rep("─",col_once).."┐")
+    -- Заголовки
     g.set(x, y+1,    "│")
     g.setForeground(COLORS.ok)
-    g.set(x+1, y+1,  string.format("%-"..col_name.."s"," Название")) -- Выравнивание по левому краю
+    g.set(x+1, y+1,  string.format("%-"..col_name.."s"," Название"))
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+1, y+1, "│")
     g.setForeground(COLORS.ok)
-    g.set(x+col_name+2, y+1, string.format("%-"..(col_now).."s"," В наличии")) -- Выравнивание по левому краю, как в оригинале
+    g.set(x+col_name+2, y+1, string.format("%-"..(col_now).."s"," В наличии"))
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_now+2, y+1, "│")
     g.setForeground(COLORS.ok)
-    g.set(x+col_name+col_now+3, y+1, string.format("%-"..(col_hold).."s"," Держать")) -- Выравнивание по левому краю, как в оригинале
+    g.set(x+col_name+col_now+3, y+1, string.format("%-"..(col_hold).."s"," Держать"))
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_now+col_hold+3, y+1, "│")
     g.setForeground(COLORS.ok)
-    g.set(x+col_name+col_now+col_hold+4, y+1, string.format("%-"..(col_once).."s"," За раз")) -- Выравнивание по левому краю, как в оригинале
+    g.set(x+col_name+col_now+col_hold+4, y+1, string.format("%-"..(col_once).."s"," За раз"))
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_now+col_hold+col_once+4, y+1, "│")
+    -- Разделитель
     g.set(x, y+2, "├"..string.rep("─",col_name).."┼"..string.rep("─",col_now).."┼"..string.rep("─",col_hold).."┼"..string.rep("─",col_once).."┤")
 
+    -- Строки предметов
     local showItems = {}
     for i,item in ipairs(dataItems) do
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
             table.insert(showItems, item)
         end
     end
-    local perPage = HEIGHT-24 -- Высота таблицы как в вашем оригинале
+    local perPage = HEIGHT-24 - 7 -- Учитываем место под поиск и логи
     for i = itemScroll, math.min(#showItems, itemScroll+perPage-1) do
         local it = showItems[i]
-        local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem]) -- Убедиться, что это тот же объект
-
+        local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem])
         local row = y+2+(i-itemScroll)+1
         g.setBackground(isSel and COLORS.select_active or COLORS.bg)
         g.setForeground(COLORS.text)
-        
-        -- Название (левое выравнивание, обрезка при необходимости)
+        -- аккуратно обрезаем строку если длинная
         local nameStr = unicode.sub((it.name or "<??>"), 1, col_name)
         g.set(x, row, "│")
         g.set(x+1, row, string.format("%-"..col_name.."s",nameStr))
-        
         g.set(x+col_name+1, row, "│")
-        
-        -- В наличии (выравнивание и обрезка, как в оригинале)
-        local currentStr = tostring(tonumber(it.current) or 0)
-        g.set(x+col_name+2, row, string.format("%"..col_now.."s",currentStr))
-        
+        g.set(x+col_name+2, row, string.format("%"..col_now.."s",tonumber(it.current) or 0))
         g.set(x+col_name+col_now+2, row, "│")
-        
-        -- Держать (выравнивание и обрезка, как в оригинале)
-        local holdStr = tostring(tonumber(it.count) or 0)
-        g.set(x+col_name+col_now+3, row, string.format("%"..col_hold.."s",holdStr))
-        
+        g.set(x+col_name+col_now+3, row, string.format("%"..col_hold.."s",tonumber(it.count) or 0))
         g.set(x+col_name+col_now+col_hold+3, row, "│")
-        
-        -- За раз (выравнивание и обрезка, как в оригинале)
-        local onceStr = tostring(tonumber(it.craftSize) or 0)
-        g.set(x+col_name+col_now+col_hold+4, row, string.format("%"..col_once.."s",onceStr))
-        
+        g.set(x+col_name+col_now+col_hold+4, row, string.format("%"..col_once.."s",tonumber(it.craftSize) or 0))
         g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
         g.setBackground(COLORS.bg)
     end
-    -- Заполняем оставшиеся строки пустой рамкой, чтобы избежать "мусора"
-    for i = math.min(#showItems, itemScroll + perPage - 1) + 1, itemScroll + perPage - 1 do
-        local row = y + 2 + (i - itemScroll) + 1
-        g.setBackground(COLORS.bg)
-        g.setForeground(COLORS.select_active)
-        g.set(x, row, "│" .. string.rep(" ", totalWidth) .. "│")
-    end
 
+    -- Низ рамки
     local lastRow = y+perPage+3
     g.setForeground(COLORS.select_active)
     g.set(x, lastRow, "└"..string.rep("─",col_name).."┴"..string.rep("─",col_now).."┴"..string.rep("─",col_hold).."┴"..string.rep("─",col_once).."┘")
     g.setForeground(COLORS.text)
 
-    -- Скроллбар
+    -- Скроллбар если нужно
     if #showItems > perPage then
         local barLen = math.max(2, math.floor(perPage * perPage / #showItems))
         local barTop = y+3 + math.floor((perPage-barLen) * (itemScroll-1) / math.max(1,#showItems-perPage))
         g.setForeground(COLORS.select_active)
-        for i=0,perPage do g.set(WIDTH-2, y+3+i, "│") end
+        g.set(WIDTH-2, y+3, "│")
+        for i=1,perPage do
+            g.set(WIDTH-2, y+2+i, "│")
+        end
         g.setForeground(COLORS.ok)
         for i=0,barLen-1 do
             g.set(WIDTH-2, barTop+i, "█")
         end
         g.setForeground(COLORS.text)
-    else
-        -- Очищаем область скроллбара, если он не нужен
-        g.setBackground(COLORS.bg)
-        for i=0,perPage do g.set(WIDTH-2, y+3+i, " ") end
     end
 end
 
 local function drawSearchBar()
-    local x, y, w, h = 3, HEIGHT-13, WIDTH-6, 3 -- Вернул оригинальную позицию поиска
+    local x, y, w, h = 3, HEIGHT-17, WIDTH-6, 3 -- Позиция поиска изменена
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
     g.fill(x+1, y+1, w-2, h-2, " ")
     g.setForeground(COLORS.search_cross)
     g.set(x+w-3, y+1, (search ~= "" and "×" or " "))
-
     g.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
     local display = search
-    if not searchActive and display == "" then
-        display = "Поиск: введите часть названия..."
+    if display=="" then display = "Поиск: введите часть названия..." end
+    if searchActive then display = display .. "_" end
+    local maxlen = w-7
+    if unicode.len(display) > maxlen then
+        display = unicode.sub(display, unicode.len(display)-maxlen+2)
     end
-
-    local maxDisplayLen = w-7
-    if unicode.len(display) > maxDisplayLen then
-        -- Обрезаем с конца, чтобы всегда видеть конец ввода
-        display = unicode.sub(display, unicode.len(display) - maxDisplayLen + 1)
-    end
-
     g.set(x+2, y+1, display)
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
-
-    -- Управление миганием курсора
-    if term and term.setCursorPos and term.setCursorBlink then
-        if searchActive and cursorBlinkActive then -- Мигает только если searchActive и разрешено
-            term.setCursorPos(x + 2 + unicode.len(search), y + 1)
-            term.setCursorBlink(true)
-        else
-            term.setCursorBlink(false)
-        end
-    end
 end
 
 local function drawButtons()
@@ -298,7 +225,7 @@ local function drawButtons()
             tooltipTimeout = os.time()
         end
     end
-}
+end
 
 local function drawTooltip()
     if tooltip ~= "" and os.time() - tooltipTimeout < 3 then
@@ -318,11 +245,11 @@ local function draw()
     clear()
     drawHeader()
     drawItems()
-    drawLogs()
-    drawSearchBar()
+    drawSearchBar() -- Вызываем отрисовку поиска перед логами
+    drawLogs()      -- Вызываем отрисовку логов после поиска
     drawButtons()
     drawTooltip()
-}
+end
 
 -------------------- IO и действия --------------------
 local function reload()
@@ -331,126 +258,118 @@ local function reload()
     for _,item in ipairs(dataItems) do
         local qty = 0
         local stackList = {}
-        -- Обернем вызов me.getItemsInNetwork в pcall, чтобы избежать падений, если ME лагает
-        local ok_get, res_get = pcall(me.getItemsInNetwork, {id = item.id, damage = item.dmg})
-        if ok_get and res_get and #res_get > 0 then
-            stackList = res_get
-        end
-
-        if #stackList > 0 then
-            -- Суммируем количество всех стаков, а не только первого
+        pcall(function() stackList = me.getItemsInNetwork({id = item.id, damage = item.dmg}) end)
+        if stackList and stackList.n and stackList.n > 0 then
             for _,stack in ipairs(stackList) do
                 if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
-                    qty = qty + (stack.size or stack.qty or 0)
+                    qty = stack.size or stack.qty or 0
+                    break
                 end
             end
         else
-            -- Если getItemsInNetwork вернул пустой список или ошибку, пробуем getItemDetail
             local ok2, d = pcall(me.getItemDetail, {id = item.id, dmg = item.dmg})
             if ok2 and d then
-                qty = d.qty or d.size or 0 -- Обновляем qty, если получили детали
+                qty = d.qty or d.size or 0
             end
         end
         item.current = qty
     end
-}
+end
 
 local function save()
     local ok, err = pcall(uoc.savef, DATA_FILE, dataItems)
-    if not ok then addLog("Ошибка сохранения: "..tostring(err), "ERROR") end
-}
+    if not ok then addLog(logs, "Ошибка сохранения: "..tostring(err), "ERROR") end
+end
 
 local function resetSelection()
     search = ""
     itemScroll = 1
     selectedItem = nil
-}
+end
 
 local function addItem()
     changeitem = true
-    cursorBlinkActive = true -- Включаем мигание курсора для ввода
     clear()
-    local promptY = HEIGHT - 10 -- Начальная Y-координата для подсказок
-    uoc.drawText(10, promptY, "Вставьте предмет в 1-й слот ME интерфейса и введите параметры.", COLORS.ok)
-
-    -- Поля ввода выровнены
-    local name = safeReadInput("Название:          ", 10, promptY + 1, 30, promptY + 1, COLORS.text, COLORS.text)
-    local count_str = safeReadInput("Держать (число):   ", 10, promptY + 2, 30, promptY + 2, COLORS.text, COLORS.text)
-    local count = tonumber(count_str) or 0
-    local craftSize_str = safeReadInput("Крафт за раз (число):", 10, promptY + 3, 30, promptY + 3, COLORS.text, COLORS.text)
-    local craftSize = tonumber(craftSize_str) or 1
-
+    uoc.drawText(10,HEIGHT-7,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
+    uoc.drawText(10,HEIGHT-6,"Название: ",COLORS.text)
+    term.setCursor(20,HEIGHT-6)
+    local name = tostring(io.read())
+    uoc.drawText(10,HEIGHT-5,"Держать (число): ",COLORS.text)
+    term.setCursor(29,HEIGHT-5)
+    local count = tonumber(io.read()) or 0
+    uoc.drawText(10,HEIGHT-4,"Крафт за раз (число): ",COLORS.text)
+    term.setCursor(32,HEIGHT-4)
+    local craftSize = tonumber(io.read()) or 1
     local stack = nil
-    local ok_stack, res_stack = pcall(me.getStackInSlot, 1)
-    if ok_stack then stack = res_stack end
-
+    local ok, res = pcall(me.getStackInSlot, 1)
+    if ok then stack = res end
     if stack then
-        table.insert(dataItems, {name=name, id=stack.name, dmg=stack.damage, count=count, craftSize=craftSize}) -- stack.name и stack.damage для ID и DMG
+        table.insert(dataItems, {name=name, id=stack.id, dmg=stack.dmg, count=count, craftSize=craftSize})
         save()
-        addLog("Добавлен предмет: "..name,"INFO")
+        addLog(logs, "Добавлен предмет: "..name,"INFO")
     else
-        addLog("Ошибка: нет предмета в слоте 1 ME интерфейса!","ERROR")
+        addLog(logs, "Ошибка: нет предмета в слоте 1!","ERROR")
     end
     changeitem = false
-    cursorBlinkActive = false -- Выключаем мигание курсора
     resetSelection()
     draw()
-}
+end
 
 local function editItem()
-    if not selectedItem then return addLog("Не выбран предмет!","ERROR") end
+    if not selectedItem then return addLog(logs,"Не выбран предмет!","ERROR") end
     local item = dataItems[selectedItem]
     changeitem = true
-    cursorBlinkActive = true -- Включаем мигание курсора для ввода
     clear()
-    local promptY = HEIGHT - 10 -- Начальная Y-координата для подсказок
-    uoc.drawText(10, promptY, "Изменение: "..(item.name or "<??>"),COLORS.ok)
-
-    -- Поля ввода выровнены
-    local new_name = safeReadInput("Новое имя (Enter пропустить):      ", 10, promptY + 1, 40, promptY + 1, COLORS.text, COLORS.text)
-    if new_name and new_name ~= "" then
-        item.name = new_name
+    uoc.drawText(10,HEIGHT-7,"Изменение: "..(item.name or "<??>"),COLORS.ok)
+    -- Имя
+    uoc.drawText(10,HEIGHT-6,"Новое имя (Enter пропустить): ",COLORS.text)
+    term.setCursor(40,HEIGHT-6)
+    local name = tostring(io.read())
+    if name and name ~= "" then
+        item.name = name
     end
-
-    local count_str = safeReadInput("Новое держать (число, Enter пропустить): ", 10, promptY + 2, 40, promptY + 2, COLORS.text, COLORS.text)
-    local count = tonumber(count_str)
-    if count_str ~= "" and count then item.count = count end
-
-    local cs_str = safeReadInput("Новый крафт за раз (число, Enter пропустить):", 10, promptY + 3, 40, promptY + 3, COLORS.text, COLORS.text)
-    local cs = tonumber(cs_str)
-    if cs_str ~= "" and cs then item.craftSize = cs end
-
+    -- Количество
+    uoc.drawText(10,HEIGHT-5,"Новое держать (число, Enter пропустить): ",COLORS.text)
+    term.setCursor(54,HEIGHT-5)
+    local countstr = tostring(io.read())
+    local count = tonumber(countstr)
+    if countstr ~= "" and count then item.count = count end
+    -- Крафт за раз
+    uoc.drawText(10,HEIGHT-4,"Новый крафт за раз (число, Enter пропустить): ",COLORS.text)
+    term.setCursor(55,HEIGHT-4)
+    local csstr = tostring(io.read())
+    local cs = tonumber(csstr)
+    if csstr ~= "" and cs then item.craftSize = cs end
     save()
-    addLog("Изменено: "..item.name,"INFO")
+    addLog(logs, "Изменено: "..item.name,"INFO")
     changeitem = false
-    cursorBlinkActive = false -- Выключаем мигание курсора
     resetSelection()
     draw()
 end
 
 local function removeItem()
-    if not selectedItem then return addLog("Не выбран предмет!","ERROR") end
-    addLog("Удалён: "..(dataItems[selectedItem].name or "<??>"),"WARN")
+    if not selectedItem then return addLog(logs,"Не выбран предмет!","ERROR") end
+    addLog(logs, "Удалён: "..(dataItems[selectedItem].name or "<??>"),"WARN")
     table.remove(dataItems,selectedItem)
     selectedItem = nil
     save()
     draw()
-}
+end
 
 local function doCraft()
     isCrafting = true
     craftStatus = "Автокрафт..."
     save()
-    addLog("Запущен автокрафт","INFO")
+    addLog(logs,"Запущен автокрафт","INFO")
     draw()
-}
+end
 
 local function stopCraft()
     isCrafting = false
     craftStatus = "Остановлено"
-    addLog("Остановлен автокрафт","WARN")
+    addLog(logs, "Остановлен автокрафт","WARN")
     draw()
-}
+end
 
 -------------------- Основной цикл автокрафта --------------------
 local function autoCraftLoop()
@@ -459,155 +378,94 @@ local function autoCraftLoop()
             local now = computer.uptime()
             if now >= nextCraftUpdate then
                 reload()
-                -- Проверяем ME интерфейс в цикле
-                if not me or type(me) ~= "table" or not me.getCpus then
-                    addLog("Ошибка: ME интерфейс недоступен для autoCraftLoop(). Автокрафт остановлен.", "ERROR")
-                    craftStatus = "Ошибка ME"
-                    isCrafting = false
-                else
-                    local cpus_list_ok, all_cpus_details = pcall(me.getCpus)
-                    local available_cpus_for_this_scan = {}
-                    if cpus_list_ok and all_cpus_details then
-                        for _, cpu_detail in ipairs(all_cpus_details) do
-                            if not cpu_detail.busy then
-                                table.insert(available_cpus_for_this_scan, cpu_detail.name)
-                            end
+                local craftedThisCycle = false -- Флаг для отслеживания, был ли крафт в этом цикле
+                for i, item in ipairs(dataItems) do
+                    local count = tonumber(item.count) or 0
+                    local craftSize = tonumber(item.craftSize) or 1
+                    local current = tonumber(item.current) or 0
+
+                    if current < count and not craftedThisCycle then -- Проверяем флаг
+                        local ok2, cpus = pcall(me.getCpus)
+                        cpus = ok2 and cpus or {}
+                        local freeCpu = nil
+                        for _,cpu in ipairs(cpus) do
+                            if not cpu.busy then freeCpu = cpu.name break end
                         end
-                    elseif not cpus_list_ok then
-                        addLog("Ошибка getCpus: " .. tostring(all_cpus_details), "ERROR")
-                    end
 
-                    local assigned_cpus_in_this_scan = {}
-                    local craft_attempted_this_cycle = false
-
-                    for i, item_entry in ipairs(dataItems) do
-                        local count = tonumber(item_entry.count) or 0
-                        local craftSize = tonumber(item_entry.craftSize) or 1
-                        local current = tonumber(item_entry.current) or 0
-
-                        if current < count then
-                            local freeCpuForThisItem = nil
-                            for _, cpu_name_avail in ipairs(available_cpus_for_this_scan) do
-                                local is_assigned_already = false
-                                for _, assigned_name in ipairs(assigned_cpus_in_this_scan) do
-                                    if cpu_name_avail == assigned_name then
-                                        is_assigned_already = true
-                                        break
-                                    end
-                                end
-                                if not is_assigned_already then
-                                    freeCpuForThisItem = cpu_name_avail
-                                    table.insert(assigned_cpus_in_this_scan, freeCpuForThisItem)
-                                    break
-                                end
-                            end
-
-                            if freeCpuForThisItem then
-                                local craftables_ok, craftables_data = pcall(me.getCraftables, {id = item_entry.id, damage = item_entry.dmg})
-                                craftables_data = craftables_ok and craftables_data or {} -- Должна быть таблица
-                                if not craftables_ok then addLog("Ошибка getCraftables: " .. tostring(craftables_data), "ERROR") end
-
-                                if #craftables_data >= 1 then
-                                    -- Дополнительная проверка на наличие метода request у найденного рецепта
-                                    if craftables_data[1] and type(craftables_data[1].request) == "function" then
-                                        local delta = math.min(craftSize, count - current)
-                                        if delta > 0 then
-                                            local succ_req, req_res = pcall(function() return craftables_data[1].request(delta, false, freeCpuForThisItem) end)
-                                            if succ_req and req_res then
-                                                craftStatus = "Крафт: "..(item_entry.name or "<??>")
-                                                addLog("Запрос крафта "..delta.."x "..(item_entry.name or "<??>").." на CPU "..tostring(freeCpuForThisItem),"INFO")
-                                                craft_attempted_this_cycle = true
-                                            else
-                                                craftStatus = "Ошибка: запрос крафта "..(item_entry.name or "<??>")
-                                                addLog("Ошибка запроса крафта "..(item_entry.name or "<??>").." (" .. tostring(req_res) .. ")","ERROR")
-                                            end
-                                        end
+                        if freeCpu then
+                            local ok3, craftables = pcall(me.getCraftables, {name=item.id, damage=item.dmg})
+                            craftables = ok3 and craftables or {n=0}
+                            if craftables.n and craftables.n >= 1 then
+                                local delta = math.min(craftSize, count - current)
+                                if delta > 0 then
+                                    -- Запрашиваем крафт только 1 единицы, чтобы использовать 1 ЦПУ за проверку
+                                    local succ, req = pcall(function() return craftables[1].request(1, false, freeCpu) end)
+                                    if succ and req then
+                                        craftStatus = "Крафт: "..(item.name or "<??>")
+                                        addLog(logs, "Крафт 1x "..(item.name or "<??>").." на CPU "..tostring(freeCpu),"INFO")
+                                        craftedThisCycle = true -- Устанавливаем флаг, чтобы не крафтить больше в этом цикле
                                     else
-                                        craftStatus = "Ошибка: нет метода request для ".. (item_entry.name or "<??>")
-                                        addLog("Ошибка: у рецепта для "..(item_entry.name or "<??>").." отсутствует метод request (не крафтовый?)","ERROR")
+                                        craftStatus = "Ошибка: запрос крафта"
+                                        addLog(logs, "Ошибка: не удалось отправить крафт "..(item.name or "<??>"),"ERROR")
                                     end
-                                else
-                                    craftStatus = "Ошибка: нет рецепта "..(item_entry.name or "<??>")
-                                    addLog("Ошибка: нет рецепта для "..(item_entry.name or "<??>"),"ERROR")
                                 end
                             else
-                                if not craft_attempted_this_cycle then -- Не перебивать статус, если уже пытались крафтить
-                                    craftStatus = "Ожидание CPU..."
-                                end
+                                craftStatus = "Ошибка: нет рецепта "..(item.name or "<??>")
+                                addLog(logs, "Ошибка: нет рецепта "..(item.name or "<??>"),"ERROR")
                             end
-                        end
-                    end
-                    if not craft_attempted_this_cycle and not craftStatus:find("Ошибка:") then
-                        if #available_cpus_for_this_scan == 0 then
-                            craftStatus = "Нет свободных CPU."
-                        elseif #dataItems == 0 then
-                             craftStatus = "Нет предметов для крафта."
                         else
-                             craftStatus = "Все предметы в наличии."
+                            craftStatus = "Ошибка: нет свободных CPU"
+                            addLog(logs, "Ошибка: нет свободных CPU","ERROR")
                         end
                     end
                 end
                 save()
-                nextCraftUpdate = now + 5 -- Обновление каждые 5 секунд
+                nextCraftUpdate = now + 5
             end
         end
         draw()
-        os.sleep(0.2) -- Короткая задержка, чтобы не нагружать CPU
+        os.sleep(0.2)
     end
-}
+end
 
--------------------- Обработчики событий --------------------
+-------------------- События --------------------
 event.listen("touch", function(_,_,x,y,_,_)
-    if changeitem then return end -- Блокируем UI во время ввода
-    hoveredButton = nil -- Сбрасываем при каждом клике
-
+    if changeitem then return end
+    hoveredButton = nil
     local btns = {
-        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3, action=removeItem},
-        {x=WIDTH-45, y=HEIGHT-4, w=12, h=3, action=editItem},
-        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3, action=function() if isCrafting then stopCraft() else doCraft() end end},
-        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3, action=addItem},
+        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
+        {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
+        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3},
+        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3},
     }
     for i,btn in ipairs(btns) do
         if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
             hoveredButton = i
-            searchActive = false -- Выключаем активность поиска при клике на кнопку
-            cursorBlinkActive = false -- Отключаем мигание курсора
-            if term and term.setCursorBlink then term.setCursorBlink(false) end
-            btn.action() -- Выполняем действие кнопки
+            if i==1 then removeItem()
+            elseif i==2 then editItem()
+            elseif i==3 then if isCrafting then stopCraft() else doCraft() end
+            elseif i==4 then addItem()
+            end
             draw()
             return
         end
     end
-
-    -- Проверка на клик по крестику или в поле поиска
-    local search_x, search_y, search_w, search_h = 3, HEIGHT-13, WIDTH-6, 3 -- Оригинальная позиция поиска
-    if y >= search_y and y <= search_y + search_h - 1 then
-        -- Клик по крестику (кнопка очистки)
-        if x >= search_x + search_w - 3 and x <= search_x + search_w - 1 and search ~= "" then
-            search = ""
-            addLog("Поиск очищен.", "INFO")
-            searchActive = false
-            cursorBlinkActive = false
-            if term and term.setCursorBlink then term.setCursorBlink(false) end
-            draw()
-            return
-        end
-        -- Клик в поле поиска (активируем ввод)
-        if x >= search_x + 1 and x <= search_x + search_w - 4 then
-            searchActive = true
-            cursorBlinkActive = true -- Включаем мигание курсора при активации поля
-            draw() -- Курсор включится в drawSearchBar
-            return
-        end
-    end
-
-    -- Если клик вне поля поиска, выключаем searchActive и курсор
-    if searchActive then
+    -- Поле поиска (WIDTH-6 x 3, левый верхний угол 3,HEIGHT-17)
+    if y >= HEIGHT-17 and y <= HEIGHT-15 then -- Позиция поиска изменена
         searchActive = false
-        cursorBlinkActive = false
-        if term and term.setCursorBlink then term.setCursorBlink(false) end
+        if x >= 3+(WIDTH-6)-3 and x <= 3+(WIDTH-6)-1 and search ~= "" then
+            search = ""
+            draw()
+            return
+        end
+        if x >= 3+1 and x <= 3+(WIDTH-6)-4 then
+            searchActive = true
+            draw()
+            return
+        end
+    else
+        searchActive = false
     end
-
     -- Список предметов (выбор)
     local showItems = {}
     for i,item in ipairs(dataItems) do
@@ -615,29 +473,19 @@ event.listen("touch", function(_,_,x,y,_,_)
             table.insert(showItems, item)
         end
     end
-    local perPage = HEIGHT-24 -- Используем оригинальный perPage
-    local itemsStartY = 11 -- Начальная Y-координата для первой строки предметов
+    local perPage = HEIGHT-24 - 7 -- Учитываем место под поиск и логи
+    local itemsStartY = 11
     local itemsEndY = itemsStartY + perPage - 1
-
     if y >= itemsStartY and y <= itemsEndY then
-        local idx_in_shown_items = y-itemsStartY+1
-        if showItems[idx_in_shown_items] then
-            -- Ищем индекс выбранного элемента в dataItems (исходном списке)
-            local actual_selected_item_index = nil
+        local idx = itemScroll + (y-itemsStartY)
+        if showItems[idx] then
             for k,v in ipairs(dataItems) do
-                if v == showItems[idx_in_shown_items] then
-                    actual_selected_item_index = k
-                    break
-                end
+                if v == showItems[idx] then selectedItem = k break end
             end
-            selectedItem = actual_selected_item_index
-        else
-            selectedItem = nil -- Если клик вне элементов, сбрасываем выделение
         end
         draw()
         return
     end
-    selectedItem = nil -- Если клик вообще вне таблицы, сбрасываем выделение
     draw()
 end)
 
@@ -648,56 +496,46 @@ event.listen("drag", function(_,_,x,y,_,_)
         {x=WIDTH-30, y=HEIGHT-4, w=12, h=3},
         {x=WIDTH-15, y=HEIGHT-4, w=12, h=3},
     }
-    local currentHover = nil
     for i,btn in ipairs(btns) do
         if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
-            currentHover = i
-            break
-        end
-    end
-
-    if currentHover ~= hoveredButton then
-        hoveredButton = currentHover
-        if hoveredButton then
-            tooltip = ({"Удалить выбранный предмет из списка","Изменить параметры предмета",(isCrafting and "Остановить автокрафт" or "Запустить автокрафт"),"Добавить новый предмет"})[hoveredButton]
+            hoveredButton = i
             tooltipTimeout = os.time()
-        else
-            tooltip = ""
+            tooltip = ({"Удалить выбранный предмет из списка","Изменить параметры предмета",(isCrafting and "Остановить автокрафт" or "Запустить автокрафт"),"Добавить новый предмет"})[i]
+            draw()
+            return
         end
-        draw()
     end
+    hoveredButton = nil
+    tooltip = ""
+    draw()
 end)
 
 event.listen("key_down", function(_,_,key,_,_)
-    if changeitem then return end -- Блокируем обработку клавиатуры во время ввода
+    if changeitem then return end
     local showItems = {}
     for i,item in ipairs(dataItems) do
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
             table.insert(showItems, item)
         end
     end
-    local perPage = HEIGHT-24 -- Используем оригинальный perPage
-
+    local perPage = HEIGHT-24 - 7 -- Учитываем место под поиск и логи
     if searchActive then
         if key == 14 then -- backspace
-            search = unicode.sub(search, 1, math.max(0, unicode.len(search)-1))
-        elseif key == 211 then -- delete (очистка всей строки поиска)
+            search = search:sub(1,-2)
+        elseif key == 211 then -- delete
             search = ""
         elseif key == 28 then -- enter
             searchActive = false
-            cursorBlinkActive = false
-            if term and term.setCursorBlink then term.setCursorBlink(false) end
-        elseif key >= 32 and key < 128 then -- Добавляем только печатные ASCII символы
-            if unicode.len(search) < (WIDTH - 3 - 2 - 4) then -- Ограничение длины строки поиска (search_x + 2 + len)
+        elseif key >= 32 and key < 128 then
+            if unicode.len(search) < WIDTH-15 then
                 search = search .. unicode.char(key)
             end
         end
-        itemScroll = 1 -- Сброс скролла при изменении поиска
+        itemScroll = 1
     else
-        -- Навигация по списку
-        if key == 200 then -- up arrow
+        if key == 200 then -- up
             itemScroll = math.max(1,itemScroll-1)
-        elseif key == 208 then -- down arrow
+        elseif key == 208 then -- down
             if #showItems > perPage then
                 itemScroll = math.min(#showItems-perPage+1,itemScroll+1)
             end
@@ -710,32 +548,10 @@ end)
 g.setResolution(WIDTH,HEIGHT)
 reload()
 draw()
-
--- Убедимся, что курсор выключен при старте и вне полей ввода
-cursorBlinkActive = false
-if term and term.setCursorBlink then
-    term.setCursorBlink(false)
-end
-
--- Запуск основного цикла автокрафта в отдельном потоке (coroutine)
--- Это позволяет UI оставаться отзывчивым.
-local ok_loop, err_loop = pcall(function()
-    local co = coroutine.create(autoCraftLoop)
-    while true do
-        local status, res = coroutine.resume(co)
-        if not status then
-            addLog("Фатальная ошибка в цикле автокрафта: "..tostring(res), "ERROR")
-            draw()
-            os.sleep(5)
-            computer.shutdown(true)
-        end
-        event.pull(0.05) -- Небольшая задержка, чтобы не забивать CPU и дать другим событиям пройти
-    end
-end)
-
-if not ok_loop then
-    addLog("Ошибка при запуске главного цикла: "..tostring(err_loop), "ERROR")
+local ok, err = pcall(autoCraftLoop)
+if not ok then
+    addLog(logs, "Фатальная ошибка: "..tostring(err), "ERROR")
     draw()
-    os.sleep(5)
+    os.sleep(3)
     computer.shutdown(true)
 end
