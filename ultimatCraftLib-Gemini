@@ -1,64 +1,47 @@
---wget -f https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua /lib/ultimateOC.lua
---wget -f https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/autoCraftUltimate.lua /home/autoCraftUltimate.lua
 -- ultimateOC.lua - Улучшенная библиотека для визуала OpenComputers
+-- Версия: 1.0.1
+-- Автор: shify4713 (пользователь GitHub)
+
 local fs = require("filesystem")
 local unicode = require("unicode")
-local gpu = require("component").gpu
-local serialization = require("serialization") -- Explicitly require for safety
+local gpu = component.gpu -- Получаем компонент GPU напрямую
 
 local M = {}
 
 -- Безопасное сохранение таблицы (быстрее и надёжнее)
+-- Использует библиотеку serialization для преобразования таблицы в строку
 function M.savef(path, tbl)
-    local ok, ser = pcall(serialization.serialize, tbl)
-    if not ok then error("Ошибка сериализации: "..tostring(ser)) end
-    
-    local f, err_open = io.open(path, "w")
-    if not f then error("Не могу открыть файл для записи: ".. tostring(err_open)) end
-    
-    local write_ok, err_write = f:write(ser)
-    if not write_ok then
-        f:close() -- Attempt to close even on write error
-        error("Ошибка записи в файл: " .. tostring(err_write))
-    end
-    
-    local close_ok, err_close = f:close()
-    if not close_ok then
-        -- Log or handle close error if necessary, though data is likely written
-        -- For simplicity, we might not error out here if write was successful.
-    end
+    local ok, ser = pcall(require("serialization").serialize, tbl)
+    if not ok then error("Ошибка сериализации: "..tostring(ser)) end -- Обработка ошибок сериализации
+    local f, err = io.open(path, "w") -- Открываем файл для записи
+    if not f then error("Не могу открыть файл для записи: "..err) end -- Обработка ошибок открытия файла
+    f:write(ser) -- Записываем сериализованные данные
+    f:close()    -- Закрываем файл
 end
 
+-- Безопасная загрузка таблицы из файла
+-- Использует библиотеку serialization для преобразования строки в таблицу
 function M.loadf(path)
-    if not fs.exists(path) then return {} end -- Return empty table if file doesn't exist
-    
-    local f, err_open = io.open(path, "r")
-    if not f then error("Не могу открыть файл для чтения: ".. tostring(err_open)) end
-    
-    local data, err_read = f:read("*a")
-    if not data and err_read then -- Check if read failed
-        f:close()
-        error("Ошибка чтения файла: " .. tostring(err_read))
-    end
-    
-    f:close() -- Close file after reading
-    
-    if data == "" or data == nil then return {} end -- Handle empty file case
-
-    local ok, tbl = pcall(serialization.unserialize, data)
-    if not ok then error("Ошибка десериализации: "..tostring(tbl)) end
-    
-    return tbl or {} -- Ensure a table is returned
+    if not fs.exists(path) then return {} end -- Если файл не существует, возвращаем пустую таблицу
+    local f, err = io.open(path, "r") -- Открываем файл для чтения
+    if not f then error("Не могу открыть файл: "..err) end -- Обработка ошибок открытия файла
+    local data = f:read("*a") -- Читаем все содержимое файла
+    f:close()                 -- Закрываем файл
+    local ok, tbl = pcall(require("serialization").unserialize, data) -- Десериализуем данные
+    if not ok then error("Ошибка десериализации: "..tostring(tbl)) end -- Обработка ошибок десериализации
+    return tbl or {} -- Возвращаем десериализованную таблицу или пустую, если она nil
 end
 
 -- Гибкий фильтр предметов по подстроке (поиск не зависит от регистра)
+-- Возвращает новую таблицу с отфильтрованными элементами
 function M.filterItems(tbl, query)
-    if not query or query == "" then return tbl end
+    if not query or query == "" then return tbl end -- Если запрос пуст, возвращаем исходную таблицу
     local res = {}
-    query = unicode.lower(query)
+    query = unicode.lower(query) -- Преобразуем запрос в нижний регистр для поиска без учета регистра
     for i, item in ipairs(tbl) do
+        -- Проверяем, есть ли у элемента поле 'name' и содержит ли оно запрос
         if item.name and unicode.lower(item.name):find(query, 1, true) then
-            table.insert(res, item)
+            table.insert(res, item) -- Добавляем элемент в результат
         end
     end
     return res
@@ -66,171 +49,133 @@ end
 
 -- Закруглённый прямоугольник c опциональной цветной рамкой
 function M.roundRect(x, y, w, h, borderColor, fillColor)
-    local currentBg = gpu.getBackground() -- Save current background
-    borderColor = borderColor or 0x44475a
-    
-    -- Заливка
+    -- Проверяем доступность GPU
+    if not gpu or not gpu.isAvailable or not gpu:isAvailable() then return end
+
+    borderColor = borderColor or 0x44475a -- Цвет рамки по умолчанию
+    fillColor = fillColor or 0x1B1D23   -- Цвет заливки по умолчанию
+
+    -- Заливка внутренней части прямоугольника
     if fillColor then
         gpu.setBackground(fillColor)
-        gpu.fill(x, y, w, h, " ") -- Fill the entire area first
-    else -- If no fill color, ensure background is cleared if it's part of a larger draw
-        gpu.setBackground(currentBg) -- Or a default clear color
         gpu.fill(x, y, w, h, " ")
     end
-    
-    -- Рамка
+
+    -- Отрисовка рамки
     gpu.setForeground(borderColor)
-    if w > 1 and h > 1 then -- Only draw corners and lines if size allows
-        gpu.set(x+1, y, string.rep("─", w-2))
-        gpu.set(x+1, y+h-1, string.rep("─", w-2))
-        for i = y+1, y+h-2 do
-            gpu.set(x, i, "│")
-            gpu.set(x+w-1, i, "│")
-        end
-        gpu.set(x, y, "╭")
-        gpu.set(x+w-1, y, "╮")
-        gpu.set(x, y+h-1, "╰")
-        gpu.set(x+w-1, y+h-1, "╯")
-    elseif w == 1 and h > 1 then -- Vertical line
-         for i = y, y+h-1 do gpu.set(x,i,"│") end
-    elseif h == 1 and w > 1 then -- Horizontal line
-         for i = x, x+w-1 do gpu.set(i,y,"─") end
-    elseif w == 1 and h == 1 then -- Single point
-         gpu.set(x,y,"·")
+    -- Горизонтальные линии
+    gpu.set(x+1, y, string.rep("─", w-2))
+    gpu.set(x+1, y+h-1, string.rep("─", w-2))
+    -- Вертикальные линии
+    for i = y+1, y+h-2 do
+        gpu.set(x, i, "│")
+        gpu.set(x+w-1, i, "│")
     end
-    gpu.setBackground(currentBg) -- Restore original background
+    -- Углы
+    gpu.set(x, y, "╭")
+    gpu.set(x+w-1, y, "╮")
+    gpu.set(x, y+h-1, "╰")
+    gpu.set(x+w-1, y+h-1, "╯")
 end
 
 -- Прогресс-бар (цветной)
 function M.progressBar(x, y, w, percent, fg, bg)
-    local currentBg = gpu.getBackground()
-    fg = fg or 0x50FA7B
-    bg = bg or 0x44475a
-    
+    -- Проверяем доступность GPU
+    if not gpu or not gpu.isAvailable or not gpu:isAvailable() then return end
+
+    fg = fg or 0x50FA7B -- Цвет переднего плана (заполненная часть) по умолчанию
+    bg = bg or 0x44475a -- Цвет заднего плана (пустая часть) по умолчанию
+
     gpu.setBackground(bg)
-    gpu.fill(x, y, w, 1, " ")
-    
-    local filledWidth = math.max(0, math.floor(w * (percent or 0)))
-    if filledWidth > 0 then
-        gpu.setBackground(fg)
-        gpu.fill(x, y, filledWidth, 1, " ")
-    end
-    
-    gpu.setBackground(currentBg)
+    gpu.fill(x, y, w, 1, " ") -- Заливаем весь бар фоновым цветом
+    gpu.setBackground(fg)
+    gpu.fill(x, y, math.max(0, math.floor(w * percent)), 1, " ") -- Заливаем заполненную часть
+    gpu.setBackground(0x1B1D23) -- Возвращаем фоновый цвет по умолчанию
 end
 
 -- Анимированная кнопка (с закруглением, цветами и "нажатием")
 function M.animatedButton(x, y, w, h, text, active, baseColor, hoverColor, textColor)
-    local currentBg = gpu.getBackground()
-    local currentFg = gpu.getForeground()
+    -- Проверяем доступность GPU
+    if not gpu or not gpu.isAvailable or not gpu:isAvailable() then return end
 
-    baseColor = baseColor or 0x00BFFF
-    hoverColor = hoverColor or 0x1E90FF
-    textColor = textColor or 0xFFFFFF
-    
-    local effectiveColor = active and hoverColor or baseColor
-    
-    M.roundRect(x, y, w, h, effectiveColor, effectiveColor) -- Use effectiveColor for both border and fill
-    
+    baseColor = baseColor or 0x00BFFF -- Базовый цвет кнопки по умолчанию
+    hoverColor = hoverColor or 0x1E90FF -- Цвет кнопки при наведении по умолчанию
+    textColor = textColor or 0xFFFFFF   -- Цвет текста кнопки по умолчанию
+
+    local color = active and hoverColor or baseColor -- Выбираем цвет в зависимости от состояния (активна/неактивна)
+    M.roundRect(x, y, w, h, color, color) -- Рисуем закругленный прямоугольник (рамка и заливка одним цветом)
     gpu.setForeground(textColor)
-    -- Center text, ensuring it fits
-    local textLen = unicode.len(text)
-    local textX = x + math.floor((w - textLen) / 2)
-    local textY = y + math.floor((h - 1) / 2) -- Assuming single line text
-    
-    if textX < x + 1 then textX = x + 1 end -- Ensure text doesn't start before button edge
-    if textX + textLen > x + w -1 then -- If text is too long, truncate (simple truncation)
-        text = unicode.sub(text, 1, math.max(0, (x+w-1) - textX)) .. (textLen > ((x+w-1)-textX) and "…" or "")
-    end
-
-    gpu.set(textX, textY, text)
-    
-    gpu.setBackground(currentBg)
-    gpu.setForeground(currentFg)
+    -- Размещаем текст по центру кнопки
+    gpu.set(x + math.floor((w-unicode.len(text))/2), y + math.floor(h/2), text)
+    gpu.setBackground(0x1B1D23) -- Возвращаем фоновый цвет по умолчанию
 end
 
--- Тень под текстом
+-- Отрисовка текста с опциональной тенью
 function M.drawText(x, y, text, color, shadow)
-    local currentFg = gpu.getForeground()
-    color = color or 0xF8F8F2
-    
+    -- Проверяем доступность GPU
+    if not gpu or not gpu.isAvailable or not gpu:isAvailable() then return end
+
+    color = color or 0xF8F8F2 -- Цвет текста по умолчанию
     if shadow then
-        gpu.setForeground(0x282A36) -- Shadow color
-        gpu.set(x+1, y+1, text)
+        gpu.setForeground(0x282A36) -- Цвет тени
+        gpu.set(x+1, y+1, text)     -- Отрисовка тени со смещением
     end
-    
-    gpu.setForeground(color)
-    gpu.set(x, y, text)
-    gpu.setForeground(currentFg) -- Restore original foreground
+    gpu.setForeground(color) -- Цвет текста
+    gpu.set(x, y, text)      -- Отрисовка текста
 end
 
--- Быстрый логгер: добавляет строку в массив (до 50 записей), без времени
-function M.addLog(logsTable, text, lvl)
-    lvl = lvl or "INFO"
-    -- Время удалено из логов по запросу
-    local t = string.format("[%s] %s", lvl, text)
-    table.insert(logsTable, t)
-    while #logsTable > 50 do table.remove(logsTable, 1) end
+-- Быстрый логгер: добавляет строку в массив (до 50 записей)
+-- Добавляет временную метку к каждой записи
+function M.addLog(logs, text, lvl)
+    lvl = lvl or "INFO" -- Уровень лога по умолчанию
+    local now = os.date("!*t", os.time()+3*3600) -- Получаем текущее время (МСК)
+    local t = string.format("[%02d:%02d:%02d][%s] %s", now.hour, now.min, now.sec, lvl, text) -- Форматируем строку лога
+    table.insert(logs, t) -- Добавляем запись в массив логов
+    while #logs > 50 do table.remove(logs, 1) end -- Удаляем старые записи, если их слишком много
 end
 
--- Рисует список логов (на экране)
-function M.drawLogs(x, y, logsTable, count, color)
-    local currentFg = gpu.getForeground()
-    count = count or 10
-    color = color or 0x8BE9FD
+-- Рисует список логов на экране
+function M.drawLogs(x, y, logs, count, color)
+    -- Проверяем доступность GPU
+    if not gpu or not gpu.isAvailable or not gpu:isAvailable() then return end
+
+    count = count or 10 -- Количество отображаемых записей лога по умолчанию
+    color = color or 0x8BE9FD -- Цвет текста лога по умолчанию
     local logY = y
-    
-    -- Calculate how many logs to actually display based on available logs and requested count
-    local startIndex = math.max(1, #logsTable - count + 1)
-    
-    for i = startIndex, #logsTable do
-        -- Call M.drawText to ensure consistent text drawing (e.g. if it handles shadows or other effects)
-        -- However, the original just set color and called gpu.set. For simplicity and directness:
-        gpu.setForeground(color)
-        gpu.set(x, logY, logsTable[i])
-        logY = logY + 1
+    -- Отрисовываем последние 'count' записей лога
+    for i = math.max(1,#logs-count+1), #logs do
+        M.drawText(x, logY, logs[i], color)
+        logY = logY + 1 -- Переходим на следующую строку
     end
-    gpu.setForeground(currentFg)
 end
 
--- Быстрый автоматический скролл по массиву (возвращает подсекцию)
+-- Быстрый автоматический скролл по массиву
+-- Возвращает подмножество массива, соответствующее текущей позиции прокрутки
 function M.scrollArray(tbl, scroll, perPage)
     local res = {}
-    perPage = perPage or 20
-    -- Ensure scroll is within valid bounds
-    scroll = math.max(1, math.min(scroll, math.max(1, #tbl - perPage + 1)))
-    
-    local endIndex = math.min(#tbl, scroll + perPage - 1)
-    for i = scroll, endIndex do
-        table.insert(res, tbl[i])
+    perPage = perPage or 20 -- Количество элементов на странице по умолчанию
+    scroll = math.max(1, math.min(scroll, math.max(1, #tbl-perPage+1))) -- Корректируем позицию прокрутки
+    for i=scroll, math.min(#tbl, scroll+perPage-1) do
+        res[#res+1] = tbl[i] -- Добавляем элементы в результат
     end
-    return res, scroll -- Return the adjusted scroll value as well
+    return res
 end
 
 -- Цветной выделенный элемент (фон+текст)
+-- Используется для отрисовки строк в списке с выделением
 function M.selectLine(x, y, w, text, selected, color, selColor, textColor)
-    local currentBg = gpu.getBackground()
-    local currentFg = gpu.getForeground()
+    -- Проверяем доступность GPU
+    if not gpu or not gpu.isAvailable or not gpu:isAvailable() then return end
 
-    color = color or 0x23262E      -- Default background for non-selected
-    selColor = selColor or 0x00BFFF -- Default background for selected
-    textColor = textColor or 0xF8F8F2 -- Default text color
-    
-    gpu.setBackground(selected and selColor or color)
-    gpu.setForeground(textColor)
-    
-    gpu.fill(x, y, w, 1, " ") -- Fill the line with the background color
-    
-    -- Truncate text if it's too long for the width (add padding of 1 char on left)
-    local maxTextWidth = w - 1 
-    local displayText = text
-    if unicode.len(text) > maxTextWidth then
-        displayText = unicode.sub(text, 1, math.max(0, maxTextWidth - 1)) .. "…"
-    end
-    gpu.set(x+1, y, displayText) -- Draw text with 1 char padding from left
-    
-    gpu.setBackground(currentBg)
-    gpu.setForeground(currentFg)
+    color = color or 0x23262E     -- Базовый цвет фона по умолчанию
+    selColor = selColor or 0x00BFFF -- Цвет фона при выделении по умолчанию
+    textColor = textColor or 0xF8F8F2 -- Цвет текста по умолчанию
+
+    gpu.setBackground(selected and selColor or color) -- Выбираем цвет фона
+    gpu.setForeground(textColor)                     -- Устанавливаем цвет текста
+    gpu.fill(x, y, w, 1, " ")                        -- Заливаем строку фоновым цветом
+    gpu.set(x+1, y, text)                            -- Отрисовываем текст
+    gpu.setBackground(0x1B1D23)                      -- Возвращаем фоновый цвет по умолчанию
 end
 
 return M
