@@ -40,14 +40,10 @@ if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {})
 end
 
--------------------- Реальное UTC+3 (по Киеву) --------------------
--- Удалено, так как вы просили убрать время из логов
--- local function getKyivTime() ... end
-
 -------------------- Настройки --------------------
 local COLORS = {
     button = 0x00BFFF,
-    buttonActive = 0x1E90FF,
+    buttonActive = 0x1E90FF, -- Для сохранения оригинального поведения кнопки (если не должна "мигать"), можно изменить на 0x00BFFF
     border = 0x44475a,
     text = 0xF8F8F2,
     shadow = 0x282A36,
@@ -85,7 +81,7 @@ local tooltip = ""
 local tooltipTimeout = 0
 local cursorBlinkActive = false -- Новая переменная для контроля мигания курсора
 
--------------------- Логгирование (без времени) --------------------
+-------------------- Логгирование (без времени, как вы просили) --------------------
 local function addLog(text, lvl) -- Изменил сигнатуру: logs передавать не нужно
     lvl = lvl or "INFO"
     local t = string.format("[%s] %s", lvl, text) -- Убрано время
@@ -129,7 +125,7 @@ local function shadowRect(x, y, w, h)
     g.fill(x+1, y+h, w, 1, " ")
     g.fill(x+w, y, 1, h, " ")
     g.setBackground(COLORS.bg)
-end
+}
 
 local function drawHeader()
     uoc.drawText(3,3,"Ultimate AutoCraft",COLORS.ok,true)
@@ -144,17 +140,19 @@ end
 
 local function drawLogs()
     -- Сдвигаем логи ниже таблицы и поля поиска
-    uoc.drawLogs(3, HEIGHT-5, logs, 4, COLORS.log) -- 4 строки логов, начинается с HEIGHT-5
-end
+    -- Количество логов теперь определяется высотой области, а не фиксированным числом 4
+    local logAreaHeight = 4 -- Зарезервировано 4 строки для логов
+    uoc.drawLogs(3, HEIGHT - logAreaHeight + 1, logs, logAreaHeight, COLORS.log)
+}
 
 local function drawItems()
     local x, y = 2, 8
     local totalWidth = WIDTH-4
-    -- Скорректированы для лучшего форматирования чисел и названий
+    -- Используем оригинальные пропорции, как в вашем коде
     local col_name = math.floor(totalWidth * 0.45)
-    local col_now = math.floor(totalWidth * 0.16) -- Увеличено
-    local col_hold = math.floor(totalWidth * 0.16) -- Увеличено
-    local col_once = totalWidth - col_name - col_now - col_hold -- Оставшееся пространство
+    local col_now = math.floor(totalWidth * 0.17)
+    local col_hold = math.floor(totalWidth * 0.17)
+    local col_once = totalWidth - col_name - col_now - col_hold
 
     -- Заголовок таблицы
     g.setForeground(COLORS.select_active)
@@ -165,15 +163,15 @@ local function drawItems()
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+1, y+1, "│")
     g.setForeground(COLORS.ok)
-    g.set(x+col_name+2, y+1, string.format("%"..col_now.."s","В наличии")) -- Выравнивание по правому краю
+    g.set(x+col_name+2, y+1, string.format("%-"..(col_now).."s"," В наличии")) -- Выравнивание по левому краю, как в оригинале
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_now+2, y+1, "│")
     g.setForeground(COLORS.ok)
-    g.set(x+col_name+col_now+3, y+1, string.format("%"..col_hold.."s","Держать")) -- Выравнивание по правому краю
+    g.set(x+col_name+col_now+3, y+1, string.format("%-"..(col_hold).."s"," Держать")) -- Выравнивание по левому краю, как в оригинале
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_now+col_hold+3, y+1, "│")
     g.setForeground(COLORS.ok)
-    g.set(x+col_name+col_now+col_hold+4, y+1, string.format("%"..col_once.."s","За раз")) -- Выравнивание по правому краю
+    g.set(x+col_name+col_now+col_hold+4, y+1, string.format("%-"..(col_once).."s"," За раз")) -- Выравнивание по левому краю, как в оригинале
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_now+col_hold+col_once+4, y+1, "│")
     g.set(x, y+2, "├"..string.rep("─",col_name).."┼"..string.rep("─",col_now).."┼"..string.rep("─",col_hold).."┼"..string.rep("─",col_once).."┤")
@@ -184,7 +182,7 @@ local function drawItems()
             table.insert(showItems, item)
         end
     end
-    local perPage = HEIGHT-20 -- Максимальное количество строк для предметов (высота таблицы - высота заголовка - высота подвала - высота логов)
+    local perPage = HEIGHT-24 -- Высота таблицы как в вашем оригинале
     for i = itemScroll, math.min(#showItems, itemScroll+perPage-1) do
         local it = showItems[i]
         local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem]) -- Убедиться, что это тот же объект
@@ -200,23 +198,20 @@ local function drawItems()
         
         g.set(x+col_name+1, row, "│")
         
-        -- В наличии (правое выравнивание, обрезка при необходимости)
+        -- В наличии (выравнивание и обрезка, как в оригинале)
         local currentStr = tostring(tonumber(it.current) or 0)
-        currentStr = unicode.sub(currentStr, math.max(1, unicode.len(currentStr) - col_now + 1)) -- Обрезка справа
         g.set(x+col_name+2, row, string.format("%"..col_now.."s",currentStr))
         
         g.set(x+col_name+col_now+2, row, "│")
         
-        -- Держать (правое выравнивание, обрезка при необходимости)
+        -- Держать (выравнивание и обрезка, как в оригинале)
         local holdStr = tostring(tonumber(it.count) or 0)
-        holdStr = unicode.sub(holdStr, math.max(1, unicode.len(holdStr) - col_hold + 1)) -- Обрезка справа
         g.set(x+col_name+col_now+3, row, string.format("%"..col_hold.."s",holdStr))
         
         g.set(x+col_name+col_now+col_hold+3, row, "│")
         
-        -- За раз (правое выравнивание, обрезка при необходимости)
+        -- За раз (выравнивание и обрезка, как в оригинале)
         local onceStr = tostring(tonumber(it.craftSize) or 0)
-        onceStr = unicode.sub(onceStr, math.max(1, unicode.len(onceStr) - col_once + 1)) -- Обрезка справа
         g.set(x+col_name+col_now+col_hold+4, row, string.format("%"..col_once.."s",onceStr))
         
         g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
@@ -254,7 +249,7 @@ local function drawItems()
 end
 
 local function drawSearchBar()
-    local x, y, w, h = 3, HEIGHT-9, WIDTH-6, 3 -- Подвинул поисковую строку ниже
+    local x, y, w, h = 3, HEIGHT-13, WIDTH-6, 3 -- Вернул оригинальную позицию поиска
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
     g.fill(x+1, y+1, w-2, h-2, " ")
@@ -303,7 +298,7 @@ local function drawButtons()
             tooltipTimeout = os.time()
         end
     end
-end
+}
 
 local function drawTooltip()
     if tooltip ~= "" and os.time() - tooltipTimeout < 3 then
@@ -327,7 +322,7 @@ local function draw()
     drawSearchBar()
     drawButtons()
     drawTooltip()
-end
+}
 
 -------------------- IO и действия --------------------
 local function reload()
@@ -358,18 +353,18 @@ local function reload()
         end
         item.current = qty
     end
-end
+}
 
 local function save()
     local ok, err = pcall(uoc.savef, DATA_FILE, dataItems)
     if not ok then addLog("Ошибка сохранения: "..tostring(err), "ERROR") end
-end
+}
 
 local function resetSelection()
     search = ""
     itemScroll = 1
     selectedItem = nil
-end
+}
 
 local function addItem()
     changeitem = true
@@ -400,7 +395,7 @@ local function addItem()
     cursorBlinkActive = false -- Выключаем мигание курсора
     resetSelection()
     draw()
-end
+}
 
 local function editItem()
     if not selectedItem then return addLog("Не выбран предмет!","ERROR") end
@@ -440,7 +435,7 @@ local function removeItem()
     selectedItem = nil
     save()
     draw()
-end
+}
 
 local function doCraft()
     isCrafting = true
@@ -448,14 +443,14 @@ local function doCraft()
     save()
     addLog("Запущен автокрафт","INFO")
     draw()
-end
+}
 
 local function stopCraft()
     isCrafting = false
     craftStatus = "Остановлено"
     addLog("Остановлен автокрафт","WARN")
     draw()
-end
+}
 
 -------------------- Основной цикл автокрафта --------------------
 local function autoCraftLoop()
@@ -559,7 +554,7 @@ local function autoCraftLoop()
         draw()
         os.sleep(0.2) -- Короткая задержка, чтобы не нагружать CPU
     end
-end
+}
 
 -------------------- Обработчики событий --------------------
 event.listen("touch", function(_,_,x,y,_,_)
@@ -585,7 +580,7 @@ event.listen("touch", function(_,_,x,y,_,_)
     end
 
     -- Проверка на клик по крестику или в поле поиска
-    local search_x, search_y, search_w, search_h = 3, HEIGHT-9, WIDTH-6, 3 -- Подвинул поисковую строку
+    local search_x, search_y, search_w, search_h = 3, HEIGHT-13, WIDTH-6, 3 -- Оригинальная позиция поиска
     if y >= search_y and y <= search_y + search_h - 1 then
         -- Клик по крестику (кнопка очистки)
         if x >= search_x + search_w - 3 and x <= search_x + search_w - 1 and search ~= "" then
@@ -620,7 +615,7 @@ event.listen("touch", function(_,_,x,y,_,_)
             table.insert(showItems, item)
         end
     end
-    local perPage = HEIGHT-20 -- Используем скорректированный perPage
+    local perPage = HEIGHT-24 -- Используем оригинальный perPage
     local itemsStartY = 11 -- Начальная Y-координата для первой строки предметов
     local itemsEndY = itemsStartY + perPage - 1
 
@@ -681,7 +676,7 @@ event.listen("key_down", function(_,_,key,_,_)
             table.insert(showItems, item)
         end
     end
-    local perPage = HEIGHT-20 -- Используем скорректированный perPage
+    local perPage = HEIGHT-24 -- Используем оригинальный perPage
 
     if searchActive then
         if key == 14 then -- backspace
