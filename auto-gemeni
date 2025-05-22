@@ -11,7 +11,7 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/ultimateOC.lua"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
 
 -- Глобальные переменные
 local M -- Таблица для функций из ultimateOC.lua (будет инициализирована позже)
@@ -167,7 +167,7 @@ local function sortItems()
         else
             return valA > valB
         end
-    end)
+    })
 end
 
 -- Перезагрузка данных и интерфейса
@@ -720,6 +720,7 @@ local function on_mouse_move(x, y)
     -- Проверяем наведение на кнопки сортировки
     local col1Width = math.floor(WIDTH * 0.4)
     local col2Width = math.floor(WIDTH * 0.3)
+    local startX = 1 -- Добавлено для согласованности
     local sortButtonsY = 5
     if M.isInside(x, y, startX + col1Width + 1, sortButtonsY, col2Width, 2) then
         newHover = "sortAvailable"
