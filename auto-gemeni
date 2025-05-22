@@ -7,6 +7,237 @@ local term = require("term")
 local computer = require("computer")
 local g = component.gpu
 local me = component.me_interface
+local serialization = require("serialization")
+
+-- Paths and library
+local DATA_FILE = "/home/BD.txt"
+local LIB_PATH = "/lib/ultimateOC.lua"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/ultimateOC.lua"
+
+-- Check amournt components
+local function checkComponents()
+    if not component.isAvailable("gpu") then
+        io.stderr:write("Ошибка: GPU недоступен\n")
+        os.exit(1)
+    end
+    if not component.isAvailable("screen") then
+        io.stderr:write("Ошибка: Экран недоступен\n")
+        os.exit(1)
+    end
+    if not component.isAvailable("me_interface") then
+        io.stderr:write("Ошибка: ME-интерфейс недоступен\n")
+        os.exit(1)
+    end
+end
+
+-- Bind GPU to screen
+local function bindGpu()
+    local screen = component.list("screen")()
+    if not screen then
+        io.stderr:write("Ошибка: Не найден экран для привязки GPU\n")
+        os.exit(1)
+    end
+    local success, err = pcall(g.bind, screen)
+    if not success then
+        io.stderr:write("Ошибка: Не удалось привязать GPU к экрану: " .. tostring(err) .. "\n")
+        os.exit(1)
+    end
+    io.stdout:write("GPU привязан к экрану: " .. screen .. "\n")
+    return true
+end
+
+-- Load library
+if not fs.exists(LIB_PATH) then
+    io.stdout:write("ultimateOC.lua не найден. Скачивание...\n")
+    local success, err = shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
+    if not success then
+        io.stderr:write("Не удалось скачать ultimateOC.lua: " .. tostring(err) .. "\n")
+        os.exit(1)
+    end
+end
+local ok, uoc = pcall(require, "ultimateOC")
+if not ok then
+    io.stderr:write("Не удалось загрузить ultimateOC.lua: " .. tostring(uoc) .. "\n")
+    uoc = {
+        drawText = function(x, y, text, color, bold) 
+            g.setForeground(color or 0xFFFFFF) 
+            g.set(x, y, text) 
+        end,
+        roundRect = function(x, y, w, h, borderColor, bgColor) 
+            g.setForeground(borderColor or 0xFFFFFF) 
+            g.setBackground(bgColor or 0x000000) 
+            g.fill(x, y, w, h, " ") 
+        end,
+        animatedButton = function(x, y, w, h, text, hover, bgColor, activeColor, textColor) 
+            g.setBackground(hover and activeColor or bgColor) 
+            g.fill(x, y, w, h, " ") 
+            g.setForeground(textColor) 
+            local textX = x + math.floor((w - unicode.len(text)) / 2)
+            local textY = y + math.floor(h / 2)
+            g.set(textX, textY, text) 
+        end,
+        drawLogs = function(x, y, logs, lines, color, offset) 
+            g.setForeground(color) 
+            for i = 1, lines do
+                local logIndex = #logs - lines + i - offset
+                if logIndex > 0 then
+                    g.set(x, y + i - 1, logs[logIndex] or "")
+                end
+            end
+        end,
+        savef = function(path, data) 
+            local file = io.open(path, "w") 
+            if file then 
+                file:write(serialization.serialize(data)) 
+                file:close() 
+            end 
+        end,
+        loadf = function(path) 
+            local file = io.open(path, "r") 
+            if not file then return nil end 
+            local content = file:read("*a") 
+            file:close() 
+            return serialization.unserialize(content) 
+        end,
+        progressBar = function(x, y, w, progress) 
+            g.setBackground(0x44475a) 
+            g.fill(x, y, w, 1, " ") 
+            g.setBackground(0x50FA7B) 
+            g.fill(x, y, math.floor(w * progress), 1, " ") 
+        end
+    }
+end
+
+-- Initialize data file
+if not fs.exists(DATA_FILE) then
+    uoc.savef(DATA_FILE, {items = {}, settings = {sortCriteria = "name", sortAscending = true}})
+    io.stdout:write("Создан новый файл BD.txt\n")
+end
+
+-- Colors and settings
+local COLORS = {
+    button = 0x00BFFF,
+    buttonActive = 0x1E90FF,
+    border = 0x44475a,
+    text = 0xF8F8F2,
+    shadow = 0x282A36,
+    bg = 0x23242b,
+    error = 0xFF5555,
+    ok = 0x50FA7B,
+    log = 0x8BE9FD,
+    progress_bg = 0x44475a,
+    progress_fg = 0x50FA7B,
+    select = 0x31313A,
+    select_active = 0x44B3FF,
+    search_bg = 0x282B36,
+    search_border = 0x00BFFF,
+    search_cross = 0xFF5555,
+    search_hint = 0x888888,
+    bar_shadow = 0x181920,
+    warning = 0xFFB86C,
+    input_bg = 0x282B36,
+    input_border = 0x00BFFF,
+    input_text = 0xF8F8F2,
+}
+ս
+
+local WIDTH, HEIGHT = g.maxResolution()
+local craftStatus = "Ожидание..."
+local nextCraftUpdate = 0
+local isCrafting = false
+local logs = {}
+local dataItems = {}
+local settings = {sortCriteria = "name", sortAscending = true}
+local search = ""
+local selectedItem = nil
+local currentPage = 1
+local changeitem = false
+local searchActive = false
+local logOffset = 0
+local lastRequestedItem = nil
+local lastRequestTime = 0
+local buttonHover = nil
+local inputMode = nil
+local inputFields = {}
+local currentField = 1
+local inputActive = false
+local inputBuffer = ""
+
+-- Logging
+local function addLog(logs, text, lvl)
+    lvl = lvl or "INFO"
+    local t = string.format("%-7s %s", "[" .. lvl .. "]", text)
+    table.insert(logs, t)
+    while #logs > 50 do table.remove(logs, 1) end
+end
+
+-- Helper functions
+local function getFilteredAndSortedItems()
+    local filtered = {}
+    for i, item in ipairs(dataItems) do
+        if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+            if not item.category then item.category = "Без категории" end
+            table.insert(filtered, item)
+        end
+    end
+    table.sort(filtered, function(a, b)
+        local valA, valB
+        if settings.sortCriteria == "name" then
+            valA = unicode.lower(a.name or "")
+            valB = unicode.lower(b.name or "")
+        elseif settings.sortCriteria == "current" then
+            valA = tonumber(a.current) or 0
+            valB = tonumber(b.current) or 0
+        elseif settings.sortCriteria == "count" then
+            valA = tonumber(a.count) or 0
+            valB = tonumber(b.count) or 0
+        elseif settings.sortCriteria == "craftSize" then
+            valA = tonumber(a.craftSize) or 0
+            valB = tonumber(b.craftSize) or 0
+        elseif settings.sortCriteria == "category" then
+            valA = unicode.lower(a.category or "Без категории")
+            valB = unicode.lower(b.category or "Без категории")
+        end
+        return settings.sortAscending and valA < valB or valA > valB
+    end)
+    return filtered
+end
+
+local function getItemsPerPage()
+    return HEIGHT - 20
+end
+
+local function getMaxPages()
+    local filteredItems = getFilteredAndSortedItems()
+    local perPage = getItemsPerPage
+
+System: The error at line 943 in the provided code likely originates from the `key_down` event handler where the `inputBuffer` is incorrectly indexed. The line causing the issue is:
+
+```lua
+inputBuffer = inputFields[{"name", "category", "count", "craftSize"}[currentField]] or ""
+```
+
+This syntax, using a table as an index, is invalid in Lua 5.2 (used in OpenOS 1.6.1). Instead, we need to access the table element properly. Additionally, I'll implement the restriction to prevent multiple simultaneous crafts of the same item and ensure compatibility with Lua 5.2 and OpenOS 1.6.1. Below is the corrected and updated code, incorporating all requested changes:
+
+1. **Fix the syntax error** by correcting the table indexing in the `key_down` event handler.
+2. **Prevent multiple simultaneous crafts** by checking active crafting jobs before initiating a new craft for the same item.
+3. **Ensure Lua 5.2 and OpenOS 1.6.1 compatibility** by using the `serialization` library explicitly (avoiding `textutils`).
+4. **Retain previous fixes** (flickering, input system requiring Enter, 256K storage restriction).
+5. **Use the same artifact_id** since this is an update to the previous artifact.
+
+### Updated Code
+
+<xaiArtifact artifact_id="8d0abd1a-baa1-4bee-97df-32050e2ce714" artifact_version_id="8e112f67-c53e-4c9d-9677-de8cbb2abb69" title="autoCraftUltimate.lua" contentType="text/lua">
+local component = require("component")
+local fs = require("filesystem")
+local shell = require("shell")
+local event = require("event")
+local unicode = require("unicode")
+local term = require("term")
+local computer = require("computer")
+local g = component.gpu
+local me = component.me_interface
+local serialization = require("serialization")
 
 -- Paths and library
 local DATA_FILE = "/home/BD.txt"
@@ -87,7 +318,7 @@ if not ok then
         savef = function(path, data) 
             local file = io.open(path, "w") 
             if file then 
-                file:write(textutils.serialize(data)) 
+                file:write(serialization.serialize(data)) 
                 file:close() 
             end 
         end,
@@ -96,7 +327,7 @@ if not ok then
             if not file then return nil end 
             local content = file:read("*a") 
             file:close() 
-            return load("return " .. content)() 
+            return serialization.unserialize(content) 
         end,
         progressBar = function(x, y, w, progress) 
             g.setBackground(0x44475a) 
@@ -158,7 +389,7 @@ local inputMode = nil
 local inputFields = {}
 local currentField = 1
 local inputActive = false
-local inputBuffer = "" -- Buffer for input before confirmation
+local inputBuffer = ""
 
 -- Logging
 local function addLog(logs, text, lvl)
@@ -429,7 +660,7 @@ local function drawInputScreen()
         g.setBackground(COLORS.input_bg)
         g.fill(field.x + 1, field.y + 1, field.w - 2, 1, " ")
         g.setForeground(isActive and COLORS.ok or COLORS.input_text)
-        local display = field.value
+        local display = isActive and inputBuffer or field.value
         if display == "" and not isActive then
             display = "Введите значение..."
         end
@@ -677,6 +908,18 @@ local function tryCraftItem(itemToCraft)
         addLog(logs, "INFO: Предмет '" .. (itemToCraft.name or "<??>") .. "' недавно запрошен. Ожидание.", "INFO")
         craftStatus = "Ожидание: " .. (itemToCraft.name or "<??>")
         return false
+    end
+    -- Check if the item is already being crafted
+    local craftingJobs_ok, craftingJobs = pcall(me.getCraftingJobs)
+    if craftingJobs_ok and craftingJobs and craftingJobs.n then
+        for _, job in ipairs(craftingJobs) do
+            if job.output and job.output.id == itemToCraft.id and
+               (itemToCraft.dmg == nil or job.output.damage == itemToCraft.dmg) then
+                addLog(logs, "INFO: Предмет '" .. (itemToCraft.name or "<??>") .. "' уже в процессе крафта.", "INFO")
+                craftStatus = "Ожидание: " .. (itemToCraft.name or "<??>")
+                return false
+            end
+        end
     end
     local cpus_ok, cpus = pcall(me.getCpus)
     if not cpus_ok then
@@ -940,7 +1183,8 @@ event.listen("key_down", function(_, _, key, _, _)
         if key == 15 then -- Tab
             currentField = currentField + 1
             if currentField > 4 then currentField = 1 end
-            inputBuffer = inputFields[{"name", "category", "count", "craftSize"}[currentField]] or ""
+            local fieldNames = {"name", "category", "count", "craftSize"}
+            inputBuffer = inputFields[fieldNames[currentField]] or ""
             inputActive = false
             draw()
         elseif key == 28 then -- Enter
