@@ -1,6 +1,3 @@
---wget -f https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua /lib/ultimateOC.lua
---wget -f https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/autoCraftUltimate.lua /home/autoCraftUltimate.lua
--- ultimateOC.lua - Улучшенная библиотека для визуала OpenComputers
 local fs = require("filesystem")
 local unicode = require("unicode")
 local gpu = require("component").gpu
@@ -28,80 +25,22 @@ function M.loadf(path)
     return tbl or {}
 end
 
--- Гибкий фильтр предметов по подстроке (поиск не зависит от регистра)
-function M.filterItems(tbl, query)
-    if not query or query == "" then return tbl end
-    local res = {}
-    query = unicode.lower(query)
-    for i, item in ipairs(tbl) do
-        if item.name and unicode.lower(item.name):find(query, 1, true) then
-            table.insert(res, item)
-        end
-    end
-    return res
-end
-
--- Закруглённый прямоугольник c опциональной цветной рамкой
-function M.roundRect(x, y, w, h, borderColor, fillColor)
-    borderColor = borderColor or 0x44475a
-    fillColor = fillColor or 0x1B1D23
-    -- Заливка
-    if fillColor then
-        gpu.setBackground(fillColor)
-        gpu.fill(x, y, w, h, " ")
-    end
-    -- Рамка
-    gpu.setForeground(borderColor)
-    gpu.set(x+1, y, string.rep("─", w-2))
-    gpu.set(x+1, y+h-1, string.rep("─", w-2))
-    for i = y+1, y+h-2 do
-        gpu.set(x, i, "│")
-        gpu.set(x+w-1, i, "│")
-    end
-    gpu.set(x, y, "╭")
-    gpu.set(x+w-1, y, "╮")
-    gpu.set(x, y+h-1, "╰")
-    gpu.set(x+w-1, y+h-1, "╯")
-end
-
--- Прогресс-бар (цветной)
-function M.progressBar(x, y, w, percent, fg, bg)
-    fg = fg or 0x50FA7B
-    bg = bg or 0x44475a
-    gpu.setBackground(bg)
-    gpu.fill(x, y, w, 1, " ")
-    gpu.setBackground(fg)
-    gpu.fill(x, y, math.max(0, math.floor(w * percent)), 1, " ")
-    gpu.setBackground(0x1B1D23)
-end
-
--- Анимированная кнопка (с закруглением, цветами и "нажатием")
-function M.animatedButton(x, y, w, h, text, active, baseColor, hoverColor, textColor)
-    baseColor = baseColor or 0x00BFFF
-    hoverColor = hoverColor or 0x1E90FF
-    textColor = textColor or 0xFFFFFF
-    local color = active and hoverColor or baseColor
-    M.roundRect(x, y, w, h, color, color)
-    gpu.setForeground(textColor)
-    gpu.set(x + math.floor((w-unicode.len(text))/2), y + math.floor(h/2), text)
-    gpu.setBackground(0x1B1D23)
-end
-
--- Тень под текстом
+-- Рисует текст с опциональной тенью
 function M.drawText(x, y, text, color, shadow)
-    color = color or 0xF8F8F2
+    color = color or 0xFFFFFF -- По умолчанию белый
+    gpu.setForeground(color)
     if shadow then
-        gpu.setForeground(0x282A36)
+        gpu.setBackground(0x282A36) -- Цвет тени
         gpu.set(x+1, y+1, text)
     end
-    gpu.setForeground(color)
+    gpu.setBackground(0x000000) -- Прозрачный фон для текста
     gpu.set(x, y, text)
 end
 
 -- Быстрый логгер: добавляет строку в массив (до 50 записей)
+-- Информация о времени полностью удалена по запросу пользователя
 function M.addLog(logs, text, lvl)
     lvl = lvl or "INFO"
-    -- Удалено добавление времени
     local t = string.format("[%s] %s", lvl, text)
     table.insert(logs, t)
     while #logs > 50 do table.remove(logs, 1) end
@@ -118,27 +57,42 @@ function M.drawLogs(x, y, logs, count, color)
     end
 end
 
--- Быстрый автоматический скролл по массиву
-function M.scrollArray(tbl, scroll, perPage)
-    local res = {}
-    perPage = perPage or 20
-    scroll = math.max(1, math.min(scroll, math.max(1, #tbl-perPage+1)))
-    for i=scroll, math.min(#tbl, scroll+perPage-1) do
-        res[#res+1] = tbl[i]
-    end
-    return res
+-- Рисует скругленный прямоугольник
+function M.roundRect(x, y, w, h, borderColor, bgColor)
+    gpu.setBackground(borderColor)
+    gpu.fill(x, y, w, h, " ")
+    gpu.setBackground(bgColor)
+    gpu.fill(x+1, y+1, w-2, h-2, " ")
 end
 
--- Цветной выделенный элемент (фон+текст)
-function M.selectLine(x, y, w, text, selected, color, selColor, textColor)
-    color = color or 0x23262E
-    selColor = selColor or 0x00BFFF
-    textColor = textColor or 0xF8F8F2
-    gpu.setBackground(selected and selColor or color)
+-- Рисует простую кнопку
+function M.drawButton(x, y, w, h, text, buttonColor, textColor)
+    buttonColor = buttonColor or 0x00BFFF
+    textColor = textColor or 0xFFFFFF
+    gpu.setBackground(buttonColor)
+    gpu.fill(x, y, w, h, " ")
     gpu.setForeground(textColor)
-    gpu.fill(x, y, w, 1, " ")
-    gpu.set(x+1, y, text)
-    gpu.setBackground(0x1B1D23)
+    local textWidth = unicode.len(text)
+    local textX = x + math.floor((w - textWidth) / 2)
+    local textY = y + math.floor((h - 1) / 2)
+    gpu.set(textX, textY, text)
+end
+
+-- Анимированная кнопка (упрощена до вызова drawButton для стабильности)
+function M.animatedButton(x, y, w, h, text, hover, buttonColor, buttonActiveColor, textColor)
+    -- Для стабильности и избежания мерцания, просто рисуем статичную кнопку.
+    -- Состояние 'hover' игнорируется.
+    M.drawButton(x, y, w, h, text, buttonColor, textColor)
+end
+
+-- Рисует полосу прогресса
+function M.progressBar(x, y, w, progress)
+    progress = math.max(0, math.min(1, progress)) -- Ограничиваем прогресс от 0 до 1
+    local filledWidth = math.floor(w * progress)
+    gpu.setBackground(0x50FA7B) -- Цвет прогресса
+    gpu.fill(x, y, filledWidth, 1, " ")
+    gpu.setBackground(0x44475a) -- Цвет фона для оставшейся части
+    gpu.fill(x + filledWidth, y, w - filledWidth, 1, " ")
 end
 
 return M
