@@ -12,7 +12,7 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Загружаем библиотеку ultimateOC
 -- Проверяем, существует ли файл библиотеки
@@ -197,7 +197,7 @@ function getCurrentItemCount(itemName)
         end
     end
     return 0
-}
+end
 
 -- Функция для получения количества доступных для крафта
 function getCraftableCount(itemName)
@@ -493,14 +493,17 @@ local function promptForInput(promptText, defaultValue)
         elseif key == 14 then -- Backspace
             if unicode.len(input) > 0 then
                 input = unicode.sub(input, 1, unicode.len(input) - 1)
-                uoc.fillRect(cursorX, HEIGHT - 2, unicode.len(input) + 1, 1, COLORS.background) -- Стираем с учетом длины
+                uoc.fillRect(cursorX, HEIGHT - 2, WIDTH - (cursorX - 1) - 1, 1, COLORS.background) -- Стираем всю оставшуюся строку
                 uoc.drawText(cursorX, HEIGHT - 2, input, COLORS.foreground) -- Перерисовываем оставшийся текст
                 g.present()
             end
         elseif unicodeChar and unicodeChar >= 32 and unicodeChar <= 126 then -- Только печатные символы
-            input = input .. unicode.char(unicodeChar)
-            uoc.drawText(cursorX + unicode.len(input) - 1, HEIGHT - 2, unicode.char(unicodeChar), COLORS.foreground)
-            g.present()
+            -- Проверяем, не выходит ли текст за границы поля ввода
+            if (cursorX + unicode.len(input)) < (WIDTH - 2) then
+                input = input .. unicode.char(unicodeChar)
+                uoc.drawText(cursorX + unicode.len(input) - 1, HEIGHT - 2, unicode.char(unicodeChar), COLORS.foreground)
+                g.present()
+            end
         end
         -- Рисуем курсор
         uoc.drawText(cursorX + unicode.len(input), HEIGHT - 2, "_", COLORS.foreground)
@@ -859,7 +862,7 @@ event.listen("key_down", function(_, _, key, _, _, unicodeChar)
                 needsRedraw = true
             end
         elseif key == 200 then -- Up arrow for logs (если не активен поиск и не происходит навигация по таблице)
-            if not searchActive and logOffset < #logs - 5 then
+            if not searchActive and logOffset < #logs - 5 then -- Проверяем, что есть что прокручивать вверх
                 logOffset = logOffset + 1
                 needsRedraw = true
             end
@@ -941,11 +944,20 @@ event.listen("touch", function(_, _, x, y, _, _)
     if changeitem then return end -- Не реагируем на клик, если в режиме ввода
     local needsFullRedraw = false -- Флаг для определения, нужна ли полная перерисовка
 
-    -- Переносим локальные переменные в начало функции touch
+    -- Объявление локальных переменных в самом начале функции, чтобы избежать ошибок goto
     local btnWidth = 12
     local btnHeight = 3
     local btnX = WIDTH - btnWidth - 5
     local btnPadding = 2
+    local arrowBtnW = 4
+    local arrowBtnH = 3
+    local sortBtnW = 12
+    local searchBarX = 2
+    local searchBarWidth = WIDTH - 20
+    local clearBtnX = searchBarX + searchBarWidth - 3
+    local searchBarY = HEIGHT - 4
+
+    -- Инициализация btns здесь, так как она зависит от isCrafting (для текста кнопки "Автокрафт/Остановить")
     local btns = {
         {name = "Крафт всех", action = "craftAll"},
         {name = "Удалить", action = "delete"},
@@ -953,23 +965,21 @@ event.listen("touch", function(_, _, x, y, _, _)
         {name = isCrafting and "Остановить" or "Автокрафт", action = "toggleCraft"},
         {name = "Добавить", action = "add"},
     }
-    local arrowBtnW = 4
-    local arrowBtnH = 3
     local arrowBtnY = 10 + (#btns * (btnHeight + btnPadding))
     local prevArrowBtnX = btnX
     local nextArrowBtnX = btnX + arrowBtnW + 1
     local sortBtnY = arrowBtnY + arrowBtnH + 2
-    local sortBtnW = 12
-    local searchBarX = 2
-    local searchBarWidth = WIDTH - 20
-    local clearBtnX = searchBarX + searchBarWidth - 3
-    local searchBarY = HEIGHT - 4
 
 
     -- Обработка кликов по основным кнопкам
     for i, btn in ipairs(btns) do
         local btnY = 10 + (i - 1) * (btnHeight + btnPadding)
         if x >= btnX and x <= btnX + btnWidth - 1 and y >= btnY and y <= btnY + btnHeight - 1 then
+            if not btn.enabled and (btn.action == "delete" or btn.action == "edit") then
+                -- Не реагируем на клик по неактивной кнопке "Удалить" или "Изменить"
+                goto handled_touch_event
+            end
+
             if btn.action == "delete" then removeItem()
             elseif btn.action == "edit" then editItem()
             elseif btn.action == "toggleCraft" then if isCrafting then stopCraft() else doCraft() end
@@ -1008,18 +1018,20 @@ event.listen("touch", function(_, _, x, y, _, _)
                 currentCriteriaIndex = i
                 break
             end
-            if i == #criteriaList and v ~= settings.sortCriteria then
+            if i == #criteriaList and v ~= settings.sortCriteria then -- Если текущего критерия нет в списке (например, если BD.txt был изменен вручную)
                 currentCriteriaIndex = 0
             end
         end
-        currentCriteriaIndex = currentCriteriaIndex + 1
-        if currentCriteriaIndex > #criteriaList then
-            currentCriteriaIndex = 1
+        currentCriteriaIndex = currentCriteriaIndex % #criteriaList + 1 -- Переключаем на следующий критерий
+        settings.sortCriteria = criteriaList[currentCriteriaIndex]
+        
+        -- Если переключили на тот же критерий, меняем направление сортировки
+        if currentCriteriaIndex == 1 then -- Если вернулись к первому критерию (итерация по кругу), меняем направление
             settings.sortAscending = not settings.sortAscending
-        else
+        else -- Иначе начинаем с восходящей сортировки для нового критерия
             settings.sortAscending = true
         end
-        settings.sortCriteria = criteriaList[currentCriteriaIndex]
+
         currentPage = 1
         selectedItem = nil
         save()
