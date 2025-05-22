@@ -159,6 +159,7 @@ local inputMode = nil -- "add" or "edit"
 local inputFields = {}
 local currentField = 1
 local inputActive = false
+local totalInputFields = 4 -- Define the total number of input fields
 
 -------------------- Логгирование --------------------
 local function addLog(logs, text, lvl)
@@ -419,14 +420,14 @@ local function drawInputScreen()
     uoc.drawText(2, baseY + 1, "Вставьте предмет в 1-й слот ME интерфейса (для добавления).", COLORS.ok)
 
     local fields = {
-        {label = "Название:", value = inputFields.name or "", x = 2, y = baseY + 3, w = 40},
-        {label = "Категория:", value = inputFields.category or "", x = 2, y = baseY + 5, w = 40},
-        {label = "Держать:", value = inputFields.count or "", x = 2, y = baseY + 7, w = 20},
-        {label = "Крафт за раз:", value = inputFields.craftSize or "", x = 2, y = baseY + 9, w = 20},
+        {label = "Название:", value = inputFields.name or "", x = 2, y = baseY + 3, w = 40, key = "name"},
+        {label = "Категория:", value = inputFields.category or "", x = 2, y = baseY + 5, w = 40, key = "category"},
+        {label = "Держать:", value = inputFields.count or "", x = 2, y = baseY + 7, w = 20, key = "count"},
+        {label = "Крафт за раз:", value = inputFields.craftSize or "", x = 2, y = baseY + 9, w = 20, key = "craftSize"},
     }
 
     for i, field in ipairs(fields) do
-        local isActive = (i == currentField and inputActive)
+        local isActive = (i == currentField)
         uoc.roundRect(field.x, field.y, field.w, 3, COLORS.input_border, COLORS.input_bg)
         g.setForeground(COLORS.text)
         g.set(field.x + 1, field.y, field.label)
@@ -448,8 +449,8 @@ local function drawInputScreen()
     end
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
-    -- Removed "Tab: переключить поле, Esc: отменить"
-    uoc.drawText(2, baseY + 12, "Enter: сохранить", COLORS.text)
+    -- Updated instruction for Enter
+    uoc.drawText(2, baseY + 12, "Enter: сохранить/пропустить", COLORS.text)
 end
 
 local function draw()
@@ -529,7 +530,7 @@ local function resetSelection()
     search = ""
     currentPage = 1
     selectedItem = nil
-end
+}
 
 local function addItem()
     changeitem = true
@@ -606,7 +607,7 @@ local function cancelInput()
     currentField = 1
     inputActive = false
     draw()
-end
+}
 
 local function removeItem()
     if not selectedItem then
@@ -691,7 +692,7 @@ local function tryCraftItem(itemToCraft)
             if quantityToRequest == 0 then quantityToRequest = 1 end
             local estimatedActualOutputFromAE2 = math.ceil(quantityToRequest / actualAE2RecipeOutput) * actualAE2RecipeOutput
             if current + estimatedActualOutputFromAE2 >= count then
-                addLog(logs, "INFO: Предмет '" .. (itemToCraft.name or "<??>") .. "' достигнет цели (" .. estimatedActualOutputFromAE2 .. "x).", "INFO")
+                addLog(logs, "INFO: Предмет '" .. (itemToCraft.name or "<??>") .. "' достигнет цели (" .. estimatedActualAE2RecipeOutput .. "x).", "INFO")
                 craftStatus = "Достаточно: " .. (itemToCraft.name or "<??>")
                 return false
             end
@@ -921,28 +922,42 @@ end)
 
 event.listen("key_down", function(_, _, key, _, _)
     if changeitem then
+        local fieldNames = {"name", "category", "count", "craftSize"}
         if key == 15 then -- Tab
             currentField = currentField + 1
-            if currentField > 4 then currentField = 1 end
+            if currentField > totalInputFields then currentField = 1 end
             draw()
         elseif key == 28 then -- Enter
-            saveItem()
+            if currentField < totalInputFields then
+                currentField = currentField + 1
+            else
+                saveItem() -- Save only if on the last field
+            end
+            draw()
         elseif key == 1 then -- Esc (now behaves as cancel input)
             cancelInput()
-        elseif inputActive then
-            local fieldNames = {"name", "category", "count", "craftSize"}
+        else
             local currentFieldName = fieldNames[currentField]
             local currentValue = inputFields[currentFieldName] or ""
             if key == 14 then -- Backspace
                 inputFields[currentFieldName] = unicode.sub(currentValue, 1, -2)
-            elseif key == 211 then -- Delete
+            elseif key == 211 then -- Delete (Clears the entire field)
                 inputFields[currentFieldName] = ""
-            elseif key >= 32 and key < 128 then -- Basic ASCII for now, for broader Unicode support, a different approach might be needed.
-                if (currentFieldName == "count" or currentFieldName == "craftSize") and not (key >= 48 and key <= 57) then
-                    return -- Only digits for count and craftSize
-                end
-                if unicode.len(currentValue) < 30 then
-                    inputFields[currentFieldName] = currentValue .. unicode.char(key)
+            else
+                -- Append character if it's a displayable character
+                local char = unicode.char(key)
+                if unicode.len(char) > 0 and char:match("[^\x00-\x1F\x7F]") then -- Check for non-control characters
+                    if (currentFieldName == "count" or currentFieldName == "craftSize") then
+                        if char:match("%d") then -- Only digits for count and craftSize
+                            if unicode.len(currentValue) < 30 then -- Limit length
+                                inputFields[currentFieldName] = currentValue .. char
+                            end
+                        end
+                    else
+                        if unicode.len(currentValue) < 40 then -- Limit length for text fields
+                            inputFields[currentFieldName] = currentValue .. char
+                        end
+                    end
                 end
             end
             draw()
@@ -959,9 +974,12 @@ event.listen("key_down", function(_, _, key, _, _)
             search = ""
         elseif key == 28 then
             searchActive = false
-        elseif key >= 32 and key < 128 then -- Again, basic ASCII handling for search
-            if unicode.len(search) < WIDTH - 25 then
-                search = search .. unicode.char(key)
+        else
+            local char = unicode.char(key)
+            if unicode.len(char) > 0 and char:match("[^\x00-\x1F\x7F]") then
+                if unicode.len(search) < WIDTH - 25 then
+                    search = search .. char
+                end
             end
         end
         currentPage = 1
