@@ -11,11 +11,16 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
--- Проверяем наличие библиотеки ultimateOC.lua и скачиваем, если ее нет
+-- Проверяем наличие библиотеки ultimateOC.lua и скачиваем, ТОЛЬКО если ее нет
 if not fs.exists(LIB_PATH) then
-    shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
+    io.stdout:write("ultimateOC.lua не найден. Скачивание...\n")
+    local success, err = shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
+    if not success then
+        io.stderr:write("Не удалось скачать ultimateOC.lua: ", tostring(err), "\n")
+        os.exit(1)
+    end
 end
 -- Пытаемся загрузить библиотеку ultimateOC.lua
 local ok, uoc = pcall(require, "ultimateOC")
@@ -155,15 +160,21 @@ local function drawItems()
         local it = showItems[i]
         local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem])
         local row = y+2+(i-itemScroll)+1
+        
+        -- Явно заполняем всю строку нужным цветом фона перед отрисовкой
         g.setBackground(isSel and COLORS.select_active or COLORS.bg)
+        g.fill(x, row, totalWidth + 2, 1, " ") -- Заполняем всю область строки (включая левую/правую границы)
+        
         g.setForeground(COLORS.text)
+        
+        -- Теперь отрисовываем границы и текст
+        g.set(x, row, "│")
         
         -- Обрезаем строку названия, если она слишком длинная
         local nameStr = tostring(it.name or "<??>")
         if unicode.len(nameStr) > col_name then
             nameStr = unicode.sub(nameStr, 1, col_name - 1) .. "…"
         end
-        g.set(x, row, "│")
         g.set(x+1, row, string.format("%-"..col_name.."s",nameStr)) -- Название по левому краю
         g.set(x+col_name+1, row, "│")
 
@@ -193,7 +204,7 @@ local function drawItems()
         end
         g.set(x+col_name+col_now+col_hold+4, row, string.format("%-"..(col_once).."s", craftSize_str)) -- За раз по левому краю
         g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
-        g.setBackground(COLORS.bg)
+        -- g.setBackground(COLORS.bg) -- Эта строка больше не нужна, так как фон устанавливается в начале цикла
     end
 
     -- Низ рамки таблицы
@@ -206,13 +217,18 @@ local function drawItems()
     if #showItems > perPage then
         local barLen = math.max(2, math.floor(perPage * perPage / #showItems))
         local barTop = y+3 + math.floor((perPage-barLen) * (itemScroll-1) / math.max(1,#showItems-perPage))
+        
+        -- Очищаем всю область полосы прокрутки перед отрисовкой
+        g.setBackground(COLORS.bg) -- Используем фоновый цвет основной области
+        g.fill(WIDTH-2, y+3, 1, perPage, " ") -- Очищаем столбец полосы прокрутки
+        
         g.setForeground(COLORS.select_active)
-        g.set(WIDTH-2, y+3, "│")
-        for i=1,perPage do
-            g.set(WIDTH-2, y+2+i, "│")
+        for i=0,perPage-1 do -- Отрисовываем трек полосы прокрутки
+            g.set(WIDTH-2, y+3+i, "│")
         end
+        
         g.setForeground(COLORS.ok)
-        for i=0,barLen-1 do
+        for i=0,barLen-1 do -- Отрисовываем ползунок полосы прокрутки
             g.set(WIDTH-2, barTop+i, "█")
         end
         g.setForeground(COLORS.text)
