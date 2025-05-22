@@ -1,4 +1,3 @@
--- OpenOS 1.6.1 Lua 5.2
 local component = require("component")
 local fs = require("filesystem")
 local shell = require("shell")
@@ -121,7 +120,7 @@ local dataItems = {}
 local search = ""
 local selectedItem = nil
 local itemScroll = 1
-local changeitem = false
+local changeitem = false -- Флаг для блокировки UI во время ввода
 local searchActive = false
 local hoveredButton = nil
 local tooltip = ""
@@ -178,10 +177,10 @@ local function drawItems()
     local col_once = totalWidth - col_name - col_now - col_hold
 
     g.setForeground(COLORS.select_active)
-    g.set(x, y,     "┌"..string.rep("─",col_name).."┬"..string.rep("─",col_now).."┬"..string.rep("─",col_hold).."┬"..string.rep("─",col_once).."┐")
-    g.set(x, y+1,   "│")
+    g.set(x, y,       "┌"..string.rep("─",col_name).."┬"..string.rep("─",col_now).."┬"..string.rep("─",col_hold).."┬"..string.rep("─",col_once).."┐")
+    g.set(x, y+1,     "│")
     g.setForeground(COLORS.ok)
-    g.set(x+1, y+1,  string.format("%-"..col_name.."s"," Название"))
+    g.set(x+1, y+1,   string.format("%-"..col_name.."s"," Название"))
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+1, y+1, "│")
     g.setForeground(COLORS.ok)
@@ -363,6 +362,8 @@ end
 
 local function inputWithPrompt(promptText, x, y, defaultColor, promptColor)
     if terminal.isAvailable and terminal:isAvailable() then
+        g.setBackground(COLORS.bg)
+        g.fill(x, y, WIDTH - x, 1, " ") -- Clear line for prompt
         uoc.drawText(x, y, promptText, promptColor or COLORS.text)
         terminal.setCursorPos(x + unicode.len(promptText) + 1, y)
         terminal.setCursorBlink(true)
@@ -570,7 +571,6 @@ local function autoCraftLoop()
         if eventData[1] then
             local eName = eventData[1]
             if eName == "touch" then
-                -- event.listen("touch", function(_,_,x,y,button_code,_)
                 if not changeitem then
                     local _,_,x,y,button_code = eventData[2],eventData[3],eventData[4],eventData[5],eventData[6]
                     local prevHoveredButton = hoveredButton
@@ -623,7 +623,6 @@ local function autoCraftLoop()
                     end
                 end
             elseif eName == "drag" then
-                -- event.listen("drag", function(_,_,x,y,_,_)
                 if not changeitem then
                     local _,_,x,y = eventData[2],eventData[3],eventData[4],eventData[5]
                     local currentHover = nil
@@ -641,7 +640,6 @@ local function autoCraftLoop()
                     if hoveredButton ~= currentHover then hoveredButton = currentHover; if not hoveredButton then tooltip = "" end end
                 end
             elseif eName == "scroll" then
-                -- event.listen("scroll", function(_, _, x, y, direction, _)
                 if not changeitem then
                     local _, _, x, y, direction = eventData[2],eventData[3],eventData[4],eventData[5],eventData[6]
                     local items_per_page_count_scr = HEIGHT-24; local itemsListY_start_scr = 8 + 3 
@@ -657,78 +655,24 @@ local function autoCraftLoop()
                     end
                 end
             elseif eName == "key_down" then
-                -- event.listen("key_down", function(_, _, keyCode, charStr, _)
-                if not changeitem then
+                if not changeitem and searchActive then
                     local _, _, keyCode, charStr = eventData[2],eventData[3],eventData[4],eventData[5]
-                    local showItemsFiltered_key = {} 
-                    for _,item_entry_key in ipairs(dataItems) do
-                        if search == "" or unicode.lower(item_entry_key.name or ""):find(unicode.lower(search), 1, true) then
-                            table.insert(showItemsFiltered_key, item_entry_key) end
-                    end
-                    local items_per_page_count_key = HEIGHT-24; local search_max_len_key = (WIDTH-6)-7 
-                    if searchActive then
-                        if keyCode == 14 then if unicode.len(search) > 0 then search = unicode.sub(search, 1, unicode.len(search) - 1) end
-                        elseif keyCode == 211 then search = ""
-                        elseif keyCode == 28 or keyCode == 156 then searchActive = false
-                        elseif type(charStr) == "string" and unicode.len(charStr) > 0 then
-                            local firstByte = string.byte(charStr, 1)
-                            if firstByte >= 32 or unicode.len(charStr) > 1 then 
-                                if unicode.len(search) < search_max_len_key then search = search .. charStr end
-                            end
-                        end
-                        itemScroll = 1 
-                    else 
-                        if keyCode == 200 then itemScroll = math.max(1,itemScroll-1)
-                        elseif keyCode == 208 then if #showItemsFiltered_key > items_per_page_count_key then itemScroll = math.min(#showItemsFiltered_key - items_per_page_count_key + 1, itemScroll + 1) end
-                        elseif keyCode == 201 then itemScroll = math.max(1, itemScroll - items_per_page_count_key)
-                        elseif keyCode == 209 then if #showItemsFiltered_key > items_per_page_count_key then itemScroll = math.min(#showItemsFiltered_key - items_per_page_count_key + 1, itemScroll + items_per_page_count_key) end
-                        end
+                    if keyCode == 28 then -- Enter key
+                        searchActive = false
+                    elseif keyCode == 14 then -- Backspace
+                        search = unicode.sub(search, 1, unicode.len(search) - 1)
+                        itemScroll = 1
+                    elseif charStr and unicode.len(charStr) == 1 then
+                        search = search .. charStr
+                        itemScroll = 1
                     end
                 end
             end
+            ::next_event_iteration::
         end
-        ::next_event_iteration::
     end
 end
 
--------------------- Старт --------------------
-if g and g.isAvailable and g:isAvailable() then
-    g.setResolution(WIDTH,HEIGHT) 
-else
-    (io.stderr or io.output()):write("ПРЕДУПРЕЖДЕНИЕ: Невозможно установить разрешение экрана, GPU недоступен.\n")
-end
-
-if terminal.isAvailable and terminal:isAvailable() then
-    terminal.setCursorBlink(false)
-    terminal.setCursorPos(1,1)
-else
-    (io.stderr or io.output()):write("ПРЕДУПРЕЖДЕНИЕ: Невозможно настроить курсор, терминал недоступен.\n")
-end
-
+-- Initial setup
 reload()
-
-local final_ok, final_err = pcall(autoCraftLoop)
-if not final_ok then
-    pcall(function()
-        if g and g.isAvailable and g:isAvailable() then clear() g.setForeground(COLORS.error) end
-        local err_msg = "Фатальная ошибка: " .. tostring(final_err)
-        if g and g.isAvailable and g:isAvailable() then
-            local y_pos = math.floor(HEIGHT / 2)
-            g.set(math.max(1,math.floor((WIDTH - unicode.len(err_msg)) / 2)), y_pos, err_msg)
-        end
-        
-        local temp_logs_fatal = {}
-        addLog(temp_logs_fatal, "Фатальная ошибка: "..tostring(final_err), "FATAL") 
-        if temp_logs_fatal[1] and g and g.isAvailable and g:isAvailable() then
-             g.set(math.max(1,math.floor((WIDTH - unicode.len(temp_logs_fatal[1])) / 2)), math.floor(HEIGHT / 2) + 1, temp_logs_fatal[1])
-        end
-        (io.stderr or io.output()):write("LUA SCRIPT FATAL ERROR: " .. err_msg .. "\n")
-        if final_err and type(final_err) == "table" and final_err.traceback then -- OpenOS style error
-            (io.stderr or io.output()):write("TRACEBACK:\n" .. final_err.traceback .. "\n")
-        elseif type(final_err) == "string" and debug and debug.traceback then -- Generic Lua error
-             (io.stderr or io.output()):write("TRACEBACK:\n" .. debug.traceback(final_err, 2) .. "\n")
-        end
-    end)
-    os.sleep(5)
-    computer.shutdown(true) 
-end
+autoCraftLoop()
