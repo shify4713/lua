@@ -12,7 +12,7 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Проверка доступности компонентов
 local function checkComponents()
@@ -59,54 +59,14 @@ local ok, uoc = pcall(require, "ultimateOC")
 if not ok then
     io.stderr:write("Не удалось загрузить ultimateOC.lua: " .. tostring(uoc) .. "\n")
     uoc = {}
-    -- Fallback functions if library fails to load
-    function uoc.drawText(x, y, text, color, bold) 
-        g.setForeground(color or 0xFFFFFF) 
-        g.set(x, y, text) 
-        if bold then g.set(x, y + 1, string.rep("─", unicode.len(text))) end
-    end
-    function uoc.roundRect(x, y, w, h, borderColor, bgColor) 
-        g.setForeground(borderColor or 0xFFFFFF) 
-        g.setBackground(bgColor or 0x000000) 
-        g.fill(x, y, w, h, " ") 
-    end
-    function uoc.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor) 
-        g.setBackground(hover and activeColor or bgColor) 
-        g.fill(x, y, w, h, " ") 
-        g.setForeground(textColor) 
-        local textX = x + math.floor((w - unicode.len(text)) / 2)
-        local textY = y + math.floor(h / 2)
-        g.set(textX, textY, text) 
-    end
-    function uoc.drawLogs(x, y, logs, lines, color, offset) 
-        g.setForeground(color) 
-        for i = 1, lines do
-            local logIndex = #logs - lines + i - offset
-            if logIndex > 0 then
-                g.set(x, y + i - 1, logs[logIndex] or "")
-            end
-        end
-    end
-    function uoc.savef(path, data) 
-        local file = io.open(path, "w") 
-        if file then 
-            file:write(textutils.serialize(data)) 
-            file:close() 
-        end 
-    end
-    function uoc.loadf(path) 
-        local file = io.open(path, "r") 
-        if not file then return nil end 
-        local content = file:read("*a") 
-        file:close() 
-        return load("return " .. content)() 
-    end
-    function uoc.progressBar(x, y, w, progress) 
-        g.setBackground(0x44475a) 
-        g.fill(x, y, w, 1, " ") 
-        g.setBackground(0x50FA7B) 
-        g.fill(x, y, math.floor(w * progress), 1, " ") 
-    end
+    -- Fallback functions if library fails to load (simplified for brevity, assume basic functionality)
+    function uoc.drawText(x, y, text, color, bold) g.setForeground(color or 0xFFFFFF); g.set(x, y, text); end
+    function uoc.roundRect(x, y, w, h, borderColor, bgColor) g.setForeground(borderColor or 0xFFFFFF); g.setBackground(bgColor or 0x000000); g.fill(x, y, w, h, " "); end
+    function uoc.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor) g.setBackground(hover and activeColor or bgColor); g.fill(x, y, w, h, " "); g.setForeground(textColor); local textX = x + math.floor((w - unicode.len(text)) / 2); local textY = y + math.floor(h / 2); g.set(textX, textY, text); end
+    function uoc.drawLogs(x, y, logs, lines, color, offset) g.setForeground(color); for i = 1, lines do local logIndex = #logs - lines + i - offset; if logIndex > 0 then g.set(x, y + i - 1, logs[logIndex] or ""); end; end; end
+    function uoc.savef(path, data) local file = io.open(path, "w"); if file then file:write(textutils.serialize(data)); file:close(); end; end
+    function uoc.loadf(path) local file = io.open(path, "r"); if not file then return nil end; local content = file:read("*a"); file:close(); return load("return " .. content)(); end
+    function uoc.progressBar(x, y, w, progress) g.setBackground(0x44475a); g.fill(x, y, w, 1, " "); g.setBackground(0x50FA7B); g.fill(x, y, math.floor(w * progress), 1, " "); end
 end
 
 -- Проверяем файл данных
@@ -162,12 +122,19 @@ local currentField = 1
 local inputActive = false
 local lastAutoCraftCheckTime = 0 -- Время последнего запуска autoCraftLoop
 
+-- Флаги для частичной перерисовки
+local needsRedrawAll = true
+local needsRedrawHeader = true
+local needsRedrawTable = true
+local needsRedrawSearchBar = true
+local needsRedrawLogs = true
+local needsRedrawButtons = true
+local needsRedrawInputScreen = false
+
 
 -- Размеры и позиции UI-элементов
 local TABLE_START_X = 2
 local TABLE_START_Y = 8
-local TABLE_WIDTH_RATIO = 0.70 -- 70% от общей ширины
-local TABLE_HEADER_HEIGHT = 2 -- Высота заголовка таблицы (две строки: название + подчеркивание)
 local LOG_LINES = 5
 local SEARCH_BAR_HEIGHT = 3
 local BUTTON_WIDTH = 12
@@ -178,6 +145,7 @@ local SORT_BUTTON_HEIGHT = 3
 
 local BTN_AREA_WIDTH_TOTAL = BUTTON_WIDTH + 4 -- Ширина блока кнопок с рамкой
 local BTN_AREA_START_X = WIDTH - BTN_AREA_WIDTH_TOTAL - 1 -- Отступ от правого края
+local TABLE_MAX_WIDTH = BTN_AREA_START_X - TABLE_START_X - 1 -- Максимальная ширина таблицы (до кнопок)
 
 -------------------- Логгирование --------------------
 local function addLog(text, lvl)
@@ -185,6 +153,7 @@ local function addLog(text, lvl)
     local t = string.format("%-7s %s", "[" .. lvl .. "]", text)
     table.insert(logs, t)
     while #logs > 50 do table.remove(logs, 1) end
+    needsRedrawLogs = true
 end
 
 -------------------- Вспомогательные функции --------------------
@@ -224,7 +193,7 @@ local function getFilteredAndSortedItems()
 end
 
 local function getItemsPerPage()
-    return HEIGHT - TABLE_START_Y - TABLE_HEADER_HEIGHT - SEARCH_BAR_HEIGHT - LOG_LINES - 5 -- 5 для отступов и нижней рамки
+    return HEIGHT - TABLE_START_Y - 2 - SEARCH_BAR_HEIGHT - LOG_LINES - 4 -- 2 для заголовка таблицы, 4 для отступов и нижней рамки
 end
 
 local function getMaxPages()
@@ -239,13 +208,15 @@ local function clampPage()
 end
 
 -------------------- Визуал --------------------
-local function clearScreen()
+local function clearArea(x, y, w, h)
     g.setBackground(COLORS.bg)
-    g.fill(1, 1, WIDTH, HEIGHT, " ")
+    g.fill(x, y, w, h, " ")
     g.setForeground(COLORS.text)
 end
 
 local function drawHeader()
+    if not needsRedrawHeader and not needsRedrawAll then return end
+    clearArea(1, 1, WIDTH, TABLE_START_Y - 1)
     uoc.drawText(2, 2, "Ultimate AutoCraft", COLORS.ok, true)
     g.setBackground(COLORS.progress_fg)
     g.fill(1, 3, WIDTH, 1, " ")
@@ -253,16 +224,18 @@ local function drawHeader()
     uoc.drawText(2, 4, "Статус: " .. craftStatus,
         (craftStatus:find("Ошибка") and COLORS.error) or COLORS.ok)
     if uoc.progressBar then
-        uoc.progressBar(2, 5, WIDTH - BTN_AREA_WIDTH_TOTAL - 5, isCrafting and 0.9 or 0) -- Ширина до кнопок
+        uoc.progressBar(2, 5, TABLE_MAX_WIDTH - 5, isCrafting and 0.9 or 0)
     end
     local maxPages = getMaxPages()
     uoc.drawText(2, 6, "Страница: " .. currentPage .. "/" .. maxPages, COLORS.text)
+    needsRedrawHeader = false
 end
 
 local function drawItemsTable()
+    if not needsRedrawTable and not needsRedrawAll then return end
     local filteredAndSortedItems = getFilteredAndSortedItems()
     local tableX, tableY = TABLE_START_X, TABLE_START_Y
-    local tableContentWidth = math.floor(WIDTH * TABLE_WIDTH_RATIO) - 2 -- Ширина контента внутри рамки
+    local tableContentWidth = TABLE_MAX_WIDTH - 2 -- Ширина контента внутри рамки
     local tableHeight = getItemsPerPage()
 
     -- Расчет ширины колонок
@@ -272,40 +245,46 @@ local function drawItemsTable()
     local col_count_width = math.floor(tableContentWidth * 0.15)
     local col_craftSize_width = tableContentWidth - col_name_width - col_category_width - col_current_width - col_count_width
 
-    -- Отрисовка заголовков таблицы
-    g.setForeground(COLORS.select_active)
-    g.set(tableX, tableY, "┌" .. string.rep("─", col_name_width) .. "┬" .. string.rep("─", col_category_width) .. "┬" .. string.rep("─", col_current_width) .. "┬" .. string.rep("─", col_count_width) .. "┬" .. string.rep("─", col_craftSize_width) .. "┐")
+    -- Очистка области таблицы перед отрисовкой
+    clearArea(tableX - 1, tableY - 1, TABLE_MAX_WIDTH + 2, tableHeight + 4) -- +4 для рамки и заголовков
+
+    -- Рамка вокруг таблицы
+    uoc.roundRect(tableX - 1, tableY - 1, TABLE_MAX_WIDTH + 2, tableHeight + 4, COLORS.border, COLORS.bg)
     
+    -- Отрисовка заголовков таблицы
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.ok)
-    g.set(tableX + 1, tableY + 1, string.format("%-" .. col_name_width .. "s", "Название"))
-    g.set(tableX + col_name_width + 2, tableY + 1, string.format("%-" .. col_category_width .. "s", "Категория"))
-    g.set(tableX + col_name_width + col_category_width + 3, tableY + 1, string.format("%" .. col_current_width .. "s", "В наличии"))
-    g.set(tableX + col_name_width + col_category_width + col_current_width + 4, tableY + 1, string.format("%" .. col_count_width .. "s", "Держать"))
-    g.set(tableX + col_name_width + col_category_width + col_current_width + col_count_width + 5, tableY + 1, string.format("%" .. col_craftSize_width .. "s", "За раз"))
+    g.set(tableX + 1, tableY, string.format("%-" .. col_name_width .. "s", "Название"))
+    g.set(tableX + col_name_width + 2, tableY, string.format("%-" .. col_category_width .. "s", "Категория"))
+    g.set(tableX + col_name_width + col_category_width + 3, tableY, string.format("%" .. col_current_width .. "s", "В наличии"))
+    g.set(tableX + col_name_width + col_category_width + col_current_width + 4, tableY, string.format("%" .. col_count_width .. "s", "Держать"))
+    g.set(tableX + col_name_width + col_category_width + col_current_width + col_count_width + 5, tableY, string.format("%" .. col_craftSize_width .. "s", "За раз"))
     
     g.setForeground(COLORS.select_active)
-    g.set(tableX, tableY + 1, "│") -- Левая граница
-    g.set(tableX + col_name_width + 1, tableY + 1, "│")
-    g.set(tableX + col_name_width + col_category_width + 2, tableY + 1, "│")
-    g.set(tableX + col_name_width + col_category_width + col_current_width + 3, tableY + 1, "│")
-    g.set(tableX + col_name_width + col_category_width + col_current_width + col_count_width + 4, tableY + 1, "│")
-    g.set(tableX + col_name_width + col_category_width + col_current_width + col_count_width + col_craftSize_width + 5, tableY + 1, "│") -- Правая граница
+    g.set(tableX, tableY, "│") -- Левая граница
+    g.set(tableX + col_name_width + 1, tableY, "│")
+    g.set(tableX + col_name_width + col_category_width + 2, tableY, "│")
+    g.set(tableX + col_name_width + col_category_width + col_current_width + 3, tableY, "│")
+    g.set(tableX + col_name_width + col_category_width + col_current_width + col_count_width + 4, tableY, "│")
+    g.set(tableX + col_name_width + col_category_width + col_current_width + col_count_width + col_craftSize_width + 5, tableY, "│") -- Правая граница
+    g.set(tableX - 1, tableY, "┌")
+    g.set(tableX + TABLE_MAX_WIDTH + 2 -1, tableY, "┐")
 
-    g.set(tableX, tableY + 2, "├" .. string.rep("─", col_name_width) .. "┼" .. string.rep("─", col_category_width) .. "┼" .. string.rep("─", col_current_width) .. "┼" .. string.rep("─", col_count_width) .. "┼" .. string.rep("─", col_craftSize_width) .. "┤")
 
+    g.set(tableX - 1, tableY + 1, "├" .. string.rep("─", col_name_width + 1) .. "┼" .. string.rep("─", col_category_width + 1) .. "┼" .. string.rep("─", col_current_width + 1) .. "┼" .. string.rep("─", col_count_width + 1) .. "┼" .. string.rep("─", col_craftSize_width + 1) .. "┤")
 
     local perPage = getItemsPerPage()
     local startIndex = (currentPage - 1) * perPage + 1
     for i = 1, perPage do
         local itemIdx = startIndex + i - 1
-        local row = tableY + 2 + i
+        local row = tableY + 1 + i
         
         local item = filteredAndSortedItems[itemIdx]
         local isSelected = (selectedItem and dataItems[selectedItem] and item == dataItems[selectedItem])
         
         g.setBackground(isSelected and COLORS.select_active or COLORS.bg)
         g.fill(tableX, row, tableContentWidth + 2, 1, " ") -- Очищаем фон строки
+        
         g.setForeground(isSelected and COLORS.text or (tonumber(item and item.current or 0) < tonumber(item and item.count or 0) and COLORS.warning or COLORS.text))
         
         -- Отрисовка разделителей колонок
@@ -336,15 +315,19 @@ local function drawItemsTable()
         end
     end
     g.setForeground(COLORS.select_active)
-    g.set(tableX, tableY + 2 + perPage + 1, "└" .. string.rep("─", col_name_width) .. "┴" .. string.rep("─", col_category_width) .. "┴" .. string.rep("─", col_current_width) .. "┴" .. string.rep("─", col_count_width) .. "┴" .. string.rep("─", col_craftSize_width) .. "┘")
+    g.set(tableX - 1, tableY + 1 + perPage + 1, "└" .. string.rep("─", col_name_width + 1) .. "┴" .. string.rep("─", col_category_width + 1) .. "┴" .. string.rep("─", col_current_width + 1) .. "┴" .. string.rep("─", col_count_width + 1) .. "┴" .. string.rep("─", col_craftSize_width + 1) .. "┘")
     g.setForeground(COLORS.text)
+    needsRedrawTable = false
 end
 
 local function drawSearchBar()
+    if not needsRedrawSearchBar and not needsRedrawAll then return end
     local x = TABLE_START_X
-    local y = HEIGHT - LOG_LINES - SEARCH_BAR_HEIGHT - 1 -- Между логами и таблицей
-    local w = math.floor(WIDTH * TABLE_WIDTH_RATIO) - 2 -- Ширина как у таблицы
+    local y = HEIGHT - LOG_LINES - SEARCH_BAR_HEIGHT - 1
+    local w = TABLE_MAX_WIDTH -- Ширина как у таблицы
     local h = SEARCH_BAR_HEIGHT
+    
+    clearArea(x - 1, y - 1, w + 2, h + 2) -- Очистка области перед рамкой
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
     g.fill(x + 1, y + 1, w - 2, h - 2, " ")
@@ -361,22 +344,27 @@ local function drawSearchBar()
     g.set(x + 2, y + 1, display)
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
+    needsRedrawSearchBar = false
 end
 
 local function drawLogsArea()
+    if not needsRedrawLogs and not needsRedrawAll then return end
     local x = TABLE_START_X
     local y = HEIGHT - LOG_LINES
-    local w = math.floor(WIDTH * TABLE_WIDTH_RATIO) - 2 -- Ширина как у таблицы
+    local w = TABLE_MAX_WIDTH -- Ширина как у таблицы
     local h = LOG_LINES + 1 -- Высота рамки
 
+    clearArea(x - 1, y - 1, w + 2, h + 2) -- Очистка области перед рамкой
     uoc.roundRect(x, y, w, h, COLORS.border, COLORS.bg)
     g.setForeground(COLORS.ok)
     uoc.drawText(x + 1, y, "Логи", COLORS.ok, true)
     g.setBackground(COLORS.bg)
     uoc.drawLogs(x + 1, y + 1, logs, LOG_LINES, COLORS.log, logOffset)
+    needsRedrawLogs = false
 end
 
 local function drawButtons()
+    if not needsRedrawButtons and not needsRedrawAll then return end
     local btns = {
         {name = "Крафт всех", action = "craftAll"},
         {name = "Удалить", action = "delete"},
@@ -386,8 +374,20 @@ local function drawButtons()
     }
     
     local btnX = BTN_AREA_START_X + 2 -- Отступ внутри рамки
-    local startY = TABLE_START_Y + TABLE_HEADER_HEIGHT -- Начало кнопок после заголовка таблицы
+    local startY = TABLE_START_Y + 1 -- Начало кнопок после заголовка области действий
     local currentY = startY
+
+    -- Очистка области кнопок перед отрисовкой
+    clearArea(BTN_AREA_START_X, TABLE_START_Y - 1, BTN_AREA_WIDTH_TOTAL + 2, HEIGHT - (TABLE_START_Y - 1))
+
+    -- Рамка для кнопок
+    local totalButtonAreaHeight = (TABLE_START_Y + 1) + (#btns * (BUTTON_HEIGHT + BUTTON_PADDING)) +
+                                  BUTTON_HEIGHT + BUTTON_PADDING + -- для стрелок
+                                  SORT_BUTTON_HEIGHT + BUTTON_PADDING * 2 + 1 -- для сортировки + нижний отступ
+    uoc.roundRect(BTN_AREA_START_X, TABLE_START_Y - 1, BTN_AREA_WIDTH_TOTAL + 2, totalButtonAreaHeight - (TABLE_START_Y -1) + 1, COLORS.border, COLORS.bg)
+    g.setForeground(COLORS.ok)
+    uoc.drawText(BTN_AREA_START_X + 2, TABLE_START_Y - 1, "Действия", COLORS.ok, true)
+
 
     for i, btn in ipairs(btns) do
         local btnY = currentY
@@ -444,35 +444,12 @@ local function drawButtons()
     g.fill(btnX, sortBtnY, BUTTON_WIDTH, SORT_BUTTON_HEIGHT, " ")
     uoc.animatedButton(btnX, sortBtnY, BUTTON_WIDTH, SORT_BUTTON_HEIGHT,
         "Сортировать", sortHover, COLORS.button, COLORS.buttonActive, COLORS.text, sortIndicatorText, COLORS.text)
-end
-
-local function drawMainLayoutFrames()
-    -- Рамка вокруг таблицы
-    local tableContentWidth = math.floor(WIDTH * TABLE_WIDTH_RATIO) - 2
-    local tableFullWidth = tableContentWidth + 2 -- Включая левую и правую границу
-    local tableHeight = getItemsPerPage() + TABLE_HEADER_HEIGHT + 2 -- Высота контента + 2 для верхней и нижней рамки
-    uoc.roundRect(TABLE_START_X - 1, TABLE_START_Y - 1, tableFullWidth + 2, tableHeight + 2, COLORS.border, COLORS.bg)
-
-    -- Рамка для кнопок
-    local btns = {
-        {name = "Крафт всех", action = "craftAll"}, {name = "Удалить", action = "delete"},
-        {name = "Изменить", action = "edit"}, {name = "Автокрафт", action = "toggleCraft"},
-        {name = "Добавить", action = "add"},
-    }
-    local numVisibleButtons = #btns
-    local totalButtonHeight = (numVisibleButtons * (BUTTON_HEIGHT + BUTTON_PADDING)) +
-                              BUTTON_HEIGHT + BUTTON_PADDING + -- для стрелок
-                              SORT_BUTTON_HEIGHT + BUTTON_PADDING * 2 -- для сортировки
-    local buttonFrameHeight = totalButtonHeight + 4 -- Дополнительно для отступов и заголовка
-    local buttonFrameY = TABLE_START_Y - 1 -- На том же уровне, что и таблица
-
-    uoc.roundRect(BTN_AREA_START_X, buttonFrameY, BTN_AREA_WIDTH_TOTAL + 2, buttonFrameHeight, COLORS.border, COLORS.bg)
-    g.setForeground(COLORS.ok)
-    uoc.drawText(BTN_AREA_START_X + 2, buttonFrameY, "Действия", COLORS.ok, true)
+    needsRedrawButtons = false
 end
 
 local function drawInputScreen()
-    clearScreen()
+    if not needsRedrawInputScreen and not needsRedrawAll then return end
+    clearArea(1, 1, WIDTH, HEIGHT) -- Полная очистка для экрана ввода
     local baseX = math.floor((WIDTH - 50) / 2) -- Центрирование
     local baseY = math.floor((HEIGHT - 18) / 2)
 
@@ -529,20 +506,28 @@ local function drawInputScreen()
     uoc.animatedButton(cancelX, btnY, btnW, btnH, "Отмена", cancelHover, COLORS.button, COLORS.buttonActive, COLORS.text)
 
     g.setBackground(COLORS.bg) -- Reset background
+    needsRedrawInputScreen = false
 end
 
 local function draw()
+    if needsRedrawAll then
+        g.setBackground(COLORS.bg)
+        g.fill(1, 1, WIDTH, HEIGHT, " ")
+        g.setForeground(COLORS.text)
+    end
+
     if changeitem then
-        drawInputScreen()
+        if needsRedrawAll or needsRedrawInputScreen then
+            drawInputScreen()
+        end
     else
-        clearScreen()
         drawHeader()
-        drawMainLayoutFrames() -- Рисуем рамки
         drawItemsTable()
         drawSearchBar()
         drawLogsArea()
         drawButtons()
     end
+    needsRedrawAll = false
 end
 
 -------------------- IO и действия --------------------
@@ -604,6 +589,8 @@ local function reload()
         lastRequestedItem = nil
         lastRequestTime = 0
     end
+    needsRedrawTable = true
+    needsRedrawHeader = true
 end
 
 local function save()
@@ -619,6 +606,9 @@ local function resetSelection()
     search = ""
     currentPage = 1
     selectedItem = nil
+    needsRedrawTable = true
+    needsRedrawHeader = true
+    needsRedrawSearchBar = true
 end
 
 local function addItem()
@@ -627,7 +617,8 @@ local function addItem()
     inputFields = {name = "", category = "", count = "", craftSize = ""}
     currentField = 1
     inputActive = true
-    draw()
+    needsRedrawInputScreen = true
+    needsRedrawAll = true -- Смена режима, нужно перерисовать всё
 end
 
 local function editItem()
@@ -646,7 +637,8 @@ local function editItem()
     }
     currentField = 1
     inputActive = true
-    draw()
+    needsRedrawInputScreen = true
+    needsRedrawAll = true -- Смена режима, нужно перерисовать всё
 end
 
 local function saveItem()
@@ -689,7 +681,7 @@ local function saveItem()
     inputFields = {}
     currentField = 1
     inputActive = false
-    draw()
+    needsRedrawAll = true -- Смена режима, нужно перерисовать всё
 end
 
 local function cancelInput()
@@ -698,7 +690,7 @@ local function cancelInput()
     inputFields = {}
     currentField = 1
     inputActive = false
-    draw()
+    needsRedrawAll = true -- Смена режима, нужно перерисовать всё
 end
 
 local function removeItem()
@@ -711,7 +703,7 @@ local function removeItem()
     selectedItem = nil
     clampPage()
     save()
-    draw()
+    needsRedrawTable = true
 end
 
 local function doCraft()
@@ -719,20 +711,24 @@ local function doCraft()
     craftStatus = "Автокрафт запущен..."
     save()
     addLog("INFO: Запущен автокрафт", "INFO")
-    draw()
+    needsRedrawHeader = true
+    needsRedrawButtons = true
 end
 
 local function stopCraft()
     isCrafting = false
     craftStatus = "Остановлено"
     addLog("WARN: Остановлен автокрафт", "WARN")
-    draw()
+    needsRedrawHeader = true
+    needsRedrawButtons = true
 end
 
 local function craftAll()
     if not isCrafting then
         isCrafting = true
         addLog("INFO: Запущен крафт всех предметов", "INFO")
+        needsRedrawHeader = true
+        needsRedrawButtons = true
     end
     local craftMade = false
     for i, item in ipairs(dataItems) do
@@ -742,8 +738,10 @@ local function craftAll()
         craftStatus = "Все предметы в норме"
         addLog("INFO: Нет предметов для крафта", "INFO")
         isCrafting = false -- Если ничего не крафтится, можно остановить
+        needsRedrawHeader = true
+        needsRedrawButtons = true
     end
-    draw()
+    needsRedrawTable = true -- Обновить таблицу после крафта
 end
 
 local function tryCraftItem(itemToCraft)
@@ -757,6 +755,7 @@ local function tryCraftItem(itemToCraft)
     if lastRequestedItem and lastRequestedItem.id == itemToCraft.id and (itemToCraft.dmg == nil or lastRequestedItem.dmg == itemToCraft.dmg) then
         addLog("INFO: Предмет '" .. (itemToCraft.name or "<??>") .. "' недавно запрошен. Ожидание.", "INFO")
         craftStatus = "Ожидание: " .. (itemToCraft.name or "<??>")
+        needsRedrawHeader = true
         return false
     end
 
@@ -764,6 +763,7 @@ local function tryCraftItem(itemToCraft)
     if not cpus_ok then
         addLog("ERROR: Ошибка получения CPU: " .. tostring(cpus), "ERROR")
         craftStatus = "Ошибка: ME CPU"
+        needsRedrawHeader = true
         return false
     end
     cpus = cpus or {}
@@ -775,6 +775,7 @@ local function tryCraftItem(itemToCraft)
     if not freeCpu then
         craftStatus = "Ошибка: нет свободных CPU"
         addLog("ERROR: Нет свободных CPU", "ERROR")
+        needsRedrawHeader = true
         return false
     end
 
@@ -782,6 +783,7 @@ local function tryCraftItem(itemToCraft)
     if not craftables_ok then
         addLog("ERROR: Ошибка получения рецептов для " .. (itemToCraft.name or "<??>") .. ": " .. tostring(craftables), "ERROR")
         craftStatus = "Ошибка: ME Рецепты"
+        needsRedrawHeader = true
         return false
     end
     craftables = craftables or {n = 0}
@@ -797,6 +799,7 @@ local function tryCraftItem(itemToCraft)
         if current + quantityToRequest >= count then
              addLog("INFO: Предмет '" .. (itemToCraft.name or "<??>") .. "' достигнет цели с текущим запросом.", "INFO")
              craftStatus = "Достаточно: " .. (itemToCraft.name or "<??>")
+             needsRedrawHeader = true
              return false
         end
 
@@ -807,15 +810,18 @@ local function tryCraftItem(itemToCraft)
             addLog("INFO: Запрос крафта " .. quantityToRequest .. "x " .. (itemToCraft.name or "<??>") .. " на CPU " .. tostring(freeCpu), "INFO")
             lastRequestedItem = {id = itemToCraft.id, dmg = itemToCraft.dmg, expectedOutput = actualCommittedAmount}
             lastRequestTime = computer.uptime()
+            needsRedrawHeader = true
             return true
         else
             craftStatus = "Ошибка: крафт отклонен"
             addLog("ERROR: Не удалось крафтить " .. (itemToCraft.name or "<??>") .. ": " .. tostring(req), "ERROR")
+            needsRedrawHeader = true
             return false
         end
     else
         craftStatus = "Ошибка: нет рецепта " .. (itemToCraft.name or "<??>")
         addLog("ERROR: Нет рецепта для " .. (itemToCraft.name or "<??>"), "ERROR")
+        needsRedrawHeader = true
         return false
     end
 end
@@ -828,7 +834,7 @@ local function updateButtonHover(x, y)
         {action = "toggleCraft"}, {action = "add"},
     }
     local btnX = BTN_AREA_START_X + 2
-    local startY = TABLE_START_Y + TABLE_HEADER_HEIGHT
+    local startY = TABLE_START_Y + 1
     local currentY = startY
     for i, btn in ipairs(btns) do
         local btnY = currentY
@@ -859,7 +865,7 @@ local function updateButtonHover(x, y)
         local baseX = math.floor((WIDTH - 50) / 2)
         local btnW = 10
         local btnH = 3
-        local btnY = math.floor((HEIGHT - 18) / 2) + 13 + 4 -- Y for input fields + offset
+        local btnY = math.floor((HEIGHT - 18) / 2) + 13 + 4
 
         local saveX = baseX + 5
         local cancelX = baseX + btnW + 10
@@ -895,11 +901,13 @@ local function mainLoop()
                     else
                         inputActive = true
                     end
+                    needsRedrawInputScreen = true
                 elseif key == 1 or key == 29 then -- Escape key
                     cancelInput()
                 elseif key == 42 then -- Backspace
                     local currentFieldKey = fields[currentField].key
                     inputFields[currentFieldKey] = unicode.sub(inputFields[currentFieldKey], 1, unicode.len(inputFields[currentFieldKey]) - 1)
+                    needsRedrawInputScreen = true
                 elseif char and unicode.len(char) == 1 then
                     local currentFieldKey = fields[currentField].key
                     local fieldType = fields[currentField].type
@@ -908,6 +916,7 @@ local function mainLoop()
                     else
                         inputFields[currentFieldKey] = (inputFields[currentFieldKey] or "") .. char
                     end
+                    needsRedrawInputScreen = true
                 end
             else -- Main menu
                 if key == 28 then -- Enter key (select item or perform craft)
@@ -923,6 +932,7 @@ local function mainLoop()
                     if searchActive then
                         search = ""
                         searchActive = false
+                        needsRedrawSearchBar = true
                     else
                         -- Можно добавить выход из программы или другие действия
                         -- computer.shutdown()
@@ -930,6 +940,7 @@ local function mainLoop()
                 elseif key == 200 then -- Up arrow
                     if searchActive then
                         logOffset = math.min(logOffset + 1, math.max(0, #logs - LOG_LINES))
+                        needsRedrawLogs = true
                     else
                         local filtered = getFilteredAndSortedItems()
                         local perPage = getItemsPerPage()
@@ -958,10 +969,13 @@ local function mainLoop()
                                 end
                             end
                         end
+                        needsRedrawTable = true
+                        needsRedrawHeader = true
                     end
                 elseif key == 208 then -- Down arrow
                     if searchActive then
                         logOffset = math.max(logOffset - 1, 0)
+                        needsRedrawLogs = true
                     else
                         local filtered = getFilteredAndSortedItems()
                         local perPage = getItemsPerPage()
@@ -990,20 +1004,24 @@ local function mainLoop()
                                 end
                             end
                         end
+                        needsRedrawTable = true
+                        needsRedrawHeader = true
                     end
                 elseif key == 203 then -- Left arrow (page navigation)
-                    if currentPage > 1 then currentPage = currentPage - 1 selectedItem = nil end
+                    if currentPage > 1 then currentPage = currentPage - 1 selectedItem = nil needsRedrawTable = true needsRedrawHeader = true end
                 elseif key == 205 then -- Right arrow (page navigation)
-                    if currentPage < getMaxPages() then currentPage = currentPage + 1 selectedItem = nil end
+                    if currentPage < getMaxPages() then currentPage = currentPage + 1 selectedItem = nil needsRedrawTable = true needsRedrawHeader = true end
                 elseif key == 42 then -- Backspace for search
                     if searchActive then
                         search = unicode.sub(search, 1, unicode.len(search) - 1)
                         resetSelection()
+                        needsRedrawSearchBar = true
                     end
                 elseif char and unicode.len(char) == 1 then
                     if searchActive then
                         search = search .. char
                         resetSelection()
+                        needsRedrawSearchBar = true
                     end
                 end
             end
@@ -1011,10 +1029,10 @@ local function mainLoop()
             if changeitem then
                 local baseX = math.floor((WIDTH - 50) / 2)
                 local fields = {
-                    {x = baseX, y = baseY + 4, w = 40 + 2, h = 3}, -- +2 for frame
-                    {x = baseX, y = baseY + 7, w = 40 + 2, h = 3},
-                    {x = baseX, y = baseY + 10, w = 20 + 2, h = 3},
-                    {x = baseX, y = baseY + 13, w = 20 + 2, h = 3},
+                    {x = baseX, y = math.floor((HEIGHT - 18) / 2) + 4, w = 40 + 2, h = 3}, -- +2 for frame
+                    {x = baseX, y = math.floor((HEIGHT - 18) / 2) + 7, w = 40 + 2, h = 3},
+                    {x = baseX, y = math.floor((HEIGHT - 18) / 2) + 10, w = 20 + 2, h = 3},
+                    {x = baseX, y = math.floor((HEIGHT - 18) / 2) + 13, w = 20 + 2, h = 3},
                 }
                 local fieldClicked = false
                 for i, field in ipairs(fields) do
@@ -1022,6 +1040,7 @@ local function mainLoop()
                         currentField = i
                         inputActive = true
                         fieldClicked = true
+                        needsRedrawInputScreen = true
                         break
                     end
                 end
@@ -1042,6 +1061,7 @@ local function mainLoop()
 
                 if not fieldClicked then
                     inputActive = false -- Deactivate input if clicked outside fields/buttons
+                    needsRedrawInputScreen = true
                 end
             else -- Main menu
                 local btnWidth = BUTTON_WIDTH
@@ -1053,11 +1073,11 @@ local function mainLoop()
                 local btns = {
                     {name = "Крафт всех", action = "craftAll"},
                     {name = "Удалить", action = "delete"},
-                    {name = "Изменить", action = "edit"},
+                    {name = "Изменить", "edit"},
                     {name = "Автокрафт", action = "toggleCraft"},
                     {name = "Добавить", action = "add"},
                 }
-                local currentY = TABLE_START_Y + TABLE_HEADER_HEIGHT
+                local currentY = TABLE_START_Y + 1
                 for i, btn_info in ipairs(btns) do
                     local btnY = currentY
                     if x >= btnX and x < btnX + btnWidth and y >= btnY and y < btnY + btnHeight then
@@ -1086,10 +1106,10 @@ local function mainLoop()
                     local nextArrowBtnX = prevArrowBtnX + ARROW_BUTTON_WIDTH + BUTTON_PADDING
 
                     if x >= prevArrowBtnX and x < prevArrowBtnX + arrowBtnW and y >= arrowBtnY and y < arrowBtnY + btnHeight then
-                        if currentPage > 1 then currentPage = currentPage - 1 selectedItem = nil end
+                        if currentPage > 1 then currentPage = currentPage - 1 selectedItem = nil needsRedrawTable = true needsRedrawHeader = true end
                         handledButton = true
                     elseif x >= nextArrowBtnX and x < nextArrowBtnX + arrowBtnW and y >= arrowBtnY and y < arrowBtnY + btnHeight then
-                        if currentPage < getMaxPages() then currentPage = currentPage + 1 selectedItem = nil end
+                        if currentPage < getMaxPages() then currentPage = currentPage + 1 selectedItem = nil needsRedrawTable = true needsRedrawHeader = true end
                         handledButton = true
                     end
                 end
@@ -1110,6 +1130,8 @@ local function mainLoop()
                         end
                         settings.sortCriteria = sortOptions[nextSortIndex]
                         save()
+                        needsRedrawTable = true
+                        needsRedrawButtons = true -- Сортировка меняет текст кнопки
                         handledButton = true
                     end
                 end
@@ -1117,49 +1139,71 @@ local function mainLoop()
                 -- Handle search bar click
                 local searchX = TABLE_START_X
                 local searchY = HEIGHT - LOG_LINES - SEARCH_BAR_HEIGHT - 1
-                local searchW = math.floor(WIDTH * TABLE_WIDTH_RATIO) - 2
+                local searchW = TABLE_MAX_WIDTH
                 local searchH = SEARCH_BAR_HEIGHT
                 if x >= searchX and x < searchX + searchW and y >= searchY and y < searchY + searchH then
                     searchActive = true
+                    needsRedrawSearchBar = true
                 else
-                    searchActive = false
+                    if searchActive then
+                        searchActive = false
+                        needsRedrawSearchBar = true
+                    end
                 end
 
                 -- Handle table row click for selection
                 local tableX, tableY = TABLE_START_X, TABLE_START_Y
-                local tableContentWidth = math.floor(WIDTH * TABLE_WIDTH_RATIO) - 2
+                local tableContentWidth = TABLE_MAX_WIDTH - 2
                 local perPage = getItemsPerPage()
                 local startIndex = (currentPage - 1) * perPage + 1
-                if x >= tableX and x < tableX + tableContentWidth + 2 and y >= tableY + TABLE_HEADER_HEIGHT + 1 and y < tableY + TABLE_HEADER_HEIGHT + 1 + perPage then
-                    local rowClicked = y - (tableY + TABLE_HEADER_HEIGHT + 1) + 1
+                local oldSelectedItem = selectedItem
+                if x >= tableX and x < tableX + tableContentWidth + 2 and y >= tableY + 2 and y < tableY + 2 + perPage then -- +2 для заголовка таблицы
+                    local rowClicked = y - (tableY + 2) + 1
                     local itemIndex = startIndex + rowClicked - 1
                     local filteredAndSortedItems = getFilteredAndSortedItems()
-                    if itemIndex >= startIndex and itemIndex <= math.min(#filteredAndSortedItems, startIndex + perPage - 1) then
+                    if itemIndex >= 1 and itemIndex <= #filteredAndSortedItems then
                         local clickedItem = filteredAndSortedItems[itemIndex]
+                        selectedItem = nil
                         for i, item in ipairs(dataItems) do
                             if item == clickedItem then
                                 selectedItem = i
                                 break
                             end
                         end
+                    else
+                        selectedItem = nil -- Кликнули в пустую строку
                     end
+                else
+                    selectedItem = nil -- Кликнули вне таблицы
+                end
+                if oldSelectedItem ~= selectedItem then
+                    needsRedrawTable = true -- Перерисовать, если изменился выбранный элемент
                 end
             end
         elseif e == "mouse_scroll" then
             if not changeitem then
                 if searchActive then
+                    local oldLogOffset = logOffset
                     if delta > 0 then logOffset = math.max(logOffset - 1, 0)
                     elseif delta < 0 then logOffset = math.min(logOffset + 1, math.max(0, #logs - LOG_LINES)) end
+                    if oldLogOffset ~= logOffset then needsRedrawLogs = true end
                 else
+                    local oldPage = currentPage
                     if delta > 0 then -- Scroll up
                         if currentPage > 1 then currentPage = currentPage - 1 selectedItem = nil end
                     elseif delta < 0 then -- Scroll down
                         if currentPage < getMaxPages() then currentPage = currentPage + 1 selectedItem = nil end
                     end
+                    if oldPage ~= currentPage then needsRedrawTable = true needsRedrawHeader = true end
                 end
             end
         elseif e == "mouse_move" then
+            local oldButtonHover = buttonHover
             buttonHover = updateButtonHover(x, y)
+            if oldButtonHover ~= buttonHover then
+                needsRedrawButtons = true
+                if changeitem then needsRedrawInputScreen = true end -- Для кнопок на экране ввода
+            end
         end
         
         -- Логика автокрафта
@@ -1170,10 +1214,9 @@ local function mainLoop()
             lastCraftLoopTime = currentTime
         end
 
-        -- Отрисовка экрана (обновлять не чаще чем каждые 0.05 секунды)
-        if (currentTime - lastDrawTime) >= 0.05 then
+        -- Отрисовка экрана (обновлять только при необходимости)
+        if needsRedrawAll or needsRedrawHeader or needsRedrawTable or needsRedrawSearchBar or needsRedrawLogs or needsRedrawButtons or needsRedrawInputScreen then
             draw()
-            lastDrawTime = currentTime
         end
     end
 end
