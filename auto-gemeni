@@ -722,7 +722,7 @@ event.listen("touch", function(_,_,x,y,_,_)
             -- Находим фактический индекс в dataItems
             for k,v in ipairs(dataItems) do
                 if v == filteredItems[actualIndexInFiltered] then selectedItem = k break end
-            }
+            end -- <-- This 'end' was missing in previous version
         end
         draw()
         return
