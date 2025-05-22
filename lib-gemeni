@@ -1,3 +1,5 @@
+--wget -f https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua /lib/ultimateOC.lua
+--wget -f https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/autoCraftUltimate.lua /home/autoCraftUltimate.lua
 -- ultimateOC.lua - Улучшенная библиотека для визуала OpenComputers
 local fs = require("filesystem")
 local unicode = require("unicode")
@@ -76,7 +78,7 @@ end
 -- Анимированная кнопка (с закруглением, цветами и "нажатием")
 function M.animatedButton(x, y, w, h, text, active, baseColor, hoverColor, textColor)
     baseColor = baseColor or 0x00BFFF
-    hoverColor = hoverColor or baseColor -- Изменено: hoverColor теперь равен baseColor, чтобы не было "мигания"
+    hoverColor = hoverColor or 0x1E90FF
     textColor = textColor or 0xFFFFFF
     local color = active and hoverColor or baseColor
     M.roundRect(x, y, w, h, color, color)
@@ -99,8 +101,8 @@ end
 -- Быстрый логгер: добавляет строку в массив (до 50 записей)
 function M.addLog(logs, text, lvl)
     lvl = lvl or "INFO"
-    local now = os.date("!*t", os.time()+3*3600) -- МСК (этот код будет удален в основном скрипте)
-    local t = string.format("[%02d:%02d:%02d][%s] %s", now.hour, now.min, now.sec, lvl, text)
+    -- Удалено добавление времени
+    local t = string.format("[%s] %s", lvl, text)
     table.insert(logs, t)
     while #logs > 50 do table.remove(logs, 1) end
 end
