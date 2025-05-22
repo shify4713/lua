@@ -125,7 +125,7 @@ local function shadowRect(x, y, w, h)
     g.fill(x+1, y+h, w, 1, " ")
     g.fill(x+w, y, 1, h, " ")
     g.setBackground(COLORS.bg)
-}
+end -- <-- ДОБАВЬТЕ ЭТОТ "end"
 
 local function drawHeader()
     uoc.drawText(3,3,"Ultimate AutoCraft",COLORS.ok,true)
