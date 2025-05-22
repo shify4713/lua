@@ -1,19 +1,22 @@
 local component = require("component")
 local gpu = component.gpu
-local unicode = require("unicode") -- Add this line
+local unicode = require("unicode")
 
 local ultimateOC = {}
 
 function ultimateOC.drawText(x, y, text, color, bold)
+    print("DEBUG: drawText at " .. x .. "," .. y .. ": " .. text)
     gpu.setForeground(color or 0xFFFFFF)
     gpu.set(x, y, text)
 end
 
 function ultimateOC.progressBar(x, y, w, p)
+    print("DEBUG: progressBar at " .. x .. "," .. y .. " width " .. w .. " progress " .. p)
     gpu.fill(x, y, math.floor(w * p), 1, "█")
 end
 
 function ultimateOC.roundRect(x, y, w, h, borderColor, bgColor)
+    print("DEBUG: roundRect at " .. x .. "," .. y .. " size " .. w .. "x" .. h)
     gpu.setBackground(bgColor or 0x000000)
     gpu.fill(x, y, w, h, " ")
     gpu.setForeground(borderColor or 0xFFFFFF)
@@ -26,10 +29,10 @@ function ultimateOC.roundRect(x, y, w, h, borderColor, bgColor)
 end
 
 function ultimateOC.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor, subText, subColor)
+    print("DEBUG: animatedButton at " .. x .. "," .. y .. " text: " .. text)
     gpu.setBackground(hover and activeColor or bgColor)
     gpu.fill(x, y, w, h, " ")
     gpu.setForeground(textColor)
-    -- Fallback if unicode.len fails
     local textLen = unicode and unicode.len and unicode.len(text) or string.len(text)
     local tx = x + math.floor((w - textLen) / 2)
     gpu.set(tx, y + math.floor(h/2), text)
@@ -42,6 +45,7 @@ function ultimateOC.animatedButton(x, y, w, h, text, hover, bgColor, activeColor
 end
 
 function ultimateOC.drawLogs(x, y, logs, lines, color, offset)
+    print("DEBUG: drawLogs at " .. x .. "," .. y)
     gpu.setForeground(color or 0xFFFFFF)
     for i = 1, lines do
         local idx = #logs - offset - lines + i
@@ -52,11 +56,13 @@ function ultimateOC.drawLogs(x, y, logs, lines, color, offset)
 end
 
 function ultimateOC.addLog(logsTable, msg)
+    print("DEBUG: Adding log: " .. msg)
     table.insert(logsTable, msg)
     if #logsTable > 100 then table.remove(logsTable, 1) end
 end
 
 function ultimateOC.loadf(path)
+    print("DEBUG: Loading file: " .. path)
     local file = io.open(path, "r")
     if not file then return nil end
     local content = file:read("*a")
@@ -65,6 +71,7 @@ function ultimateOC.loadf(path)
 end
 
 function ultimateOC.savef(path, data)
+    print("DEBUG: Saving file: " .. path)
     local file = io.open(path, "w")
     if file then
         file:write(textutils.serialize(data))
