@@ -28,7 +28,7 @@ end
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni" -- Обновите, если загружаете мою версию
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua" -- Обновите, если загружаете мою версию
 
 -- Загрузка или скачивание библиотеки
 if not fs.exists(LIB_PATH) then
@@ -65,8 +65,8 @@ local COLORS = {
     search_cross = 0xFF5555,
     search_hint = 0x888888,
     bar_shadow = 0x181920,
-    tooltip_bg = 0x44475a,
-    tooltip_text = 0xF8F8F2,
+    tooltip_bg = 0x44475a, -- Эта переменная не используется, но оставлена на случай если понадобится
+    tooltip_text = 0xF8F8F2, -- Эта переменная не используется
 }
 local WIDTH, HEIGHT = 110, 40
 local craftStatus = "Ожидание..."
@@ -82,8 +82,7 @@ local itemScroll = 1
 local changeitem = false -- Флаг для блокировки UI во время ввода
 local searchActive = false
 local hoveredButton = nil
-local tooltip = ""
-local tooltipTimeout = 0
+-- Убраны переменные tooltip и tooltipTimeout
 
 -------------------- Логгирование --------------------
 local function addLog(text, lvl)
@@ -94,14 +93,14 @@ end
 local function safeReadInput(promptText, x, y, defaultColor, promptColor)
     g.setBackground(COLORS.bg)
     g.fill(x, y, WIDTH - x + 1, 1, " ") -- Очищаем строку для нового приглашения
-    uoc.drawText(g, x, y, promptText, promptColor or COLORS.text) -- Передаем g
+    uoc.drawText(g, x, y, promptText, promptColor or COLORS.text)
 
-    term.setCursorPos(x + unicode.len(promptText) + 1, y) -- Используем term напрямую
-    term.setCursorBlink(true) -- Используем term напрямую
+    term.setCursorPos(x + unicode.len(promptText) + 1, y)
+    term.setCursorBlink(true) -- Мигание курсора при вводе остается, так как это стандартное поведение терминала.
 
     local input = io.read()
 
-    term.setCursorBlink(false) -- Используем term напрямую
+    term.setCursorBlink(false)
     return input
 end
 
@@ -120,26 +119,27 @@ local function shadowRect(x, y, w, h)
 end
 
 local function drawHeader()
-    uoc.drawText(g, 3,3,"Ultimate AutoCraft",COLORS.ok,true) -- Передаем g
+    uoc.drawText(g, 3,3,"Ultimate AutoCraft",COLORS.ok,true)
     g.setBackground(COLORS.progress_fg)
     g.fill(2,4,WIDTH-2,1," ")
     shadowRect(2,4,WIDTH-2,1)
     g.setBackground(COLORS.bg)
-    uoc.drawText(g, WIDTH-34,3,"Статус: "..craftStatus, -- Передаем g
+    uoc.drawText(g, WIDTH-34,3,"Статус: "..craftStatus,
         (craftStatus:find("Ошибка") and COLORS.error) or COLORS.ok)
-    uoc.progressBar(g, 3,5,WIDTH-6, isCrafting and 0.9 or 0) -- Передаем g
+    uoc.progressBar(g, 3,5,WIDTH-6, isCrafting and 0.9 or 0)
 end
 
 local function drawLogs()
-    uoc.drawLogs(g, 3, HEIGHT-9, logs, 4, COLORS.log) -- Передаем g
+    uoc.drawLogs(g, 3, HEIGHT-9, logs, 4, COLORS.log)
 end
 
 local function drawItems()
     local x, y = 2, 8
     local totalWidth = WIDTH-4
     local col_name = math.floor(totalWidth * 0.45)
-    local col_now = math.floor(totalWidth * 0.17)
-    local col_hold = math.floor(totalWidth * 0.17)
+    -- Уменьшаем ширину столбцов "В наличии" и "Держать"
+    local col_now = math.floor(totalWidth * 0.15) -- Было 0.17
+    local col_hold = math.floor(totalWidth * 0.15) -- Было 0.17
     local col_once = totalWidth - col_name - col_now - col_hold
 
     g.setForeground(COLORS.select_active)
@@ -180,11 +180,12 @@ local function drawItems()
         g.set(x, row, "│")
         g.set(x+1, row, string.format("%-"..col_name.."s",nameStr))
         g.set(x+col_name+1, row, "│")
-        g.set(x+col_name+2, row, string.format("%"..col_now.."s",tonumber(it.current) or 0))
+        -- Форматируем числа, чтобы они не вылезали за границы
+        g.set(x+col_name+2, row, string.format("%"..col_now.."s",unicode.sub(tostring(tonumber(it.current) or 0), 1, col_now)))
         g.set(x+col_name+col_now+2, row, "│")
-        g.set(x+col_name+col_now+3, row, string.format("%"..col_hold.."s",tonumber(it.count) or 0))
+        g.set(x+col_name+col_now+3, row, string.format("%"..col_hold.."s",unicode.sub(tostring(tonumber(it.count) or 0), 1, col_hold)))
         g.set(x+col_name+col_now+col_hold+3, row, "│")
-        g.set(x+col_name+col_now+col_hold+4, row, string.format("%"..col_once.."s",tonumber(it.craftSize) or 0))
+        g.set(x+col_name+col_now+col_hold+4, row, string.format("%"..col_once.."s",unicode.sub(tostring(tonumber(it.craftSize) or 0), 1, col_once)))
         g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
         g.setBackground(COLORS.bg)
     end
@@ -218,16 +219,17 @@ end
 
 local function drawSearchBar()
     local x, y, w, h = 3, HEIGHT-13, WIDTH-6, 3
-    uoc.roundRect(g, x, y, w, h, COLORS.search_border, COLORS.search_bg) -- Передаем g
+    uoc.roundRect(g, x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
     g.fill(x+1, y+1, w-2, h-2, " ")
     g.setForeground(COLORS.search_cross)
     g.set(x+w-3, y+1, (search ~= "" and "×" or " "))
-    g.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
 
+    -- Убираем подсказку "Поиск: введите часть названия..."
+    g.setForeground(COLORS.search_hint) -- Используем серый цвет для ввода
     local display = search
-    if display == "" then display = "Поиск: введите часть названия..." end
-    if searchActive then display = display .. "_" end
+    -- Убираем мигание курсора в поле поиска, он мигает только при активном вводе через safeReadInput
+    -- if searchActive then display = display .. "_" end
 
     local maxDisplayLen = w-7
     if unicode.len(display) > maxDisplayLen then
@@ -238,6 +240,7 @@ local function drawSearchBar()
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
 
+    -- Убираем мигание курсора при НЕактивном поле поиска
     if searchActive then
         term.setCursorPos(x + 2 + unicode.len(search), y + 1)
         term.setCursorBlink(true)
@@ -248,34 +251,20 @@ end
 
 local function drawButtons()
     local btns = {
-        {name="Удалить", x=WIDTH-60, tip="Удалить выбранный предмет из списка"},
-        {name="Изменить", x=WIDTH-45, tip="Изменить параметры предмета"},
-        {name=isCrafting and "Остановить" or "Автокрафт", x=WIDTH-30, tip=isCrafting and "Остановить автокрафт" or "Запустить автокрафт"},
-        {name="Добавить", x=WIDTH-15, tip="Добавить новый предмет (предмет в 1 слоте интерфейса ME)"},
+        {name="Удалить", x=WIDTH-60},
+        {name="Изменить", x=WIDTH-45},
+        {name=isCrafting and "Остановить" or "Автокрафт", x=WIDTH-30},
+        {name="Добавить", x=WIDTH-15},
     }
     for i,v in ipairs(btns) do
-        local hover = hoveredButton == i
-        uoc.animatedButton(g, v.x, HEIGHT-4, 12, 3, v.name, hover, COLORS.button, COLORS.buttonActive, COLORS.text) -- Передаем g
-        if hover then
-            tooltip = v.tip
-            tooltipTimeout = computer.uptime()
-        end
+        -- Убрана логика hoveredButton, чтобы не было анимации при наведении
+        -- Цвет меняется только если кнопка активно нажата (хотя в OpenComputers touch - это уже нажатие)
+        -- Здесь active всегда false, если нет реального "нажатого" состояния
+        uoc.animatedButton(g, v.x, HEIGHT-4, 12, 3, v.name, false, COLORS.button, COLORS.buttonActive, COLORS.text)
     end
 end
 
-local function drawTooltip()
-    if tooltip ~= "" and computer.uptime() - tooltipTimeout < 3 then
-        local txt = " "..tooltip.." "
-        local w = unicode.len(txt)
-        local x, y = WIDTH-w-3, HEIGHT-7
-        g.setBackground(COLORS.tooltip_bg)
-        g.setForeground(COLORS.tooltip_text)
-        g.fill(x, y, w+2, 3, " ")
-        g.set(x+1, y+1, txt)
-        g.setBackground(COLORS.bg)
-        g.setForeground(COLORS.text)
-    end
-end
+-- Функция drawTooltip полностью удалена
 
 local function draw()
     clear()
@@ -284,7 +273,7 @@ local function draw()
     drawSearchBar()
     drawLogs()
     drawButtons()
-    drawTooltip()
+    -- drawTooltip() -- Вызов удален
 end
 
 -------------------- IO и действия --------------------
@@ -326,13 +315,13 @@ local function addItem()
     changeitem = true
     clear()
     uoc.drawText(g, 10,HEIGHT-7,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
-    
+
     local name = safeReadInput("Название: ", 10, HEIGHT-6, COLORS.text, COLORS.text)
     local count_str = safeReadInput("Держать (число): ", 10, HEIGHT-5, COLORS.text, COLORS.text)
     local count = tonumber(count_str) or 0
     local craftSize_str = safeReadInput("Крафт за раз (число): ", 10, HEIGHT-4, COLORS.text, COLORS.text)
     local craftSize = tonumber(craftSize_str) or 1
-    
+
     local stack = nil
     local ok_stack, res_stack = pcall(me.getStackInSlot, 1)
     if ok_stack then stack = res_stack end
@@ -355,20 +344,20 @@ local function editItem()
     changeitem = true
     clear()
     uoc.drawText(g, 10,HEIGHT-7,"Изменение: "..(item.name or "<??>"),COLORS.ok)
-    
+
     local new_name = safeReadInput("Новое имя (Enter пропустить): ", 10, HEIGHT-6, COLORS.text, COLORS.text)
     if new_name and new_name ~= "" then
         item.name = new_name
     end
-    
+
     local count_str = safeReadInput("Новое держать (число, Enter пропустить): ", 10, HEIGHT-5, COLORS.text, COLORS.text)
     local count = tonumber(count_str)
     if count_str ~= "" and count then item.count = count end
-    
+
     local cs_str = safeReadInput("Новый крафт за раз (число, Enter пропустить): ", 10, HEIGHT-4, COLORS.text, COLORS.text)
     local cs = tonumber(cs_str)
     if cs_str ~= "" and cs then item.craftSize = cs end
-    
+
     save()
     addLog("Изменено: "..item.name,"INFO")
     changeitem = false
@@ -495,7 +484,7 @@ end
 -------------------- События --------------------
 event.listen("touch", function(_,_,x,y,_,_)
     if changeitem then return end
-    hoveredButton = nil
+    hoveredButton = nil -- Сбрасываем hoveredButton, так как подсказок нет
     local btns = {
         {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
         {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
@@ -504,7 +493,7 @@ event.listen("touch", function(_,_,x,y,_,_)
     }
     for i,btn in ipairs(btns) do
         if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
-            hoveredButton = i
+            -- hoveredButton = i -- Это больше не нужно для подсказок
             if i==1 then removeItem()
             elseif i==2 then editItem()
             elseif i==3 then if isCrafting then stopCraft() else doCraft() end
@@ -553,23 +542,13 @@ event.listen("touch", function(_,_,x,y,_,_)
 end)
 
 event.listen("drag", function(_,_,x,y,_,_)
-    local btns = {
-        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3},
-    }
-    for i,btn in ipairs(btns) do
-        if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
-            hoveredButton = i
-            tooltipTimeout = computer.uptime()
-            tooltip = ({"Удалить выбранный предмет из списка","Изменить параметры предмета",(isCrafting and "Остановить автокрафт" or "Запустить автокрафт"),"Добавить новый предмет"})[i]
-            draw()
-            return
-        end
-    end
-    hoveredButton = nil
-    tooltip = ""
+    -- Логика для hoveredButton и tooltip полностью удалена из drag
+    -- Если вам нужно выделение кнопки при наведении (как было раньше), то нужно вернуть
+    -- hoveredButton = i
+    -- tooltip = v.tip
+    -- tooltipTimeout = computer.uptime()
+    -- в цикл for i,btn
+    -- и затем в конце drag event.listen: hoveredButton = nil; tooltip = ""
     draw()
 end)
 
