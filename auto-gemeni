@@ -295,7 +295,7 @@ local function drawSearchBar()
 end
 
 local function drawButtons()
-    local btnState = isCrafting .. table.concat({settings.sortCriteria, tostring(settings.sortAscending)}, "|")
+    local btnState = tostring(isCrafting) .. table.concat({settings.sortCriteria, tostring(settings.sortAscending)}, "|")
     if lastDrawnState.buttons == btnState then return end
     local btns = {
         {name = "Удалить", x = WIDTH - 60, action = "delete", hover = false},
