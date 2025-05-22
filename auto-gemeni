@@ -257,7 +257,19 @@ local function drawButtons()
         uoc.animatedButton(v.x, HEIGHT-4, 12, 3, v.name, hover, COLORS.button, COLORS.buttonActive, COLORS.text)
     end
 
-    -- Кнопки постраничной навигации полностью удалены
+    -- Новые кнопки "<-" и "->"
+    local arrowBtnW = 4 -- Ширина кнопки стрелки
+    local arrowBtnH = 3 -- Высота кнопки стрелки
+    local arrowBtnY = HEIGHT-4 -- Позиция по Y (внизу)
+    local arrowBtnPadding = 1 -- Отступ между кнопками
+
+    -- Кнопка "<-" (слева)
+    local prevArrowBtnX = 2
+    uoc.animatedButton(prevArrowBtnX, arrowBtnY, arrowBtnW, arrowBtnH, "<-", false, COLORS.button, COLORS.buttonActive, COLORS.text)
+
+    -- Кнопка "->" (рядом с "<-")
+    local nextArrowBtnX = prevArrowBtnX + arrowBtnW + arrowBtnPadding
+    uoc.animatedButton(nextArrowBtnX, arrowBtnY, arrowBtnW, arrowBtnH, "->", false, COLORS.button, COLORS.buttonActive, COLORS.text)
 end
 
 local function draw()
@@ -597,6 +609,13 @@ event.listen("touch", function(_,_,x,y,_,_)
         {name=isCrafting and "Остановить" or "Автокрафт", x=WIDTH-30, action="toggleCraft"},
         {name="Добавить", x=WIDTH-15, action="add"},
     }
+    local arrowBtnW = 4
+    local arrowBtnH = 3
+    local arrowBtnY = HEIGHT-4
+    local prevArrowBtnX = 2
+    local nextArrowBtnX = prevArrowBtnX + arrowBtnW + 1 -- Отступ 1 между кнопками
+
+    -- Проверяем кнопки основных действий
     for i,btn in ipairs(btns) do
         local btnY = HEIGHT-4
         local btnW = 12
@@ -611,6 +630,82 @@ event.listen("touch", function(_,_,x,y,_,_)
             return
         end
     end
+
+    -- Проверяем кнопки "<-" и "->"
+    if x >= prevArrowBtnX and x <= prevArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
+        -- Логика для кнопки "<-" (если нужна, например, для перехода по элементам)
+        local showItems = {}
+        for i,item in ipairs(dataItems) do
+            if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+                table.insert(showItems, item)
+            end
+        end
+        local perPage = HEIGHT-24 - 7
+        local visibleItemsCount = math.min(#showItems, perPage)
+
+        if visibleItemsCount > 0 then
+            local currentSelectedItemIndex = nil
+            if selectedItem then
+                for i = 1, visibleItemsCount do
+                    if showItems[i] == dataItems[selectedItem] then
+                        currentSelectedItemIndex = i
+                        break
+                    end
+                end
+            end
+
+            if currentSelectedItemIndex and currentSelectedItemIndex > 1 then
+                selectedItem = nil
+                for k,v in ipairs(dataItems) do
+                    if v == showItems[currentSelectedItemIndex - 1] then selectedItem = k break end
+                end
+            elseif visibleItemsCount > 0 then
+                selectedItem = nil
+                for k,v in ipairs(dataItems) do
+                    if v == showItems[visibleItemsCount] then selectedItem = k break end
+                end
+            end
+        end
+        draw()
+        return
+    elseif x >= nextArrowBtnX and x <= nextArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
+        -- Логика для кнопки "->" (если нужна, например, для перехода по элементам)
+        local showItems = {}
+        for i,item in ipairs(dataItems) do
+            if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+                table.insert(showItems, item)
+            end
+        end
+        local perPage = HEIGHT-24 - 7
+        local visibleItemsCount = math.min(#showItems, perPage)
+
+        if visibleItemsCount > 0 then
+            local currentSelectedItemIndex = nil
+            if selectedItem then
+                for i = 1, visibleItemsCount do
+                    if showItems[i] == dataItems[selectedItem] then
+                        currentSelectedItemIndex = i
+                        break
+                    end
+                end
+            end
+
+            if currentSelectedItemIndex and currentSelectedItemIndex < visibleItemsCount then
+                selectedItem = nil
+                for k,v in ipairs(dataItems) do
+                    if v == showItems[currentSelectedItemIndex + 1] then selectedItem = k break end
+                end
+            elseif visibleItemsCount > 0 then
+                selectedItem = nil
+                for k,v in ipairs(dataItems) do
+                    if v == showItems[1] then selectedItem = k break end
+                end
+            end
+        end
+        draw()
+        return
+    end
+
     -- Обработка касания поля поиска
     if y >= HEIGHT-17 and y <= HEIGHT-15 then
         searchActive = false
@@ -697,23 +792,25 @@ event.listen("key_down", function(_,_,key,_,_ )
             end
         end
     else
-        local currentSelectedItemInShowItems = nil
+        local currentSelectedItemIndex = nil
         if selectedItem then
             -- Находим текущий выбранный элемент в отфильтрованном и видимом списке
             for i = 1, visibleItemsCount do
                 if showItems[i] == dataItems[selectedItem] then
-                    currentSelectedItemInShowItems = i
+                    currentSelectedItemIndex = i
                     break
                 end
             end
         end
 
         if key == 200 then -- up arrow
-            if currentSelectedItemInShowItems and currentSelectedItemInShowItems > 1 then
+            if visibleItemsCount == 0 then selectedItem = nil draw() return end -- No items to select
+            
+            if currentSelectedItemIndex and currentSelectedItemIndex > 1 then
                 -- Перемещаем выбор вверх в пределах видимых элементов
                 selectedItem = nil
                 for k,v in ipairs(dataItems) do
-                    if v == showItems[currentSelectedItemInShowItems - 1] then selectedItem = k break end
+                    if v == showItems[currentSelectedItemIndex - 1] then selectedItem = k break end
                 end
             elseif visibleItemsCount > 0 then
                 -- Если вверху списка или ничего не выбрано, выбираем последний видимый элемент
@@ -723,11 +820,13 @@ event.listen("key_down", function(_,_,key,_,_ )
                 end
             end
         elseif key == 208 then -- down arrow
-            if currentSelectedItemInShowItems and currentSelectedItemInShowItems < visibleItemsCount then
+            if visibleItemsCount == 0 then selectedItem = nil draw() return end -- No items to select
+
+            if currentSelectedItemIndex and currentSelectedItemIndex < visibleItemsCount then
                 -- Перемещаем выбор вниз в пределах видимых элементов
                 selectedItem = nil
                 for k,v in ipairs(dataItems) do
-                    if v == showItems[currentSelectedItemInShowItems + 1] then selectedItem = k break end
+                    if v == showItems[currentSelectedItemIndex + 1] then selectedItem = k break end
                 end
             elseif visibleItemsCount > 0 then
                 -- Если внизу списка или ничего не выбрано, выбираем первый видимый элемент
@@ -736,7 +835,55 @@ event.listen("key_down", function(_,_,key,_,_ )
                     if v == showItems[1] then selectedItem = k break end
                 end
             end
-        -- Стрелки ВЛЕВО/ВПРАВО для постраничной навигации полностью удалены
+        elseif key == 203 then -- left arrow (теперь для выбора элемента, циклично)
+            if visibleItemsCount == 0 then selectedItem = nil draw() return end
+
+            local currentSelectedItemIndex = nil
+            if selectedItem then
+                for i = 1, visibleItemsCount do
+                    if showItems[i] == dataItems[selectedItem] then
+                        currentSelectedItemIndex = i
+                        break
+                    end
+                end
+            end
+
+            if currentSelectedItemIndex and currentSelectedItemIndex > 1 then
+                selectedItem = nil
+                for k,v in ipairs(dataItems) do
+                    if v == showItems[currentSelectedItemIndex - 1] then selectedItem = k break end
+                end
+            elseif visibleItemsCount > 0 then
+                selectedItem = nil
+                for k,v in ipairs(dataItems) do
+                    if v == showItems[visibleItemsCount] then selectedItem = k break end
+                end
+            end
+        elseif key == 205 then -- right arrow (теперь для выбора элемента, циклично)
+            if visibleItemsCount == 0 then selectedItem = nil draw() return end
+
+            local currentSelectedItemIndex = nil
+            if selectedItem then
+                for i = 1, visibleItemsCount do
+                    if showItems[i] == dataItems[selectedItem] then
+                        currentSelectedItemIndex = i
+                        break
+                    end
+                end
+            end
+
+            if currentSelectedItemIndex and currentSelectedItemIndex < visibleItemsCount then
+                selectedItem = nil
+                for k,v in ipairs(dataItems) do
+                    if v == showItems[currentSelectedItemIndex + 1] then selectedItem = k break end
+                end
+            elseif visibleItemsCount > 0 then
+                selectedItem = nil
+                for k,v in ipairs(dataItems) do
+                    if v == showItems[1] then selectedItem = k break end
+                end
+            end
+        end
     end
     draw()
 end)
