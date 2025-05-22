@@ -11,11 +11,19 @@ local ultimateOC = {}
 -- Функция для рисования текста с цветом и жирным начертанием
 function ultimateOC.drawText(x, y, text, color, bold)
     g.setForeground(color or 0xFFFFFF)
-    if bold then
-        g.set(x, y, text)
-        g.set(x, y + 1, string.rep("─", unicode.len(text))) -- Подчеркивание для жирного текста
-    else
-        g.set(x, y, text)
+    -- В OpenOS 'g.set' обычно поддерживает только цвет и текст.
+    -- Имитация жирного шрифта через повторное наложение текста или подчеркивание
+    -- может приводить к 'миганию' или 'грязи' при частых перерисовках.
+    -- Лучше использовать только цвет и простой текст.
+    -- Если терминал поддерживает жирный шрифт, можно установить term.setGraphicsMode(term.mode.bold)
+    -- Но это не универсально и может конфликтовать.
+    -- Для OpenOS 1.6.1 и Lua 5.2, прямое "жирное" начертание через GPU.set не всегда есть.
+    -- Просто устанавливаем цвет и выводим текст.
+    g.set(x, y, text)
+    if bold then -- Если все же хотим какой-то акцент, можно сделать его цветом
+        -- Или использовать более насыщенный цвет
+        g.setForeground(color and (color + 0x111111) or 0xFFFFFF) -- Пример: немного ярче
+        g.set(x,y,text) -- Перерисовываем тем же текстом, но ярче, чтобы имитировать
     end
 end
 
@@ -54,9 +62,18 @@ end
 function ultimateOC.drawLogs(x, y, logs, lines, color, offset)
     g.setForeground(color or 0x8BE9FD)
     for i = 1, lines do
-        local idx = #logs - offset - lines + i
+        local displayLine = i - 1 -- Индекс строки относительно y
+        local idx = #logs - offset - (lines - 1) + displayLine -- Самый новый лог внизу
         if idx > 0 and idx <= #logs then
-            g.set(x, y + i - 1, logs[idx])
+            local logText = logs[idx] or ""
+            -- Очищаем текущую строку перед выводом нового лога
+            g.setBackground(0x23242b) -- Цвет фона логов
+            g.fill(x, y + displayLine, term.current.width - x, 1, " ") -- Очищаем до конца строки
+            g.set(x, y + displayLine, logText)
+        else
+            -- Если строка пуста, очищаем ее
+            g.setBackground(0x23242b)
+            g.fill(x, y + displayLine, term.current.width - x, 1, " ")
         end
     end
 end
