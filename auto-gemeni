@@ -12,7 +12,7 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Проверка доступности компонентов
 local function checkComponents()
@@ -109,7 +109,7 @@ end
 
 -- Проверяем файл данных
 if not fs.exists(DATA_FILE) then
-    uoc.savef(DATA_FILE, {items = {}, settings = {sortCriteria = "name", sortAscending = true}})
+    uoc.savef(DATA_FILE, {items = {}, settings = {sortCriteria = "name", ["sortAscending"] = true}}) -- ИСПРАВЛЕНО ЗДЕСЬ
     io.stdout:write("Создан новый файл BD.txt\n")
 end
 
@@ -517,11 +517,11 @@ local function reload()
     if not ok then
         addLog(logs, "ERROR: Ошибка загрузки BD.txt: " .. tostring(res), "ERROR")
         dataItems = {}
-        settings = {sortCriteria = "name", sortAscending = true}
+        settings = {sortCriteria = "name", ["sortAscending"] = true} -- ИСПРАВЛЕНО ЗДЕСЬ
     else
-        res = res or {items = {}, settings = {sortCriteria = "name", "sortAscending" = true}} -- Исправлено: "sortAscending" в кавычках
+        res = res or {items = {}, settings = {sortCriteria = "name", ["sortAscending"] = true}} -- ИСПРАВЛЕНО ЗДЕСЬ
         dataItems = res.items or {}
-        settings = res.settings or {sortCriteria = "name", "sortAscending" = true} -- Исправлено: "sortAscending" в кавычках
+        settings = res.settings or {sortCriteria = "name", ["sortAscending"] = true} -- ИСПРАВЛЕНО ЗДЕСЬ
     end
     clampPage()
     for _, item in ipairs(dataItems) do
@@ -785,7 +785,7 @@ local function autoCraftLoop()
             end
         end
         draw()
-        os.sleep(0.5)
+        os.sleep(0.05) -- Уменьшил таймаут для более быстрого обновления интерфейса
     end
 end
 
