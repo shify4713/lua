@@ -1,4 +1,3 @@
--- /lib/ultimateOC.lua
 local component = require("component")
 local unicode = require("unicode")
 local term = require("term")
@@ -11,36 +10,23 @@ local ultimateOC = {}
 -- Функция для рисования текста с цветом и жирным начертанием
 function ultimateOC.drawText(x, y, text, color, bold)
     g.setForeground(color or 0xFFFFFF)
-    -- Очищаем текущую строку на всякий случай, чтобы убрать "хвосты" старого текста
-    -- Это особенно важно, если новый текст короче старого
-    g.set(x, y, string.rep(" ", unicode.len(text) + (bold and 1 or 0))) -- Очищаем предполагаемую область текста
     if bold then
-        -- Для OpenComputers "жирный" эффект часто достигается отрисовкой символа дважды
-        -- или слегка смещенным. Простейший и читаемый вариант - просто отрисовка
-        -- без дополнительных ухищрений, если сам шрифт не поддерживает жирность.
-        -- Однако, иногда используется повторная отрисовка с небольшим смещением.
-        -- Здесь мы будем просто отрисовывать, так как GPU сам решает, как отображать символы.
-        -- Для лучшей читаемости просто рисуем текст.
-        g.set(x, y, text)
-        -- Можно попробовать такой вариант для более "жирного" эффекта (может выглядеть как тень):
-        -- g.set(x+1, y, text)
+        g.set(x, y, text .. " ")
+        g.set(x, y + 1, string.rep(" ", unicode.len(text)))
     else
         g.set(x, y, text)
     end
 end
 
--- Функция для рисования прямоугольника с закруглёнными углами (чисто декоративно, GPU не поддерживает)
+-- Функция для рисования прямоугольника с закруглёнными углами
 function ultimateOC.roundRect(x, y, w, h, borderColor, bgColor)
     g.setBackground(bgColor or 0x000000)
-    g.fill(x, y, w, h, " ") -- Заливка фона
+    g.fill(x, y, w, h, " ")
     g.setForeground(borderColor or 0xFFFFFF)
-
-    -- OpenComputers GPU не имеет нативной поддержки для закругленных углов.
-    -- Рисуем стандартный прямоугольник с символами рамок.
     -- Верхняя линия
-    g.set(x, y, "╔" .. string.rep("═", math.max(0, w - 2)) .. "╗")
+    g.set(x, y, "╔" .. string.rep("═", w - 2) .. "╗")
     -- Нижняя линия
-    g.set(x, y + h - 1, "╚" .. string.rep("═", math.max(0, w - 2)) .. "╝")
+    g.set(x, y + h - 1, "╚" .. string.rep("═", w - 2) .. "╝")
     -- Боковые линии
     for i = 1, h - 2 do
         g.set(x, y + i, "║")
@@ -49,95 +35,60 @@ function ultimateOC.roundRect(x, y, w, h, borderColor, bgColor)
 end
 
 -- Функция для анимированной кнопки
-function ultimateOC.animatedButton(x, y, w, h, text, isHovered, normalColor, hoverColor, textColor, subText, subTextColor)
-    local bgColor = isHovered and hoverColor or normalColor
-    g.setBackground(bgColor)
-    g.fill(x, y, w, h, " ") -- Заливка фона кнопки
-
-    g.setForeground(0xFFFFFF) -- Цвет границы (можно настроить)
-    -- Рисуем простую рамку
-    g.set(x, y, "┌" .. string.rep("─", math.max(0, w - 2)) .. "┐")
-    g.set(x, y + h - 1, "└" .. string.rep("─", math.max(0, w - 2)) .. "┘")
-    for i = 1, h - 2 do
-        g.set(x, y + i, "│")
-        g.set(x + w - 1, y + i, "│")
-    end
-
-    -- Рисуем основной текст по центру
+function ultimateOC.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor, subText, subTextColor)
+    local bg = hover and activeColor or bgColor
+    g.setBackground(bg)
+    g.fill(x, y, w, h, " ")
     g.setForeground(textColor or 0xFFFFFF)
     local textLen = unicode.len(text)
     local tx = x + math.floor((w - textLen) / 2)
-    local ty = y + math.floor(h / 2)
-    g.set(tx, ty, text)
-
-    -- Рисуем дополнительный текст (подтекст), если он есть
+    g.set(tx, y + math.floor(h / 2), text)
     if subText and subText ~= "" then
         local subTextLen = unicode.len(subText)
         local subTx = x + math.floor((w - subTextLen) / 2)
         g.setForeground(subTextColor or textColor or 0xFFFFFF)
-        g.set(subTx, ty + 1, subText) -- Подтекст на одну строку ниже основного текста
+        g.set(subTx, y + math.floor(h / 2) + 1, subText)
     end
 end
 
 -- Функция для отрисовки логов
 function ultimateOC.drawLogs(x, y, logs, lines, color, offset)
     g.setForeground(color or 0x8BE9FD)
-    g.setBackground(0x1A1A1A) -- Убедитесь, что фон для логов установлен
-
-    -- Очищаем всю область логов, чтобы избежать артефактов
-    for i = 0, lines - 1 do
-        g.set(x, y + i, string.rep(" ", g.maxResolution()))
-    end
-
     for i = 1, lines do
-        local idx = #logs - offset - lines + i -- Индекс лога в массиве
-        if idx >= 1 and idx <= #logs then
-            local logMessage = logs[idx]
-            -- Обрезаем сообщение, если оно длиннее ширины экрана
-            if unicode.len(logMessage) > g.maxResolution() - x + 1 then
-                logMessage = unicode.sub(logMessage, 1, g.maxResolution() - x - 2) .. ".."
-            end
-            g.set(x, y + i - 1, logMessage)
+        local idx = #logs - offset - lines + i
+        if idx > 0 and idx <= #logs then
+            g.set(x, y + i - 1, logs[idx])
         end
     end
 end
 
 -- Функция для сохранения данных в файл
 function ultimateOC.savef(path, data)
-    local file, err = io.open(path, "w")
-    if not file then
-        return false, "Не удалось открыть файл для записи: " .. path .. " (" .. tostring(err) .. ")"
+    local file = io.open(path, "w")
+    if file then
+        file:write(textutils.serialize(data))
+        file:close()
     end
-    local success, serr = pcall(file.write, file, textutils.serialize(data))
-    file:close()
-    if not success then
-        return false, "Ошибка записи в файл: " .. tostring(serr)
-    end
-    return true
 end
 
 -- Функция для загрузки данных из файла
 function ultimateOC.loadf(path)
-    local file, err = io.open(path, "r")
-    if not file then
-        return nil, "Файл не найден или не удалось открыть: " .. path .. " (" .. tostring(err) .. ")"
-    end
+    local file = io.open(path, "r")
+    if not file then return nil end
     local content = file:read("*a")
     file:close()
+    local func, err = load("return " .. content)
+    if not func then return nil end
+    return func()
+end
 
-    if content == "" then
-        return {}, "Файл пуст" -- Возвращаем пустую таблицу, если файл пуст
-    end
-
-    local func, load_err = load("return " .. content)
-    if not func then
-        return nil, "Ошибка при десериализации данных: " .. tostring(load_err)
-    end
-    local success, data = pcall(func)
-    if not success then
-        return nil, "Ошибка при выполнении десериализованной функции: " .. tostring(data)
-    end
-    return data
+-- Функция прогресс-бара
+function ultimateOC.progressBar(x, y, w, progress)
+    local barWidth = math.floor(w * math.max(0, math.min(1, progress)))
+    g.setBackground(0x44475a)
+    g.fill(x, y, w, 1, " ")
+    g.setBackground(0x50FA7B)
+    g.fill(x, y, barWidth, 1, " ")
 end
 
 return ultimateOC
