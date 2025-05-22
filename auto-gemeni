@@ -12,7 +12,7 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Проверка доступности компонентов
 local function checkComponents()
@@ -359,7 +359,7 @@ local function drawSearchBar()
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
     needsRedrawSearchBar = false
-end
+END
 
 local function drawLogsArea()
     if not needsRedrawLogs and not needsRedrawAll then return end
@@ -375,7 +375,7 @@ local function drawLogsArea()
     g.setBackground(COLORS.bg)
     uoc.drawLogs(x + 1, y + 1, logs, LOG_LINES, COLORS.log, logOffset)
     needsRedrawLogs = false
-end
+END
 
 local function drawButtons()
     if not needsRedrawButtons and not needsRedrawAll then return end
@@ -458,7 +458,7 @@ local function drawButtons()
     uoc.animatedButton(btnX, sortBtnY, BUTTON_WIDTH, SORT_BUTTON_HEIGHT,
         "Сортировать", sortHover, COLORS.button, COLORS.buttonActive, COLORS.text, sortIndicatorText, COLORS.text)
     needsRedrawButtons = false
-end
+END
 
 local function drawInputScreen()
     if not needsRedrawInputScreen and not needsRedrawAll then return end
@@ -520,7 +520,7 @@ local function drawInputScreen()
 
     g.setBackground(COLORS.bg) -- Reset background
     needsRedrawInputScreen = false
-end
+END
 
 local function draw()
     if needsRedrawAll then
@@ -541,7 +541,7 @@ local function draw()
         drawButtons()
     end
     needsRedrawAll = false
-end
+END
 
 -------------------- IO и действия --------------------
 local function reload()
@@ -604,7 +604,7 @@ local function reload()
     end
     needsRedrawTable = true
     needsRedrawHeader = true
-end
+END
 
 local function save()
     local ok, err = pcall(uoc.savef, DATA_FILE, {items = dataItems, settings = settings})
@@ -613,7 +613,7 @@ local function save()
     else
         addLog("INFO: Данные сохранены.", "INFO")
     end
-end
+END
 
 local function resetSelection()
     search = ""
@@ -622,7 +622,7 @@ local function resetSelection()
     needsRedrawTable = true
     needsRedrawHeader = true
     needsRedrawSearchBar = true
-end
+END
 
 local function addItem()
     changeitem = true
@@ -632,7 +632,7 @@ local function addItem()
     inputActive = true
     needsRedrawInputScreen = true
     needsRedrawAll = true -- Смена режима, нужно перерисовать всё
-end
+END
 
 local function editItem()
     if not selectedItem then 
@@ -652,7 +652,7 @@ local function editItem()
     inputActive = true
     needsRedrawInputScreen = true
     needsRedrawAll = true -- Смена режима, нужно перерисовать всё
-end
+END
 
 local function saveItem()
     local itemData = {}
@@ -695,7 +695,7 @@ local function saveItem()
     currentField = 1
     inputActive = false
     needsRedrawAll = true -- Смена режима, нужно перерисовать всё
-end
+END
 
 local function cancelInput()
     changeitem = false
@@ -704,7 +704,7 @@ local function cancelInput()
     currentField = 1
     inputActive = false
     needsRedrawAll = true -- Смена режима, нужно перерисовать всё
-end
+END
 
 local function removeItem()
     if not selectedItem then 
@@ -717,7 +717,7 @@ local function removeItem()
     clampPage()
     save()
     needsRedrawTable = true
-end
+END
 
 local function doCraft()
     isCrafting = true
@@ -726,7 +726,7 @@ local function doCraft()
     addLog("INFO: Запущен автокрафт", "INFO")
     needsRedrawHeader = true
     needsRedrawButtons = true
-end
+END
 
 local function stopCraft()
     isCrafting = false
@@ -734,7 +734,7 @@ local function stopCraft()
     addLog("WARN: Остановлен автокрафт", "WARN")
     needsRedrawHeader = true
     needsRedrawButtons = true
-end
+END
 
 local function craftAll()
     if not isCrafting then
@@ -755,7 +755,7 @@ local function craftAll()
         needsRedrawButtons = true
     end
     needsRedrawTable = true -- Обновить таблицу после крафта
-end
+END
 
 local function tryCraftItem(itemToCraft)
     local count = tonumber(itemToCraft.count) or 0
@@ -837,7 +837,7 @@ local function tryCraftItem(itemToCraft)
         needsRedrawHeader = true
         return false
     end
-end
+END
 
 -------------------- Обработка событий --------------------
 local function updateButtonHover(x, y)
@@ -891,7 +891,7 @@ local function updateButtonHover(x, y)
     end
 
     return nil
-end
+END
 
 -- Основной цикл обработки событий
 local function mainLoop()
@@ -1182,7 +1182,7 @@ local function mainLoop()
                     if oldSelectedItem ~= selectedItem then
                         needsRedrawTable = true -- Перерисовать, если изменился выбранный элемент
                     end
-                end
+                END
             elseif e == "mouse_scroll" then
                 if not changeitem then
                     if searchActive then
@@ -1199,16 +1199,16 @@ local function mainLoop()
                         end
                         if oldPage ~= currentPage then needsRedrawTable = true needsRedrawHeader = true end
                     end
-                end
+                END
             elseif e == "mouse_move" then
                 local oldButtonHover = buttonHover
                 buttonHover = updateButtonHover(x, y)
                 if oldButtonHover ~= buttonHover then
                     needsRedrawButtons = true
                     if changeitem then needsRedrawInputScreen = true end -- Для кнопок на экране ввода
-                end
-            end
-        end -- End if e
+                END
+            END
+        END -- End if e
 
         -- Логика автокрафта
         local currentTime = computer.uptime()
@@ -1216,19 +1216,19 @@ local function mainLoop()
             reload() -- Обновляем данные перед попыткой крафта
             craftAll() -- Запускаем логику крафта всех
             lastCraftLoopTime = currentTime
-        end
+        END
 
         -- Отрисовка экрана (обновлять только при необходимости)
         if needsRedrawAll or needsRedrawHeader or needsRedrawTable or needsRedrawSearchBar or needsRedrawLogs or needsRedrawButtons or needsRedrawInputScreen then
             draw()
-        end
+        END
         
         -- Если нет активных событий, можно немного подождать, чтобы не нагружать CPU
         if not e then
             os.sleep(0.05)
-        end
-    end
-end
+        END
+    END
+END
 
 -------------------- Старт --------------------
 checkComponents()
@@ -1241,7 +1241,7 @@ if not ok then
     addLog("ERROR: Ошибка при начальной загрузке: " .. tostring(err), "ERROR")
     draw()
     while true do os.sleep(1) end -- Ожидаем в случае фатальной ошибки
-end
+END
 draw()
 addLog("INFO: Готов к работе.", "INFO")
 mainLoop()
