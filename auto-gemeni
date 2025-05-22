@@ -9,33 +9,119 @@ local computer = require("computer")
 -- Paths and library
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Check component availability
 local function checkComponents()
-    if not component.isAvailable("gpu") then
-        error("GPU component is unavailable")
+    local gpuAvailable = component.isAvailable("gpu")
+    local meAvailable = component.isAvailable("me_interface")
+    if not gpuAvailable then
+        print("Error: GPU component is unavailable")
+        return false
     end
-    if not component.isAvailable("me_interface") then
-        error("ME Interface component is unavailable")
+    if not meAvailable then
+        print("Error: ME Interface component is unavailable")
+        return false
     end
+    return true
 end
 
 -- Load or download the library
-local uoc
-if not fs.exists(LIB_PATH) then
-    print("ultimateOC.lua not found. Downloading...")
-    local success, err = shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
-    if not success then
-        error("Failed to download ultimateOC.lua: " .. tostring(err))
+local uoc = {}
+local function loadLibrary()
+    if not fs.exists(LIB_PATH) then
+        print("ultimateOC.lua not found. Downloading...")
+        local success, err = shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
+        if not success then
+            print("Failed to download ultimateOC.lua: " .. tostring(err))
+            return false
+        end
     end
+
+    local ok, result = pcall(require, "ultimateOC")
+    if not ok then
+        print("Failed to load ultimateOC.lua: " .. tostring(result))
+        return false
+    end
+    uoc = result or {}
+    return true
 end
 
-local ok, result = pcall(require, "ultimateOC")
-if not ok then
-    error("Failed to load ultimateOC.lua: " .. tostring(result))
+-- Fallback library functions
+if not uoc.drawText then
+    function uoc.drawText(x, y, text, color, bold)
+        local gpu = component.gpu
+        gpu.setForeground(color or 0xFFFFFF)
+        gpu.set(x, y, text)
+    end
 end
-uoc = result
+if not uoc.progressBar then
+    function uoc.progressBar(x, y, w, p)
+        local gpu = component.gpu
+        gpu.fill(x, y, math.floor(w * p), 1, "█")
+    end
+end
+if not uoc.roundRect then
+    function uoc.roundRect(x, y, w, h, borderColor, bgColor)
+        local gpu = component.gpu
+        gpu.setBackground(bgColor or 0x000000)
+        gpu.fill(x, y, w, h, " ")
+        gpu.setForeground(borderColor or 0xFFFFFF)
+        gpu.set(x, y, "╔" .. string.rep("═", w-2) .. "╗")
+        gpu.set(x, y+h-1, "╚" .. string.rep("═", w-2) .. "╝")
+        for i = 1, h-2 do
+            gpu.set(x, y+i, "║")
+            gpu.set(x+w-1, y+i, "║")
+        end
+    end
+end
+if not uoc.animatedButton then
+    function uoc.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor)
+        local gpu = component.gpu
+        gpu.setBackground(hover and activeColor or bgColor)
+        gpu.fill(x, y, w, h, " ")
+        gpu.setForeground(textColor)
+        local tx = x + math.floor((w - unicode.len(text)) / 2)
+        gpu.set(tx, y + math.floor(h/2), text)
+    end
+end
+if not uoc.drawLogs then
+    function uoc.drawLogs(x, y, logs, lines, color, offset)
+        local gpu = component.gpu
+        gpu.setForeground(color or 0xFFFFFF)
+        for i = 1, lines do
+            local idx = #logs - offset - lines + i
+            if idx > 0 and idx <= #logs then
+                gpu.set(x, y + i - 1, logs[idx])
+            end
+        end
+    end
+end
+if not uoc.addLog then
+    logs = {}
+    function uoc.addLog(logsTable, msg)
+        table.insert(logsTable, msg)
+        if #logsTable > 100 then table.remove(logsTable, 1) end
+    end
+end
+if not uoc.loadf then
+    function uoc.loadf(path)
+        local file = io.open(path, "r")
+        if not file then return nil end
+        local content = file:read("*a")
+        file:close()
+        return load("return " .. content)()
+    end
+end
+if not uoc.savef then
+    function uoc.savef(path, data)
+        local file = io.open(path, "w")
+        if file then
+            file:write(textutils.serialize(data))
+            file:close()
+        end
+    end
+end
 
 -- Initialize data file
 if not fs.exists(DATA_FILE) then
@@ -79,7 +165,7 @@ local searchActive = false
 local logOffset = 0
 local lastRequestedItem = nil
 local lastRequestTime = 0
-local lastDrawnState = {} -- Cache for rendering optimization
+local lastDrawnState = {}
 
 -- Components
 local gpu = component.gpu
@@ -885,9 +971,14 @@ event.listen("key_down", function(_, _, char, code)
 end)
 
 -- Main
-checkComponents()
+if not checkComponents() then
+    while true do os.sleep(1) end
+end
 gpu.setResolution(WIDTH, HEIGHT)
 uoc.addLog(logs, "DEBUG: Program started")
+if not loadLibrary() then
+    uoc.addLog(logs, "WARNING: Using fallback library functions")
+end
 local ok, err = pcall(reload)
 if not ok then
     uoc.addLog(logs, "ERROR: Initial load failed: " .. tostring(err))
