@@ -410,8 +410,15 @@ local function autoCraftLoop()
                     -- Если текущее количество меньше требуемого и в этом цикле еще не было крафта
                     if current < count and not craftedThisCycle then
                         addLog(logs, "Предмет нуждается в крафте: "..(item.name or "<??>").." (Текущее: "..current..", Нужно: "..count..")", "DEBUG")
-                        local ok2, cpus = pcall(me.getCpus)
-                        cpus = ok2 and cpus or {}
+
+                        local cpus_ok, cpus = pcall(me.getCpus)
+                        if not cpus_ok then
+                            addLog(logs, "Ошибка получения списка CPU: "..tostring(cpus), "ERROR")
+                            craftStatus = "Ошибка: ME CPU"
+                            break -- Выходим из цикла по предметам, попробуем снова в следующем цикле
+                        end
+                        cpus = cpus or {} -- Убедимся, что cpus - это таблица
+
                         local freeCpu = nil
                         -- Ищем свободный CPU
                         for _,cpu in ipairs(cpus) do
@@ -420,8 +427,15 @@ local function autoCraftLoop()
 
                         if freeCpu then
                             addLog(logs, "Найден свободный CPU: "..tostring(freeCpu), "DEBUG")
-                            local ok3, craftables = pcall(me.getCraftables, {name=item.id, damage=item.dmg})
-                            craftables = ok3 and craftables or {n=0}
+
+                            local craftables_ok, craftables = pcall(me.getCraftables, {name=item.id, damage=item.dmg})
+                            if not craftables_ok then
+                                addLog(logs, "Ошибка получения рецептов для ".. (item.name or "<??>") ..": "..tostring(craftables), "ERROR")
+                                craftStatus = "Ошибка: ME Рецепты"
+                                break -- Выходим из цикла по предметам
+                            end
+                            craftables = craftables or {n=0} -- Убедимся, что craftables - это таблица с полем n
+
                             -- Проверяем, есть ли рецепт для предмета
                             if craftables.n and craftables.n >= 1 then
                                 addLog(logs, "Найден рецепт для: "..(item.name or "<??>"), "DEBUG")
@@ -434,8 +448,10 @@ local function autoCraftLoop()
                                         craftStatus = "Крафт: "..(item.name or "<??>")
                                         addLog(logs, "Успешный запрос крафта 1x "..(item.name or "<??>").." на CPU "..tostring(freeCpu),"INFO")
                                         craftedThisCycle = true -- Устанавливаем флаг, чтобы не крафтить больше в этом цикле
+                                        break -- Останавливаемся после одного успешного крафта в этом цикле
                                     else
-                                        craftStatus = "Ошибка: не удалось отправить крафт "..(item.name or "<??>").." (succ: "..tostring(succ)..", req: "..tostring(req)..")","ERROR")
+                                        craftStatus = "Ошибка: не удалось отправить крафт "..(item.name or "<??>")
+                                        addLog(logs, "Ошибка: не удалось отправить крафт "..(item.name or "<??>").." (succ: "..tostring(succ)..", res: "..tostring(req)..")","ERROR")
                                     end
                                 else
                                     addLog(logs, "Delta (количество для крафта) <= 0 для: "..(item.name or "<??>"), "DEBUG")
