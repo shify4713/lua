@@ -156,7 +156,7 @@ local function getFilteredAndSortedItems()
 end
 
 local function getItemsPerPage()
-    return HEIGHT - 16 -- Увеличено пространство для логов и кнопок
+    return HEIGHT - 18 -- Добавлено больше пространства для логов и кнопок
 end
 
 local function getMaxPages()
@@ -172,32 +172,29 @@ end
 
 -------------------- Визуал --------------------
 local function clear()
-    io.stdout:write("DEBUG: Очистка экрана\n")
     g.setBackground(COLORS.bg)
     g.fill(1, 1, WIDTH, HEIGHT, " ")
     g.setForeground(COLORS.text)
 end
 
 local function drawHeader()
-    io.stdout:write("DEBUG: Рисование заголовка\n")
-    uoc.drawText(2, 1, "Ultimate AutoCraft", COLORS.ok, true)
+    uoc.drawText(2, 2, "Ultimate AutoCraft", COLORS.ok, true)
     g.setBackground(COLORS.progress_fg)
-    g.fill(1, 2, WIDTH, 1, " ")
+    g.fill(1, 3, WIDTH, 1, " ")
     g.setBackground(COLORS.bg)
-    uoc.drawText(2, 3, "Статус: " .. craftStatus,
+    uoc.drawText(2, 4, "Статус: " .. craftStatus,
         (craftStatus:find("Ошибка") and COLORS.error) or COLORS.ok)
     if uoc.progressBar then
-        uoc.progressBar(2, 4, WIDTH - 20, isCrafting and 0.9 or 0)
+        uoc.progressBar(2, 5, WIDTH - 20, isCrafting and 0.9 or 0)
     end
     local maxPages = getMaxPages()
-    uoc.drawText(2, 5, "Страница: " .. currentPage .. "/" .. maxPages, COLORS.text)
+    uoc.drawText(2, 6, "Страница: " .. currentPage .. "/" .. maxPages, COLORS.text)
 end
 
 local function drawItems()
-    io.stdout:write("DEBUG: Рисование предметов\n")
     local filteredAndSortedItems = getFilteredAndSortedItems()
-    local x, y = 1, 6
-    local totalWidth = WIDTH - 20 -- Оставляем место для кнопок справа
+    local x, y = 1, 8 -- Сдвинули таблицу ниже
+    local totalWidth = WIDTH - 20
     local col_name = math.floor(totalWidth * 0.35)
     local col_category = math.floor(totalWidth * 0.15)
     local col_now = math.floor(totalWidth * 0.15)
@@ -284,7 +281,6 @@ local function drawItems()
 end
 
 local function drawSearchBar()
-    io.stdout:write("DEBUG: Рисование строки поиска\n")
     local x, y = 2, HEIGHT - 10
     local w, h = WIDTH - 20, 3
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
@@ -306,13 +302,11 @@ local function drawSearchBar()
 end
 
 local function drawLogs()
-    io.stdout:write("DEBUG: Рисование логов\n")
     local logLines = 5
     uoc.drawLogs(2, HEIGHT - logLines, logs, logLines, COLORS.log, logOffset)
 end
 
 local function drawButtons()
-    io.stdout:write("DEBUG: Рисование кнопок\n")
     local btnWidth = 12
     local btnHeight = 3
     local btnX = WIDTH - btnWidth - 2
@@ -325,12 +319,12 @@ local function drawButtons()
         {name = "Добавить", action = "add"},
     }
     for i, btn in ipairs(btns) do
-        local btnY = 2 + (i - 1) * (btnHeight + btnPadding)
+        local btnY = 8 + (i - 1) * (btnHeight + btnPadding) -- Сдвинуты вниз, чтобы соответствовать таблице
         uoc.animatedButton(btnX, btnY, btnWidth, btnHeight, btn.name, false, COLORS.button, COLORS.buttonActive, COLORS.text)
     end
     local arrowBtnW = 4
     local arrowBtnH = 3
-    local arrowBtnY = 2 + (#btns * (btnHeight + btnPadding))
+    local arrowBtnY = 8 + (#btns * (btnHeight + btnPadding))
     local prevArrowBtnX = btnX
     local nextArrowBtnX = btnX
     local maxPages = getMaxPages()
@@ -365,14 +359,12 @@ local function drawButtons()
 end
 
 local function draw()
-    io.stdout:write("DEBUG: Начало отрисовки\n")
     clear()
     drawHeader()
     drawItems()
     drawSearchBar()
     drawLogs()
     drawButtons()
-    io.stdout:write("DEBUG: Отрисовка завершена\n")
 end
 
 -------------------- IO и действия --------------------
@@ -663,7 +655,7 @@ local function autoCraftLoop()
             end
         end
         draw()
-        os.sleep(0.5) -- Увеличено для снижения частоты перерисовки
+        os.sleep(0.5)
     end
 end
 
@@ -681,14 +673,14 @@ local function updateButtonHover(x, y)
         {name = "Добавить", action = "add"},
     }
     for i, btn in ipairs(btns) do
-        local btnY = 2 + (i - 1) * (btnHeight + btnPadding)
+        local btnY = 8 + (i - 1) * (btnHeight + btnPadding)
         if x >= btnX and x <= btnX + btnWidth - 1 and y >= btnY and y <= btnY + btnHeight - 1 then
             return true, btn.action
         end
     end
     local arrowBtnW = 4
     local arrowBtnH = 3
-    local arrowBtnY = 2 + (#btns * (btnHeight + btnPadding))
+    local arrowBtnY = 8 + (#btns * (btnHeight + btnPadding))
     local prevArrowBtnX = btnX
     local nextArrowBtnX = btnX
     local sortBtnY = arrowBtnY + (2 * (arrowBtnH + 1))
@@ -713,11 +705,11 @@ event.listen("touch", function(_, _, x, y, _, _)
         {name = "Крафт всех", action = "craftAll"},
         {name = "Удалить", action = "delete"},
         {name = "Изменить", action = "edit"},
-        {name = isCrafting and "Остановить" or "Автокрафт", action = "toggleCraft"},
+        {name = isCrafting and "Остановить Eliminar или "Автокрафт", action = "toggleCraft"},
         {name = "Добавить", action = "add"},
     }
     for i, btn in ipairs(btns) do
-        local btnY = 2 + (i - 1) * (btnHeight + btnPadding)
+        local btnY = 8 + (i - 1) * (btnHeight + btnPadding)
         if x >= btnX and x <= btnX + btnWidth - 1 and y >= btnY and y <= btnY + btnHeight - 1 then
             addLog(logs, "DEBUG: Кнопка '" .. btn.name .. "' нажата")
             if btn.action == "delete" then removeItem()
@@ -732,7 +724,7 @@ event.listen("touch", function(_, _, x, y, _, _)
     end
     local arrowBtnW = 4
     local arrowBtnH = 3
-    local arrowBtnY = 2 + (#btns * (btnHeight + btnPadding))
+    local arrowBtnY = 8 + (#btns * (btnHeight + btnPadding))
     local prevArrowBtnX = btnX
     local nextArrowBtnX = btnX
     local sortBtnY = arrowBtnY + (2 * (arrowBtnH + 1))
@@ -801,7 +793,7 @@ event.listen("touch", function(_, _, x, y, _, _)
     local filteredAndSortedItems = getFilteredAndSortedItems()
     local perPage = getItemsPerPage()
     local startIndex = (currentPage - 1) * perPage + 1
-    local itemsStartY = 8
+    local itemsStartY = 10
     local itemsEndY = itemsStartY + perPage - 1
     if y >= itemsStartY and y <= itemsEndY then
         local idxOnPage = y - itemsStartY
