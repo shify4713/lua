@@ -41,7 +41,6 @@ function M.drawText(x, y, text, color, shadow)
     if shadow then
         gpu.setBackground(0x282A36)
         gpu.set(x + 1, y + 1, text)
-        gpu.setBackground(originalBg)
     end
     gpu.setBackground(originalBg)
     gpu.set(x, y, text)
@@ -57,16 +56,23 @@ function M.addLog(logs, text, lvl)
     while #logs > 50 do table.remove(logs, 1) end
 end
 
-function M.drawLogs(x, y, logs, count, color)
+function M.drawLogs(x, y, logs, count, color, logOffset)
     if type(logs) ~= "table" then
         error("Неверный аргумент: logs должен быть таблицей")
     end
     count = count or 10
     color = color or 0x8BE9FD
+    logOffset = logOffset or 0
     local logY = y
-    for i = math.max(1, #logs - count + 1), #logs do
+    local startIdx = math.max(1, #logs - count + 1 - logOffset)
+    local endIdx = math.min(#logs, startIdx + count - 1)
+    for i = startIdx, endIdx do
         M.drawText(x, logY, logs[i], color)
         logY = logY + 1
+    end
+    -- Очищаем оставшиеся строки, если логов меньше, чем count
+    for i = logY, y + count - 1 do
+        M.drawText(x, i, string.rep(" ", 100), color)
     end
 end
 
@@ -91,10 +97,7 @@ function M.drawButton(x, y, w, h, text, buttonColor, textColor, subText, subText
     gpu.setForeground(textColor)
     local textWidth = unicode.len(text)
     local textX = x + math.floor((w - textWidth) / 2)
-    local textY = y + math.floor((h - 1) / 2)
-    if subText then
-        textY = y + math.floor((h - 2) / 2)
-    end
+    local textY = y + math.floor((h - (subText and 2 or 1)) / 2)
     gpu.set(textX, textY, text)
     if subText then
         subTextColor = subTextColor or textColor
@@ -107,7 +110,9 @@ function M.drawButton(x, y, w, h, text, buttonColor, textColor, subText, subText
 end
 
 function M.animatedButton(x, y, w, h, text, hover, buttonColor, buttonActiveColor, textColor, subText, subTextColor)
-    M.drawButton(x, y, w, h, text, buttonColor, textColor, subText, subTextColor)
+    if type(hover) ~= "boolean" then hover = false end
+    local finalButtonColor = hover and buttonActiveColor or buttonColor
+    M.drawButton(x, y, w, h, text, finalButtonColor, textColor, subText, subTextColor)
 end
 
 function M.progressBar(x, y, w, progress)
