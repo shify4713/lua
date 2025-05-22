@@ -1,12 +1,13 @@
 local fs = require("filesystem")
 local unicode = require("unicode")
 local gpu = require("component").gpu
+local serialization = require("serialization") -- ПЕРЕМЕЩЕНО СЮДА: загружается один раз при старте
 
 local M = {}
 
 -- Безопасное сохранение таблицы (быстрее и надёжнее)
 function M.savef(path, tbl)
-    local ok, ser = pcall(require("serialization").serialize, tbl)
+    local ok, ser = pcall(serialization.serialize, tbl) -- Используем уже загруженную библиотеку
     if not ok then error("Ошибка сериализации: "..tostring(ser)) end
     local f, err = io.open(path, "w")
     if not f then error("Не могу открыть файл для записи: "..err) end
@@ -20,7 +21,7 @@ function M.loadf(path)
     if not f then error("Не могу открыть файл: "..err) end
     local data = f:read("*a")
     f:close()
-    local ok, tbl = pcall(require("serialization").unserialize, data)
+    local ok, tbl = pcall(serialization.unserialize, data) -- Используем уже загруженную библиотеку
     if not ok then error("Ошибка десериализации: "..tostring(tbl)) end
     return tbl or {}
 end
