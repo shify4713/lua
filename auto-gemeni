@@ -12,7 +12,7 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Загружаем библиотеку ultimateOC
 -- Проверяем, существует ли файл библиотеки
@@ -197,7 +197,7 @@ function getCurrentItemCount(itemName)
         end
     end
     return 0
-end
+}
 
 -- Функция для получения количества доступных для крафта
 function getCraftableCount(itemName)
@@ -493,7 +493,8 @@ local function promptForInput(promptText, defaultValue)
         elseif key == 14 then -- Backspace
             if unicode.len(input) > 0 then
                 input = unicode.sub(input, 1, unicode.len(input) - 1)
-                uoc.fillRect(cursorX, HEIGHT - 2, 1, 1, COLORS.background) -- Стираем последний символ
+                uoc.fillRect(cursorX, HEIGHT - 2, unicode.len(input) + 1, 1, COLORS.background) -- Стираем с учетом длины
+                uoc.drawText(cursorX, HEIGHT - 2, input, COLORS.foreground) -- Перерисовываем оставшийся текст
                 g.present()
             end
         elseif unicodeChar and unicodeChar >= 32 and unicodeChar <= 126 then -- Только печатные символы
@@ -875,6 +876,57 @@ event.listen("key_down", function(_, _, key, _, _, unicodeChar)
     end
 end)
 
+local function updateButtonHover(x, y)
+    local btnWidth = 12
+    local btnHeight = 3
+    local btnX = WIDTH - btnWidth - 5
+    local btnPadding = 2
+    local btns = {
+        {name = "Крафт всех", action = "craftAll"},
+        {name = "Удалить", action = "delete"},
+        {name = "Изменить", action = "edit"},
+        {name = "Автокрафт", action = "toggleCraft"},
+        {name = "Добавить", action = "add"},
+    }
+
+    -- Проверка наведения на основные кнопки
+    for i, btn in ipairs(btns) do
+        local btnY = 10 + (i - 1) * (btnHeight + btnPadding)
+        if x >= btnX and x <= btnX + btnWidth - 1 and y >= btnY and y <= btnY + btnHeight - 1 then
+            return btn.action
+        end
+    end
+
+    -- Проверка наведения на стрелки страниц и кнопку сортировки
+    local arrowBtnW = 4
+    local arrowBtnH = 3
+    local arrowBtnY = 10 + (#btns * (btnHeight + btnPadding))
+
+    local prevArrowBtnX = btnX
+    local nextArrowBtnX = btnX + arrowBtnW + 1
+    local sortBtnY = arrowBtnY + arrowBtnH + 2
+    local sortBtnW = 12
+
+    if x >= prevArrowBtnX and x <= prevArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
+        return "prevPage"
+    elseif x >= nextArrowBtnX and x <= nextArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
+        return "nextPage"
+    elseif x >= btnX and x <= btnX + sortBtnW - 1 and y >= sortBtnY and y <= sortBtnY + arrowBtnH - 1 then
+        return "sort"
+    end
+
+    -- Кнопка очистки поиска
+    local searchBarX = 2
+    local searchBarWidth = WIDTH - 20
+    local clearBtnX = searchBarX + searchBarWidth - 3
+    local searchBarY = HEIGHT - 4
+    if x >= clearBtnX and x <= clearBtnX + 2 and y >= searchBarY and y <= searchBarY + 1 then
+        return "clearSearch"
+    end
+
+    return nil
+end
+
 event.listen("mouse_move", function(_, _, x, y)
     if changeitem then return end -- Не реагируем на наведение, если в режиме ввода
     local newButtonHover = updateButtonHover(x, y)
@@ -889,6 +941,7 @@ event.listen("touch", function(_, _, x, y, _, _)
     if changeitem then return end -- Не реагируем на клик, если в режиме ввода
     local needsFullRedraw = false -- Флаг для определения, нужна ли полная перерисовка
 
+    -- Переносим локальные переменные в начало функции touch
     local btnWidth = 12
     local btnHeight = 3
     local btnX = WIDTH - btnWidth - 5
@@ -900,6 +953,18 @@ event.listen("touch", function(_, _, x, y, _, _)
         {name = isCrafting and "Остановить" or "Автокрафт", action = "toggleCraft"},
         {name = "Добавить", action = "add"},
     }
+    local arrowBtnW = 4
+    local arrowBtnH = 3
+    local arrowBtnY = 10 + (#btns * (btnHeight + btnPadding))
+    local prevArrowBtnX = btnX
+    local nextArrowBtnX = btnX + arrowBtnW + 1
+    local sortBtnY = arrowBtnY + arrowBtnH + 2
+    local sortBtnW = 12
+    local searchBarX = 2
+    local searchBarWidth = WIDTH - 20
+    local clearBtnX = searchBarX + searchBarWidth - 3
+    local searchBarY = HEIGHT - 4
+
 
     -- Обработка кликов по основным кнопкам
     for i, btn in ipairs(btns) do
@@ -918,15 +983,6 @@ event.listen("touch", function(_, _, x, y, _, _)
     end
 
     -- Обработка кликов по стрелкам страниц и кнопке сортировки
-    local arrowBtnW = 4
-    local arrowBtnH = 3
-    local arrowBtnY = 10 + (#btns * (btnHeight + btnPadding))
-
-    local prevArrowBtnX = btnX
-    local nextArrowBtnX = btnX + arrowBtnW + 1
-    local sortBtnY = arrowBtnY + arrowBtnH + 2
-    local sortBtnW = 12
-
     if x >= prevArrowBtnX and x <= prevArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
         if currentPage > 1 then
             currentPage = currentPage - 1
@@ -973,11 +1029,7 @@ event.listen("touch", function(_, _, x, y, _, _)
     end
 
     -- Обработка кликов по строке поиска
-    if y >= HEIGHT - 4 and y <= HEIGHT - 4 then
-        local searchBarX = 2
-        local searchBarWidth = WIDTH - 20
-        local clearBtnX = searchBarX + searchBarWidth - 3
-
+    if y >= searchBarY and y <= searchBarY then
         if x >= clearBtnX and x <= clearBtnX + 2 and search ~= "" then -- Клик по [X]
             search = ""
             currentPage = 1
