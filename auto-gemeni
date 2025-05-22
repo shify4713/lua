@@ -146,7 +146,7 @@ local function drawItems()
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_now+col_hold+col_once+4, y+1, "│")
     -- Разделитель заголовков и строк
-    g.set(x, y+2, "├"..string.rep("─",col_name).."┼"..string.rep("─",col_now).."┼"..string.rep("─",col_hold).."┼"..string.rep("─",col_once).."┤")
+    g.set(x, y+2, "├"..string.rep("─",col_name).."┼"..string.rep("─",",col_now).."┼"..string.rep("─",col_hold).."┼"..string.rep("─",col_once).."┤")
 
     -- Отображение строк предметов
     local showItems = {}
@@ -204,7 +204,6 @@ local function drawItems()
         end
         g.set(x+col_name+col_now+col_hold+4, row, string.format("%-"..(col_once).."s", craftSize_str)) -- За раз по левому краю
         g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
-        -- g.setBackground(COLORS.bg) -- Эта строка больше не нужна, так как фон устанавливается в начале цикла
     end
 
     -- Низ рамки таблицы
@@ -279,7 +278,7 @@ local function draw()
     drawSearchBar()
     drawLogs()
     drawButtons()
-    os.sleep(0) -- Добавлено для стабильной отрисовки
+    -- os.sleep(0) -- Удалено: может вызывать мерцание при слишком частых перерисовках
 end
 
 -------------------- IO и действия --------------------
@@ -476,7 +475,7 @@ local function tryCraftItem(itemToCraft)
         for _, job in ipairs(craftingJobs) do
             -- Сравниваем ID и Damage выходного предмета задания крафта с нашим предметом
             if job.output and job.output.id == itemToCraft.id and
-               (itemToCraft.dmg == nil or job.output.damage == itemToCraft.dmg) then
+               (itemToCraft.dmg == nil or job.output.damage == item.dmg) then
                 isThisItemBeingCrafted = true
                 break
             end
@@ -562,7 +561,7 @@ local function tryCraftItem(itemToCraft)
             end
         else
             craftStatus = "Ошибка: нет рецепта "..(itemToCraft.name or "<??>")
-            addLog(logs, "ERROR: Нет рецепта для "..(itemToToCraft.name or "<??>").." (craftables.n: "..tostring(craftables.n)..")")
+            addLog(logs, "ERROR: Нет рецепта для "..(itemToCraft.name or "<??>").." (craftables.n: "..tostring(craftables.n)..")")
             return false -- Крафт не сделан
         end
     else
@@ -655,8 +654,6 @@ event.listen("touch", function(_,_,x,y,_,_)
         if showItems[idx] then
             for k,v in ipairs(dataItems) do
                 if v == showItems[idx] then selectedItem = k break end
-            -- else -- Если выбранный элемент не найден в showItems, сбрасываем selectedItem
-            --     selectedItem = nil
             end
         end
         draw()
@@ -706,17 +703,12 @@ event.listen("key_down", function(_,_,key,_,_)
         end
         itemScroll = 1
     else
-        addLog(logs, "DEBUG: Попытка прокрутки. Всего предметов: " .. #showItems .. ", на странице: " .. perPage)
         if key == 200 then -- up arrow
-            local oldScroll = itemScroll
             itemScroll = math.max(1,itemScroll-1)
-            addLog(logs, "DEBUG: Прокрутка вверх. Старая позиция: " .. oldScroll .. ", Новая позиция: " .. itemScroll)
         elseif key == 208 then -- down arrow
-            local oldScroll = itemScroll
             if #showItems > perPage then
                 itemScroll = math.min(#showItems-perPage+1,itemScroll+1)
             end
-            addLog(logs, "DEBUG: Прокрутка вниз. Старая позиция: " .. oldScroll .. ", Новая позиция: " .. itemScroll)
         end
     end
     draw()
