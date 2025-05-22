@@ -8,7 +8,7 @@ local computer = require("computer")
 local g = component.gpu
 local me = component.me_interface
 
--- Пути и библиотека
+-- Пути и библиотека (финальная версия)
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
 local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
@@ -722,7 +722,7 @@ event.listen("touch", function(_,_,x,y,_,_)
             -- Находим фактический индекс в dataItems
             for k,v in ipairs(dataItems) do
                 if v == filteredItems[actualIndexInFiltered] then selectedItem = k break end
-            end -- <-- This 'end' was missing in previous version
+            end 
         end
         draw()
         return
