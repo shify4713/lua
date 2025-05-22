@@ -9,7 +9,7 @@ local computer = require("computer")
 -- Paths and library
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Check component availability
 local function checkComponents()
@@ -47,7 +47,7 @@ local function loadLibrary()
     return true
 end
 
--- Fallback library functions
+-- Fallback library functions (excluding animatedButton since it's now fixed in the library)
 if not uoc.drawText then
     function uoc.drawText(x, y, text, color, bold)
         local gpu = component.gpu
@@ -73,16 +73,6 @@ if not uoc.roundRect then
             gpu.set(x, y+i, "║")
             gpu.set(x+w-1, y+i, "║")
         end
-    end
-end
-if not uoc.animatedButton then
-    function uoc.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor)
-        local gpu = component.gpu
-        gpu.setBackground(hover and activeColor or bgColor)
-        gpu.fill(x, y, w, h, " ")
-        gpu.setForeground(textColor)
-        local tx = x + math.floor((w - unicode.len(text)) / 2)
-        gpu.set(tx, y + math.floor(h/2), text)
     end
 end
 if not uoc.drawLogs then
@@ -429,12 +419,19 @@ local function drawButtons()
 end
 
 local function draw()
-    clear()
-    drawHeader()
-    drawItems()
-    drawSearchBar()
-    drawLogs()
-    drawButtons()
+    local ok, err = pcall(function()
+        clear()
+        drawHeader()
+        drawItems()
+        drawSearchBar()
+        drawLogs()
+        drawButtons()
+    end)
+    if not ok then
+        uoc.addLog(logs, "ERROR: Failed to draw UI: " .. tostring(err))
+        clear()
+        uoc.drawText(1, 1, "Error rendering UI: " .. tostring(err), COLORS.error)
+    end
 end
 
 -- Data Management
