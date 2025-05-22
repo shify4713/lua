@@ -1,3 +1,4 @@
+-- lib-gemeni.txt
 local component = require("component")
 local unicode = require("unicode")
 local term = require("term")
@@ -34,11 +35,9 @@ function ultimateOC.roundRect(x, y, w, h, borderColor, bgColor)
     end
 end
 
--- Функция для анимированной кнопки
+-- Функция для анимированной кнопки (изменено: убран setBackground)
 function ultimateOC.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor, subText, subTextColor)
-    local bg = hover and activeColor or bgColor
-    g.setBackground(bg)
-    g.fill(x, y, w, h, " ")
+    -- Removed the background setting from here, it will be handled by the caller
     g.setForeground(textColor or 0xFFFFFF)
     local textLen = unicode.len(text)
     local tx = x + math.floor((w - textLen) / 2)
@@ -78,17 +77,16 @@ function ultimateOC.loadf(path)
     local content = file:read("*a")
     file:close()
     local func, err = load("return " .. content)
-    if not func then return nil end
+    if not func then error(err) end
     return func()
 end
 
--- Функция прогресс-бара
+-- Функция для прогресс-бара
 function ultimateOC.progressBar(x, y, w, progress)
-    local barWidth = math.floor(w * math.max(0, math.min(1, progress)))
     g.setBackground(0x44475a)
     g.fill(x, y, w, 1, " ")
     g.setBackground(0x50FA7B)
-    g.fill(x, y, barWidth, 1, " ")
+    g.fill(x, y, math.floor(w * progress), 1, " ")
 end
 
 return ultimateOC
