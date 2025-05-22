@@ -66,9 +66,7 @@ local selectedItem = nil -- Индекс выбранного предмета
 local itemScroll = 1 -- Позиция прокрутки списка предметов
 local changeitem = false -- Флаг, указывающий, находится ли пользователь в режиме изменения предмета
 local searchActive = false -- Флаг, указывающий, активно ли поле поиска
-local hoveredButton = nil -- Индекс кнопки, на которую наведен курсор
-local tooltip = "" -- Текст всплывающей подсказки
-local tooltipTimeout = 0 -- Время, когда подсказка должна исчезнуть
+-- Удалены переменные для всплывающих подсказок: tooltip, tooltipTimeout
 
 -------------------- Логгирование --------------------
 -- Функция для добавления логов. Время было удалено по запросу.
@@ -220,37 +218,20 @@ end
 -- Рисует кнопки управления
 local function drawButtons()
     local btns = {
-        {name="Удалить", x=WIDTH-60, tip="Удалить выбранный предмет из списка"},
-        {name="Изменить", x=WIDTH-45, tip="Изменить параметры предмета"},
-        {name=isCrafting and "Остановить" or "Автокрафт", x=WIDTH-30, tip=isCrafting and "Остановить автокрафт" or "Запустить автокрафт"},
-        {name="Добавить", x=WIDTH-15, tip="Добавить новый предмет (предмет в 1 слоте интерфейса ME)"},
+        {name="Удалить", x=WIDTH-60},
+        {name="Изменить", x=WIDTH-45},
+        {name=isCrafting and "Остановить" or "Автокрафт", x=WIDTH-30},
+        {name="Добавить", x=WIDTH-15},
     }
     for i,v in ipairs(btns) do
         local hover = hoveredButton == i
         uoc.animatedButton(v.x, HEIGHT-4, 12, 3, v.name, hover, COLORS.button, COLORS.buttonActive, COLORS.text)
-        if hover then
-            tooltip = v.tip
-            tooltipTimeout = os.time()
-        end
+        -- Удалены строки, связанные с tooltip
     end
 end
 
--- Рисует всплывающую подсказку
-local function drawTooltip()
-    if tooltip ~= "" and os.time() - tooltipTimeout < 3 then
-        local txt = " "..tooltip.." "
-        local w = unicode.len(txt)
-        local x, y = WIDTH-w-3, HEIGHT-7
-        g.setBackground(COLORS.tooltip_bg)
-        g.setForeground(COLORS.tooltip_text)
-        g.fill(x, y, w+2, 3, " ")
-        g.set(x+1, y+1, txt)
-        g.setBackground(COLORS.bg)
-        g.setForeground(COLORS.text)
-    end
-end
+-- Удалена функция drawTooltip()
 
--- Основная функция отрисовки всего интерфейса
 local function draw()
     clear()
     drawHeader()
@@ -258,7 +239,7 @@ local function draw()
     drawSearchBar()
     drawLogs()
     drawButtons()
-    drawTooltip()
+    -- Удален вызов drawTooltip()
 end
 
 -------------------- IO и действия --------------------
@@ -439,20 +420,20 @@ local function autoCraftLoop()
                             -- Проверяем, есть ли рецепт для предмета
                             if craftables.n and craftables.n >= 1 then
                                 addLog(logs, "Найден рецепт для: "..(item.name or "<??>"), "DEBUG")
-                                -- Вычисляем, сколько нужно скрафтить, но всегда запрашиваем 1
+                                -- Вычисляем, сколько нужно скрафтить
                                 local delta = math.min(craftSize, count - current)
                                 if delta > 0 then
-                                    -- Запрашиваем крафт только 1 единицы, чтобы использовать 1 ЦПУ за проверку
-                                    local succ, req = pcall(function() return craftables[1].request(1, false, freeCpu) end)
+                                    -- Запрашиваем крафт с количеством 'delta'
+                                    local succ, req = pcall(function() return craftables[1].request(delta, false, freeCpu) end)
                                     if succ then -- Запрос был отправлен без Lua-ошибки
                                         if req then -- ME-система подтвердила крафт (вернула IItemInfo)
                                             craftStatus = "Крафт: "..(item.name or "<??>")
-                                            addLog(logs, "Успешный запрос крафта 1x " .. (item.name or "<??>") .. " на CPU " .. tostring(freeCpu), "INFO")
+                                            addLog(logs, "Успешный запрос крафта " .. delta .. "x " .. (item.name or "<??>") .. " на CPU " .. tostring(freeCpu), "INFO")
                                             craftedThisCycle = true -- Устанавливаем флаг, чтобы не крафтить больше в этом цикле
                                             break -- Останавливаемся после одного успешного крафта в этом цикле
                                         else -- ME-система отклонила крафт (например, нет ресурсов)
                                             craftStatus = "Ошибка: крафт отклонен ME"
-                                            addLog(logs, "Ошибка: ME отклонил крафт 1x " .. (item.name or "<??>") .. " (нет ресурсов/другая причина)", "ERROR")
+                                            addLog(logs, "Ошибка: ME отклонил крафт " .. delta .. "x " .. (item.name or "<??>") .. " (нет ресурсов/другая причина)", "ERROR")
                                         end
                                     else -- Произошла ошибка pcall при отправке запроса
                                         craftStatus = "Ошибка: запрос крафта"
@@ -537,7 +518,7 @@ event.listen("touch", function(_,_,x,y,_,_)
         if showItems[idx] then
             for k,v in ipairs(dataItems) do
                 if v == showItems[idx] then selectedItem = k break end
-            Fend
+            end
         end
         draw()
         return
@@ -556,14 +537,13 @@ event.listen("drag", function(_,_,x,y,_,_)
     for i,btn in ipairs(btns) do
         if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
             hoveredButton = i
-            tooltipTimeout = os.time()
-            tooltip = ({"Удалить выбранный предмет из списка","Изменить параметры предмета",(isCrafting and "Остановить автокрафт" or "Запустить автокрафт"),"Добавить новый предмет"})[i]
+            -- Удалены строки, связанные с tooltipTimeout и tooltip
             draw()
             return
         end
     end
     hoveredButton = nil
-    tooltip = ""
+    -- Удалены строки, связанные с tooltip
     draw()
 end)
 
