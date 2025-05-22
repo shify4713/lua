@@ -1,3 +1,5 @@
+--wget -f https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua /lib/ultimateOC.lua
+--wget -f https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/autoCraftUltimate.lua /home/autoCraftUltimate.lua
 -- ultimateOC.lua - Улучшенная библиотека для визуала OpenComputers
 local fs = require("filesystem")
 local unicode = require("unicode")
@@ -27,72 +29,71 @@ function M.loadf(path)
 end
 
 -- Гибкий фильтр предметов по подстроке (поиск не зависит от регистра)
-function M.filterItems(items, filter)
-    filter = unicode.lower(filter)
-    local filtered = {}
-    for _, item in ipairs(items) do
-        if unicode.lower(item.name):find(filter) then
-            table.insert(filtered, item)
+function M.filterItems(tbl, query)
+    if not query or query == "" then return tbl end
+    local res = {}
+    query = unicode.lower(query)
+    for i, item in ipairs(tbl) do
+        if item.name and unicode.lower(item.name):find(query, 1, true) then
+            table.insert(res, item)
         end
     end
-    return filtered
+    return res
 end
 
--- Проверка попадания координат в область
-function M.isInside(x, y, btnX, btnY, btnW, btnH)
-    return x >= btnX and x < btnX + btnW and y >= btnY and y < btnY + btnH
-end
-
--- Отрисовка текстового поля с рамкой
-function M.drawField(x, y, width, text, isActive, bgColor, fgColor)
-    gpu.setBackground(bgColor)
-    gpu.setForeground(fgColor)
-    gpu.fill(x, y, width, 1, " ")
-    local displayedText = M.truncateText(text, width)
-    gpu.set(x, y, displayedText)
-
-    if isActive then
-        -- Индикатор активного поля (курсор или рамка)
-        local cursorX = x + unicode.len(displayedText)
-        if cursorX < x + width then
-            gpu.setBackground(0xFFFFFF) -- Белый курсор
-            gpu.set(cursorX, y, " ")
-        end
+-- Закруглённый прямоугольник c опциональной цветной рамкой
+function M.roundRect(x, y, w, h, borderColor, fillColor)
+    borderColor = borderColor or 0x44475a
+    fillColor = fillColor or 0x1B1D23
+    -- Заливка
+    if fillColor then
+        gpu.setBackground(fillColor)
+        gpu.fill(x, y, w, h, " ")
     end
-end
-
--- Отрисовка кнопки
-function M.drawButton(x, y, width, height, text, bgColor, fgColor, isHovered)
-    local currentBg = isHovered and 0x8BE9FD or bgColor -- Цвет при наведении
-    gpu.setBackground(currentBg)
-    gpu.setForeground(fgColor)
-    gpu.fill(x, y, width, height, " ") -- Заполняем фон кнопки
-
-    -- Центрирование текста
-    local textWidth = unicode.len(text)
-    local textX = x + math.floor((width - textWidth) / 2)
-    local textY = y + math.floor(height / 2)
-
-    -- Если текст выходит за пределы кнопки, обрезать
-    local truncatedText = M.truncateText(text, width)
-    textX = x + math.floor((width - unicode.len(truncatedText)) / 2) -- Пересчитываем X для центрирования обрезанного текста
-
-    gpu.set(textX, textY, truncatedText)
-end
-
-
--- Обрезка текста до заданной ширины
-function M.truncateText(text, width)
-    local len = unicode.len(text)
-    if len <= width then
-        return text
-    else
-        return unicode.sub(text, 1, width - 1) .. "…" -- Один символ для многоточия
+    -- Рамка
+    gpu.setForeground(borderColor)
+    gpu.set(x+1, y, string.rep("─", w-2))
+    gpu.set(x+1, y+h-1, string.rep("─", w-2))
+    for i = y+1, y+h-2 do
+        gpu.set(x, i, "│")
+        gpu.set(x+w-1, i, "│")
     end
+    gpu.set(x, y, "╭")
+    gpu.set(x+w-1, y, "╮")
+    gpu.set(x, y+h-1, "╰")
+    gpu.set(x+w-1, y+h-1, "╯")
 end
 
--- Отрисовка текста
-function M.drawText(x, y, text, color)
+-- Прогресс-бар (цветной)
+function M.progressBar(x, y, w, percent, fg, bg)
+    fg = fg or 0x50FA7B
+    bg = bg or 0x44475a
+    gpu.setBackground(bg)
+    gpu.fill(x, y, w, 1, " ")
+    gpu.setBackground(fg)
+    gpu.fill(x, y, math.max(0, math.floor(w * percent)), 1, " ")
+    gpu.setBackground(0x1B1D23)
+end
+
+-- Анимированная кнопка (с закруглением, цветами и "нажатием")
+function M.animatedButton(x, y, w, h, text, active, baseColor, hoverColor, textColor)
+    baseColor = baseColor or 0x00BFFF
+    hoverColor = hoverColor or 0x1E90FF
+    textColor = textColor or 0xFFFFFF
+    local color = active and hoverColor or baseColor
+    M.roundRect(x, y, w, h, color, color)
+    gpu.setForeground(textColor)
+    gpu.set(x + math.floor((w-unicode.len(text))/2), y + math.floor(h/2), text)
+    gpu.setBackground(0x1B1D23)
+end
+
+-- Тень под текстом
+function M.drawText(x, y, text, color, shadow)
+    color = color or 0xF8F8F2
+    if shadow then
+        gpu.setForeground(0x282A36)
+        gpu.set(x+1, y+1, text)
+    end
     gpu.setForeground(color)
     gpu.set(x, y, text)
 end
@@ -111,7 +112,6 @@ function M.drawLogs(x, y, logs, count, color)
     count = count or 10
     color = color or 0x8BE9FD
     local logY = y
-    -- Отрисовка последних 'count' логов
     for i = math.max(1,#logs-count+1), #logs do
         M.drawText(x, logY, logs[i], color)
         logY = logY + 1
@@ -122,13 +122,23 @@ end
 function M.scrollArray(tbl, scroll, perPage)
     local res = {}
     perPage = perPage or 20
-    scroll = math.max(1, math.min(scroll, math.max(1, math.ceil(#tbl / perPage)))) -- Убедиться, что scroll в допустимых пределах
-    local startIndex = (scroll - 1) * perPage + 1
-    local endIndex = math.min(startIndex + perPage - 1, #tbl)
-    for i = startIndex, endIndex do
-        table.insert(res, tbl[i])
+    scroll = math.max(1, math.min(scroll, math.max(1, #tbl-perPage+1)))
+    for i=scroll, math.min(#tbl, scroll+perPage-1) do
+        res[#res+1] = tbl[i]
     end
     return res
+end
+
+-- Цветной выделенный элемент (фон+текст)
+function M.selectLine(x, y, w, text, selected, color, selColor, textColor)
+    color = color or 0x23262E
+    selColor = selColor or 0x00BFFF
+    textColor = textColor or 0xF8F8F2
+    gpu.setBackground(selected and selColor or color)
+    gpu.setForeground(textColor)
+    gpu.fill(x, y, w, 1, " ")
+    gpu.set(x+1, y, text)
+    gpu.setBackground(0x1B1D23)
 end
 
 return M
