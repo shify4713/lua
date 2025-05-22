@@ -259,7 +259,7 @@ local function drawItems()
             craftSize_str = unicode.sub(craftSize_str, 1, col_once - 1) .. "…"
         end
         g.set(x+col_name+col_now+col_hold+4, row, string.format("%-"..(col_once).."s", craftSize_str)) -- За раз по левому краю
-        g.set(x+col_name+col_now+col_hold+col_once+4, row, "│") -- Исправлено: y-координата для правой границы
+        g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
     end
     -- Очищаем оставшиеся строки на странице, если их меньше, чем perPage
     for i = math.min(#filteredAndSortedItems, startIndex + perPage - 1) + 1, startIndex + perPage - 1 do
@@ -339,21 +339,24 @@ local function drawButtons()
     -- Кнопка "Сортировать"
     local sortBtnX = nextArrowBtnX + arrowBtnW + arrowBtnPadding -- Размещаем после стрелок
     local sortBtnW = 14 -- Ширина кнопки сортировки (немного увеличена для текста индикатора)
-    local sortBtnText = "Сортировать"
-    local sortIndicator = ""
-    if sortCriteria == "name" then
-        sortIndicator = "Название"
-    elseif sortCriteria == "current" then
-        sortIndicator = "В наличии"
-    elseif sortCriteria == "count" then
-        sortIndicator = "Держать"
-    elseif sortCriteria == "craftSize" then
-        sortIndicator = "За раз"
-    end
-    sortIndicator = sortIndicator .. (sortAscending and " ↑" or " ↓")
+    local sortBtnMainText = "Сортировать" -- Основной текст кнопки
+    local sortIndicatorText = "" -- Подтекст для индикатора сортировки
 
-    uoc.animatedButton(sortBtnX, arrowBtnY, sortBtnW, arrowBtnH, sortBtnText, false, COLORS.button, COLORS.buttonActive, COLORS.text)
-    uoc.drawText(sortBtnX + math.floor((sortBtnW - unicode.len(sortIndicator)) / 2), arrowBtnY + 1, sortIndicator, COLORS.text)
+    if sortCriteria == "name" then
+        sortIndicatorText = "Название"
+    elseif sortCriteria == "current" then
+        sortIndicatorText = "В наличии"
+    elseif sortCriteria == "count" then
+        sortIndicatorText = "Держать"
+    elseif sortCriteria == "craftSize" then
+        sortIndicatorText = "За раз"
+    end
+    sortIndicatorText = sortIndicatorText .. (sortAscending and " ↑" or " ↓")
+
+    -- Вызов модифицированной drawButton с подтекстом
+    uoc.animatedButton(sortBtnX, arrowBtnY, sortBtnW, arrowBtnH, 
+                       sortBtnMainText, false, COLORS.button, COLORS.buttonActive, COLORS.text, 
+                       sortIndicatorText, COLORS.text)
 end
 
 local function draw()
@@ -755,20 +758,21 @@ event.listen("touch", function(_,_,x,y,_,_)
                 currentCriteriaIndex = i
                 break
             end
-        end
-
-        if currentCriteriaIndex < #criteriaList then
-            sortCriteria = criteriaList[currentCriteriaIndex + 1]
-            sortAscending = true -- Сбрасываем на возрастание при смене критерия
-        else
-            -- Если это последний критерий, переключаем порядок или возвращаемся к первому
-            if sortAscending then
-                sortAscending = false
-            else
-                sortCriteria = criteriaList[1]
-                sortAscending = true
+            if i == #criteriaList then -- Если дошли до конца списка, но не нашли текущий критерий (например, если он был сброшен)
+                currentCriteriaIndex = 0 -- Устанавливаем индекс перед первым элементом, чтобы перейти к первому
             end
         end
+
+        -- Переходим к следующему критерию или сбрасываем на первый
+        currentCriteriaIndex = currentCriteriaIndex + 1
+        if currentCriteriaIndex > #criteriaList then
+            currentCriteriaIndex = 1 -- Возвращаемся к первому критерию
+            sortAscending = not sortAscending -- Меняем направление сортировки
+        else
+            sortAscending = true -- Сбрасываем на возрастание при смене критерия
+        end
+        sortCriteria = criteriaList[currentCriteriaIndex]
+        
         currentPage = 1 -- Сбрасываем на первую страницу при сортировке
         selectedItem = nil -- Сбрасываем выбранный элемент
         draw()
