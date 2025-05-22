@@ -1,5 +1,6 @@
 local component = require("component")
 local gpu = component.gpu
+local unicode = require("unicode") -- Add this line
 
 local ultimateOC = {}
 
@@ -24,12 +25,20 @@ function ultimateOC.roundRect(x, y, w, h, borderColor, bgColor)
     end
 end
 
-function ultimateOC.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor)
+function ultimateOC.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor, subText, subColor)
     gpu.setBackground(hover and activeColor or bgColor)
     gpu.fill(x, y, w, h, " ")
     gpu.setForeground(textColor)
-    local tx = x + math.floor((w - unicode.len(text)) / 2)
+    -- Fallback if unicode.len fails
+    local textLen = unicode and unicode.len and unicode.len(text) or string.len(text)
+    local tx = x + math.floor((w - textLen) / 2)
     gpu.set(tx, y + math.floor(h/2), text)
+    if subText then
+        gpu.setForeground(subColor or textColor)
+        local subTextLen = unicode and unicode.len and unicode.len(subText) or string.len(subText)
+        local stx = x + math.floor((w - subTextLen) / 2)
+        gpu.set(stx, y + math.floor(h/2) + 1, subText)
+    end
 end
 
 function ultimateOC.drawLogs(x, y, logs, lines, color, offset)
