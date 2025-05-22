@@ -8,18 +8,15 @@ local g = component.gpu
 
 local ultimateOC = {}
 
--- Функция для рисования текста с цветом
--- Убрана "жирность" через дублирование символов, так как это часто вызывает визуальные артефакты
--- и не является истинным "жирным" шрифтом в OpenComputers.
--- Если нужна акцентуация, лучше использовать разные цвета или инвертировать фон/текст.
+-- Функция для рисования текста с цветом и опциональным фоном
 function ultimateOC.drawText(x, y, text, color, bgColor)
     g.setForeground(color or 0xFFFFFF)
-    -- Опционально: если задан фоновый цвет для текста, заливаем его
     if bgColor then
         g.setBackground(bgColor)
-        g.fill(x, y, unicode.len(text), 1, " ") -- Заливаем фон под текстом
+        -- Заливаем фон под текстом, чтобы избежать "хвостов" от предыдущих отрисовок
+        g.fill(x, y, unicode.len(text), 1, " ")
     else
-        -- Сброс фона, если он не нужен для текста, чтобы не влиять на соседние области
+        -- Сброс фона, чтобы не влиять на соседние области, если фон не задан
         g.setBackground(g.getBackground())
     end
     g.set(x, y, tostring(text or "")) -- Убеждаемся, что текст не nil
@@ -55,14 +52,12 @@ function ultimateOC.drawRect(x, y, w, h, borderColor, bgColor)
     end
 end
 
-
--- Функция для анимированной кнопки
+-- Функция для анимированной кнопки (более общая, чем раньше)
 function ultimateOC.animatedButton(x, y, w, h, text, bgColor, textColor, borderColor, subText, subTextColor)
     -- Отрисовываем фон кнопки
     ultimateOC.drawRect(x, y, w, h, borderColor, bgColor)
 
     -- Основной текст
-    g.setForeground(textColor)
     local textLen = unicode.len(text)
     local tx = x + math.floor((w - textLen) / 2)
     ultimateOC.drawText(tx, y + math.floor(h / 2), text, textColor)
@@ -80,7 +75,8 @@ function ultimateOC.drawLogs(x, y, logs, lines, color, offset, bgColor)
     bgColor = bgColor or 0x1A1B26 -- Цвет фона для логов, по умолчанию такой же, как в auto-gemeni
 
     -- Очищаем область логов перед отрисовкой
-    ultimateOC.fillRect(x, y, term.getWidth() - x - 2, lines, bgColor)
+    local logAreaWidth = term.getWidth() - x - 2
+    ultimateOC.fillRect(x, y, logAreaWidth, lines, bgColor)
 
     g.setForeground(color or 0x8BE9FD)
     for i = 1, lines do
@@ -88,7 +84,7 @@ function ultimateOC.drawLogs(x, y, logs, lines, color, offset, bgColor)
         if idx > 0 and idx <= #logs then
             local logText = logs[idx]
             -- Обрезаем текст, если он слишком длинный, чтобы не выходить за границы
-            local maxLen = term.getWidth() - x - 2
+            local maxLen = logAreaWidth
             if unicode.len(logText) > maxLen then
                 logText = unicode.sub(logText, 1, maxLen - 3) .. "..."
             end
@@ -99,28 +95,27 @@ end
 
 -- Функция для сохранения данных в файл
 function ultimateOC.savef(path, data)
-    local file = io.open(path, "w")
+    local file, err = io.open(path, "w")
     if file then
         local serializedData = textutils.serialize(data)
         file:write(serializedData)
         file:close()
         return true
     else
-        return false, "Не удалось открыть файл для записи: " .. path
+        return false, "Не удалось открыть файл для записи: " .. tostring(err)
     end
 end
 
 -- Функция для загрузки данных из файла
 function ultimateOC.loadf(path)
-    local file = io.open(path, "r")
-    if not file then return nil, "Файл не найден: " .. path end
+    local file, err = io.open(path, "r")
+    if not file then return nil, "Файл не найден: " .. path .. " (" .. tostring(err) .. ")" end
     local content = file:read("*a")
     file:close()
     
-    -- Исправленная строка: убраны лишние "..."
-    local func, err = load("return " .. content)
+    local func, loadErr = load("return " .. content)
     if not func then
-        return nil, "Ошибка синтаксиса в файле " .. path .. ": " .. tostring(err)
+        return nil, "Ошибка синтаксиса в файле " .. path .. ": " .. tostring(loadErr)
     end
     local ok, data = pcall(func)
     if not ok then
