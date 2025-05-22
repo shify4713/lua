@@ -11,7 +11,7 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Проверяем наличие библиотеки ultimateOC.lua и скачиваем, ТОЛЬКО если ее нет
 if not fs.exists(LIB_PATH) then
@@ -69,6 +69,11 @@ local itemScroll = 1 -- Позиция прокрутки списка пред�
 local changeitem = false -- Флаг, указывающий, находится ли пользователь в режиме изменения предмета
 local searchActive = false -- Флаг, указывающий, активно ли поле поиска
 
+-- Переменные для скроллинга мышью
+local isDraggingScroll = false -- Флаг, активна ли прокрутка перетаскиванием
+local dragStartY = 0 -- Начальная Y-координата мыши при начале перетаскивания
+local initialScrollOnDrag = 1 -- Значение itemScroll в начале перетаскивания
+
 -- Глобальные переменные для контроля последнего запрошенного крафта (для предотвращения дублирования)
 local lastRequestedItem = nil -- Хранит {id, dmg, expectedOutput} последнего успешно запрошенного предмета для крафта
 local lastRequestTime = 0    -- Хранит computer.uptime(), когда lastRequestedItem был установлен
@@ -108,6 +113,11 @@ local function drawHeader()
     uoc.drawText(WIDTH-34,3,"Статус: "..craftStatus,
         (craftStatus:find("Ошибка") and COLORS.error) or COLORS.ok)
     uoc.progressBar(3,5,WIDTH-6, isCrafting and 0.9 or 0)
+    
+    -- Визуальный индикатор прокрутки
+    local perPage = HEIGHT-24 - 7
+    local maxScroll = math.max(1, #dataItems - perPage + 1)
+    uoc.drawText(3, 6, "Scroll: " .. itemScroll .. "/" .. maxScroll, COLORS.text)
 end
 
 -- Рисует логи в нижней части экрана, под поиском
@@ -146,7 +156,6 @@ local function drawItems()
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_now+col_hold+col_once+4, y+1, "│")
     -- Разделитель заголовков и строк
-    -- ИСПРАВЛЕНИЕ: Удалена лишняя кавычка и запятая в string.rep("─",col_now)
     g.set(x, y+2, "├"..string.rep("─",col_name).."┼"..string.rep("─",col_now).."┼"..string.rep("─",col_hold).."┼"..string.rep("─",col_once).."┤")
 
     -- Отображение строк предметов
@@ -204,7 +213,7 @@ local function drawItems()
             craftSize_str = unicode.sub(craftSize_str, 1, col_once - 1) .. "…"
         end
         g.set(x+col_name+col_now+col_hold+4, row, string.format("%-"..(col_once).."s", craftSize_str)) -- За раз по левому краю
-        g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
+        g.set(x+col_name+col_now+col_hold+col_once+4, y+1, "│")
     end
 
     -- Низ рамки таблицы
@@ -214,22 +223,25 @@ local function drawItems()
     g.setForeground(COLORS.text)
 
     -- Скроллбар
+    local scrollBarX = WIDTH-2
+    local scrollBarY = y+3
+    local scrollBarH = perPage
     if #showItems > perPage then
-        local barLen = math.max(2, math.floor(perPage * perPage / #showItems))
-        local barTop = y+3 + math.floor((perPage-barLen) * (itemScroll-1) / math.max(1,#showItems-perPage))
+        local barLen = math.max(2, math.floor(scrollBarH * scrollBarH / #showItems))
+        local barTop = scrollBarY + math.floor((scrollBarH-barLen) * (itemScroll-1) / math.max(1,#showItems-perPage))
         
         -- Очищаем всю область полосы прокрутки перед отрисовкой
         g.setBackground(COLORS.bg) -- Используем фоновый цвет основной области
-        g.fill(WIDTH-2, y+3, 1, perPage, " ") -- Очищаем столбец полосы прокрутки
+        g.fill(scrollBarX, scrollBarY, 1, scrollBarH, " ") -- Очищаем столбец полосы прокрутки
         
         g.setForeground(COLORS.select_active)
-        for i=0,perPage-1 do -- Отрисовываем трек полосы прокрутки
-            g.set(WIDTH-2, y+3+i, "│")
+        for i=0,scrollBarH-1 do -- Отрисовываем трек полосы прокрутки
+            g.set(scrollBarX, scrollBarY+i, "│")
         end
         
         g.setForeground(COLORS.ok)
         for i=0,barLen-1 do -- Отрисовываем ползунок полосы прокрутки
-            g.set(WIDTH-2, barTop+i, "█")
+            g.set(scrollBarX, barTop+i, "█")
         end
         g.setForeground(COLORS.text)
     end
@@ -270,8 +282,6 @@ local function drawButtons()
     end
 end
 
--- Функция drawTooltip() полностью удалена
-
 local function draw()
     clear()
     drawHeader()
@@ -279,7 +289,6 @@ local function draw()
     drawSearchBar()
     drawLogs()
     drawButtons()
-    -- os.sleep(0) -- Удалено: может вызывать мерцание при слишком частых перерисовках
 end
 
 -------------------- IO и действия --------------------
@@ -640,6 +649,19 @@ event.listen("touch", function(_,_,x,y,_,_)
     else
         searchActive = false
     end
+
+    -- Обработка клика по полосе прокрутки (начало перетаскивания)
+    local perPage = HEIGHT-24 - 7
+    local scrollBarX = WIDTH-2
+    local scrollBarY = 8+3 -- y+3 из drawItems
+    local scrollBarH = perPage
+    if x == scrollBarX and y >= scrollBarY and y < scrollBarY + scrollBarH then
+        isDraggingScroll = true
+        dragStartY = y
+        initialScrollOnDrag = itemScroll
+        return -- Не обрабатываем как выбор элемента, если это полоса прокрутки
+    end
+
     -- Обработка выбора предмета в списке
     local showItems = {}
     for i,item in ipairs(dataItems) do
@@ -647,7 +669,6 @@ event.listen("touch", function(_,_,x,y,_,_)
             table.insert(showItems, item)
         end
     end
-    local perPage = HEIGHT-24 - 7
     local itemsStartY = 11
     local itemsEndY = itemsStartY + perPage - 1
     if y >= itemsStartY and y <= itemsEndY then
@@ -663,8 +684,26 @@ event.listen("touch", function(_,_,x,y,_,_)
     draw()
 end)
 
--- Обработчик события перетаскивания (для подсказок кнопок)
+-- Обработчик события перетаскивания (для прокрутки)
 event.listen("drag", function(_,_,x,y,_,_)
+    if changeitem then return end
+    if isDraggingScroll then
+        local perPage = HEIGHT-24 - 7
+        local scrollBarH = perPage
+        local maxScroll = math.max(1, #dataItems - perPage + 1)
+        
+        local deltaY = y - dragStartY
+        -- Масштабируем перемещение мыши к диапазону прокрутки
+        local scrollRange = math.max(1, #showItems - perPage) -- Используем #showItems для корректного расчета
+        if scrollRange == 0 then scrollRange = 1 end -- Избегаем деления на ноль
+        
+        local scrollDelta = math.floor(deltaY * scrollRange / scrollBarH)
+        
+        itemScroll = math.max(1, math.min(maxScroll, initialScrollOnDrag + scrollDelta))
+        draw()
+        return
+    end
+    -- Если не перетаскиваем полосу прокрутки, проверяем кнопки
     local btns = {
         {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
         {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
@@ -680,8 +719,37 @@ event.listen("drag", function(_,_,x,y,_,_)
     draw()
 end)
 
+-- Обработчик события отпускания кнопки мыши
+event.listen("mouse_up", function()
+    isDraggingScroll = false
+end)
+
+-- Обработчик события прокрутки колесика мыши
+event.listen("mouse_scroll", function(_,_,x,y,delta)
+    if changeitem then return end
+    local perPage = HEIGHT-24 - 7
+    local showItems = {} -- Нужно пересчитать showItems, так как search мог измениться
+    for i,item in ipairs(dataItems) do
+        if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+            table.insert(showItems, item)
+        end
+    end
+    local maxScroll = math.max(1, #showItems - perPage + 1)
+    
+    -- Определяем направление прокрутки: delta > 0 для прокрутки вниз, delta < 0 для прокрутки вверх
+    local scrollAmount = 3 -- Прокручиваем на 3 строки за один "тик" колесика
+    
+    if delta > 0 then -- Прокрутка вниз
+        itemScroll = math.min(maxScroll, itemScroll + scrollAmount)
+    elseif delta < 0 then -- Прокрутка вверх
+        itemScroll = math.max(1, itemScroll - scrollAmount)
+    end
+    draw()
+end)
+
+
 -- Обработчик события нажатия клавиши
-event.listen("key_down", function(_,_,key,_,_)
+event.listen("key_down", function(_,_,key,_,_ )
     if changeitem then return end -- Если идет изменение предмета, игнорируем нажатия клавиш
     local showItems = {}
     for i,item in ipairs(dataItems) do
