@@ -8,28 +8,28 @@ local computer = require("computer")
 local g = component.gpu
 local me = component.me_interface
 
--- Пути и библиотека
+-- Paths and library
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
 local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
--- Проверяем наличие библиотеки ultimateOC.lua и скачиваем, если ее нет
+-- Check for ultimateOC.lua library and download if not present
 if not fs.exists(LIB_PATH) then
     shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
 end
--- Пытаемся загрузить библиотеку ultimateOC.lua
+-- Try to load the ultimateOC.lua library
 local ok, uoc = pcall(require, "ultimateOC")
 if not ok then
-    io.stderr:write("Не удалось загрузить ultimateOC.lua: ", tostring(uoc), "\n")
+    io.stderr:write("Failed to load ultimateOC.lua: ", tostring(uoc), "\n")
     os.exit(1)
 end
 
--- Проверяем наличие файла данных и создаем его, если нет
+-- Check for data file and create if not present
 if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {})
 end
 
--------------------- Настройки --------------------
+-------------------- Settings --------------------
 local COLORS = {
     button = 0x00BFFF,
     buttonActive = 0x1E90FF,
@@ -50,42 +50,42 @@ local COLORS = {
     search_hint = 0x888888,
     bar_shadow = 0x181920,
 }
-local WIDTH, HEIGHT = 110, 40 -- Размеры окна
-local craftStatus = "Ожидание..." -- Текущий статус крафта
-local nextCraftUpdate = 0 -- Время следующего обновления статуса крафта
-local isCrafting = false -- Флаг, указывающий, активен ли автокрафт
+local WIDTH, HEIGHT = 110, 40 -- Window dimensions
+local craftStatus = "Waiting..." -- Current crafting status
+local nextCraftUpdate = 0 -- Time for next craft status update
+local isCrafting = false -- Flag indicating if autocraft is active
 
--------------------- Переменные --------------------
-local logs = {} -- Массив для хранения логов
-local dataItems = {} -- Массив для хранения данных о предметах
-local search = "" -- Строка поиска
-local selectedItem = nil -- Индекс выбранного предмета
-local itemScroll = 1 -- Позиция прокрутки списка предметов
-local changeitem = false -- Флаг, указывающий, находится ли пользователь в режиме изменения предмета
-local searchActive = false -- Флаг, указывающий, активно ли поле поиска
+-------------------- Variables --------------------
+local logs = {} -- Array for storing logs
+local dataItems = {} -- Array for storing item data
+local search = "" -- Search string
+local selectedItem = nil -- Index of selected item
+local itemScroll = 1 -- Item list scroll position
+local changeitem = false -- Flag indicating if user is in item modification mode
+local searchActive = false -- Flag indicating if search field is active
 
--- Глобальные переменные для контроля последнего запрошенного крафта (для предотвращения дублирования)
-local lastRequestedItem = nil -- Stores {id, dmg} of the last item successfully requested for craft
+-- Global variables to control the last requested craft (to prevent duplication)
+local lastRequestedItem = nil -- Stores {id, dmg, expectedOutput} of the last item successfully requested for craft
 local lastRequestTime = 0    -- Stores computer.uptime() when lastRequestedItem was set
 
--------------------- Логгирование --------------------
--- Функция для добавления логов. Время полностью удалено.
+-------------------- Logging --------------------
+-- Function for adding logs. Time has been completely removed.
 local function addLog(logs, text, lvl)
     lvl = lvl or "INFO"
-    local t = string.format("[%s] %s", lvl, text) -- Убрано время
+    local t = string.format("[%s] %s", lvl, text) -- Removed time
     table.insert(logs, t)
     while #logs > 50 do table.remove(logs, 1) end
 end
 
--------------------- Визуал --------------------
--- Очищает экран
+-------------------- Visuals --------------------
+-- Clears the screen
 local function clear()
     g.setBackground(COLORS.bg)
     g.fill(1,1,WIDTH,HEIGHT," ")
     g.setForeground(COLORS.text)
 end
 
--- Рисует тень для прямоугольника
+-- Draws a shadow for a rectangle
 local function shadowRect(x, y, w, h)
     g.setBackground(COLORS.bar_shadow)
     g.fill(x+1, y+h, w, 1, " ")
@@ -93,24 +93,24 @@ local function shadowRect(x, y, w, h)
     g.setBackground(COLORS.bg)
 end
 
--- Рисует заголовок приложения
+-- Draws the application header
 local function drawHeader()
     uoc.drawText(3,3,"Ultimate AutoCraft",COLORS.ok,true)
     g.setBackground(COLORS.progress_fg)
     g.fill(2,4,WIDTH-2,1," ")
     shadowRect(2,4,WIDTH-2,1)
     g.setBackground(COLORS.bg)
-    uoc.drawText(WIDTH-34,3,"Статус: "..craftStatus,
-        (craftStatus:find("Ошибка") and COLORS.error) or COLORS.ok)
+    uoc.drawText(WIDTH-34,3,"Status: "..craftStatus,
+        (craftStatus:find("Error") and COLORS.error) or COLORS.ok)
     uoc.progressBar(3,5,WIDTH-6, isCrafting and 0.9 or 0)
 end
 
--- Рисует логи в нижней части экрана, под поиском
+-- Draws logs at the bottom of the screen, below the search bar
 local function drawLogs()
     uoc.drawLogs(3, HEIGHT-9, logs, 4, COLORS.log)
 end
 
--- Рисует список предметов
+-- Draws the item list
 local function drawItems()
     local x, y = 2, 8
     local totalWidth = WIDTH-4
@@ -119,38 +119,38 @@ local function drawItems()
     local col_hold = math.floor(totalWidth * 0.17)
     local col_once = totalWidth - col_name - col_now - col_hold
 
-    -- Верх рамки таблицы
+    -- Top border of the table
     g.setForeground(COLORS.select_active)
     g.set(x, y,      "┌"..string.rep("─",col_name).."┬"..string.rep("─",col_now).."┬"..string.rep("─",col_hold).."┬"..string.rep("─",col_once).."┐")
-    -- Заголовки колонок
+    -- Column headers
     g.set(x, y+1,    "│")
     g.setForeground(COLORS.ok)
-    g.set(x+1, y+1,  string.format("%-"..col_name.."s"," Название"))
+    g.set(x+1, y+1,  string.format("%-"..col_name.."s"," Name"))
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+1, y+1, "│")
     g.setForeground(COLORS.ok)
-    g.set(x+col_name+2, y+1, string.format("%-"..(col_now).."s"," В наличии"))
+    g.set(x+col_name+2, y+1, string.format("%-"..(col_now).."s"," In Stock"))
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_now+2, y+1, "│")
     g.setForeground(COLORS.ok)
-    g.set(x+col_name+col_now+3, y+1, string.format("%-"..(col_hold).."s"," Держать"))
+    g.set(x+col_name+col_now+3, y+1, string.format("%-"..(col_hold).."s"," Keep"))
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_now+col_hold+3, y+1, "│")
     g.setForeground(COLORS.ok)
-    g.set(x+col_name+col_now+col_hold+4, y+1, string.format("%-"..(col_once).."s"," За раз"))
+    g.set(x+col_name+col_now+col_hold+4, y+1, string.format("%-"..(col_once).."s"," Per Craft"))
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_now+col_hold+col_once+4, y+1, "│")
-    -- Разделитель заголовков и строк
+    -- Header and row separator
     g.set(x, y+2, "├"..string.rep("─",col_name).."┼"..string.rep("─",col_now).."┼"..string.rep("─",col_hold).."┼"..string.rep("─",col_once).."┤")
 
-    -- Отображение строк предметов
+    -- Display item rows
     local showItems = {}
     for i,item in ipairs(dataItems) do
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
             table.insert(showItems, item)
         end
     end
-    local perPage = HEIGHT-24 - 7 -- Учитываем место под поиск и логи
+    local perPage = HEIGHT-24 - 7 -- Account for search bar and logs
     for i = itemScroll, math.min(#showItems, itemScroll+perPage-1) do
         local it = showItems[i]
         local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem])
@@ -158,51 +158,51 @@ local function drawItems()
         g.setBackground(isSel and COLORS.select_active or COLORS.bg)
         g.setForeground(COLORS.text)
         
-        -- Обрезаем строку названия, если она слишком длинная
+        -- Truncate item name if too long
         local nameStr = tostring(it.name or "<??>")
         if unicode.len(nameStr) > col_name then
             nameStr = unicode.sub(nameStr, 1, col_name - 1) .. "…"
         end
         g.set(x, row, "│")
-        g.set(x+1, row, string.format("%-"..col_name.."s",nameStr)) -- Название по левому краю
+        g.set(x+1, row, string.format("%-"..col_name.."s",nameStr)) -- Name left-aligned
         g.set(x+col_name+1, row, "│")
 
-        -- Форматирование и обрезка для "В наличии"
+        -- Format and truncate "In Stock"
         local current_val = tonumber(it.current) or 0
         local current_str = tostring(current_val)
         if unicode.len(current_str) > col_now then
             current_str = unicode.sub(current_str, 1, col_now - 1) .. "…"
         end
-        g.set(x+col_name+2, row, string.format("%-"..(col_now).."s", current_str)) -- В наличии по левому краю
+        g.set(x+col_name+2, row, string.format("%-"..(col_now).."s", current_str)) -- In Stock left-aligned
         g.set(x+col_name+col_now+2, row, "│")
 
-        -- Форматирование и обрезка для "Держать"
+        -- Format and truncate "Keep"
         local hold_val = tonumber(it.count) or 0
         local hold_str = tostring(hold_val)
         if unicode.len(hold_str) > col_hold then
             hold_str = unicode.sub(hold_str, 1, col_hold - 1) .. "…"
         end
-        g.set(x+col_name+col_now+3, row, string.format("%-"..(col_hold).."s", hold_str)) -- Держать по левому краю
+        g.set(x+col_name+col_now+3, row, string.format("%-"..(col_hold).."s", hold_str)) -- Keep left-aligned
         g.set(x+col_name+col_now+col_hold+3, row, "│")
 
-        -- Форматирование и обрезка для "За раз"
+        -- Format and truncate "Per Craft"
         local craftSize_val = tonumber(it.craftSize) or 0
         local craftSize_str = tostring(craftSize_val)
         if unicode.len(craftSize_str) > col_once then
             craftSize_str = unicode.sub(craftSize_str, 1, col_once - 1) .. "…"
         end
-        g.set(x+col_name+col_now+col_hold+4, row, string.format("%-"..(col_once).."s", craftSize_str)) -- За раз по левому краю
+        g.set(x+col_name+col_now+col_hold+4, row, string.format("%-"..(col_once).."s", craftSize_str)) -- Per Craft left-aligned
         g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
         g.setBackground(COLORS.bg)
     end
 
-    -- Низ рамки таблицы
+    -- Bottom border of the table
     local lastRow = y+perPage+3
     g.setForeground(COLORS.select_active)
     g.set(x, lastRow, "└"..string.rep("─",col_name).."┴"..string.rep("─",col_now).."┴"..string.rep("─",col_hold).."┴"..string.rep("─",col_once).."┘")
     g.setForeground(COLORS.text)
 
-    -- Скроллбар
+    -- Scrollbar
     if #showItems > perPage then
         local barLen = math.max(2, math.floor(perPage * perPage / #showItems))
         local barTop = y+3 + math.floor((perPage-barLen) * (itemScroll-1) / math.max(1,#showItems-perPage))
@@ -219,9 +219,9 @@ local function drawItems()
     end
 end
 
--- Рисует панель поиска
+-- Draws the search bar
 local function drawSearchBar()
-    local x, y, w, h = 3, HEIGHT-17, WIDTH-6, 3 -- Позиция поиска
+    local x, y, w, h = 3, HEIGHT-17, WIDTH-6, 3 -- Search bar position
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
     g.fill(x+1, y+1, w-2, h-2, " ")
@@ -229,7 +229,7 @@ local function drawSearchBar()
     g.set(x+w-3, y+1, (search ~= "" and "×" or " "))
     g.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
     local display = search
-    if display=="" then display = "Поиск: введите часть названия..." end
+    if display=="" then display = "Search: enter part of name..." end
     if searchActive then display = display .. "_" end
     local maxlen = w-7
     if unicode.len(display) > maxlen then
@@ -240,21 +240,21 @@ local function drawSearchBar()
     g.setForeground(COLORS.text)
 end
 
--- Рисует кнопки управления
+-- Draws control buttons
 local function drawButtons()
     local btns = {
-        {name="Удалить", x=WIDTH-60},
-        {name="Изменить", x=WIDTH-45},
-        {name=isCrafting and "Остановить" or "Автокрафт", x=WIDTH-30},
-        {name="Добавить", x=WIDTH-15},
+        {name="Delete", x=WIDTH-60},
+        {name="Edit", x=WIDTH-45},
+        {name=isCrafting and "Stop" or "Autocraft", x=WIDTH-30},
+        {name="Add", x=WIDTH-15},
     }
     for i,v in ipairs(btns) do
-        local hover = false -- Подсказки удалены, поэтому hover всегда false для отображения
+        local hover = false -- Tooltips removed, so hover is always false for display
         uoc.animatedButton(v.x, HEIGHT-4, 12, 3, v.name, hover, COLORS.button, COLORS.buttonActive, COLORS.text)
     end
 end
 
--- Функция drawTooltip() полностью удалена
+-- drawTooltip() function completely removed
 
 local function draw()
     clear()
@@ -263,46 +263,46 @@ local function draw()
     drawSearchBar()
     drawLogs()
     drawButtons()
-    -- Вызов drawTooltip() удален
+    -- drawTooltip() call removed
 end
 
--------------------- IO и действия --------------------
--- Перезагружает данные о предметах из файла и обновляет их текущее количество
+-------------------- IO and Actions --------------------
+-- Reloads item data from file and updates their current quantity
 local function reload()
     local ok, res = pcall(uoc.loadf, DATA_FILE)
     dataItems = ok and res or {}
     for _,item in ipairs(dataItems) do
         local qty = 0
         local stackList = {}
-        -- Пытаемся получить предметы из сети ME по ID и Damage
+        -- Try to get items from ME network by ID and Damage
         pcall(function() stackList = me.getItemsInNetwork({id = item.id, damage = item.dmg}) end)
         if stackList and stackList.n and stackList.n > 0 then
             for _,stack in ipairs(stackList) do
-                -- Проверяем, что это именно тот предмет, который нам нужен
+                -- Check if it's the specific item we need
                 if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
-                    qty = qty + (stack.size or stack.qty or 0) -- Накапливаем количество
+                    qty = qty + (stack.size or stack.qty or 0) -- Accumulate quantity
                 end
             end
         else
-            -- Если не удалось получить из сети, пытаемся получить детали предмета напрямую
+            -- If not found in network, try to get item details directly
             local ok2, d = pcall(me.getItemDetail, {id = item.id, dmg = item.dmg})
             if ok2 and d then
                 qty = qty + (d.qty or d.size or 0)
             end
         end
 
-        -- Учитываем предметы, которые уже находятся в процессе крафта
+        -- Account for items currently in crafting process
         local craftingJobs_ok, craftingJobs = pcall(me.getCraftingJobs)
         if craftingJobs_ok and craftingJobs and craftingJobs.n then
             for _, job in ipairs(craftingJobs) do
-                -- Сравниваем ID и Damage выходного предмета задания крафта с нашим предметом
+                -- Compare ID and Damage of the crafting job's output item with our item
                 if job.output and job.output.id == item.id and
                    (item.dmg == nil or job.output.damage == item.dmg) then
-                    qty = qty + (job.output.size or job.output.qty or 0) -- Добавляем количество, которое крафтится
-                    -- Если этот предмет был последним запрошенным, и теперь он в заданиях, сбрасываем флаг
+                    qty = qty + (job.output.size or job.output.qty or 0) -- Add quantity being crafted
+                    -- If this item was the last requested by our script, and now it's in AE2's jobs, reset the flag
                     if lastRequestedItem and lastRequestedItem.id == item.id and
                        (lastRequestedItem.dmg == nil or lastRequestedItem.dmg == item.dmg) then
-                        addLog(logs, "DEBUG: Предмет '"..(item.name or "<??>").."' обнаружен в активных крафтах ME-сети. Сброс флага lastRequestedItem.")
+                        addLog(logs, "DEBUG: Item '"..(item.name or "<??>").."' found in active ME network crafts. Resetting lastRequestedItem flag.")
                         lastRequestedItem = nil
                         lastRequestTime = 0
                     end
@@ -311,41 +311,41 @@ local function reload()
         end
         item.current = qty
     end
-    -- Если lastRequestedItem все еще установлен, но прошло достаточно времени, сбрасываем его
-    -- Это для случаев, когда крафт мог быть отменен или не начался по какой-то причине,
-    -- и AE2 не добавила его в craftingJobs.
-    if lastRequestedItem and computer.uptime() - lastRequestTime > 20 then -- Таймаут 20 секунд
-        addLog(logs, "WARN: Таймаут ожидания статуса для '"..(lastRequestedItem.id or "<??>").."'. Сброс флага lastRequestedItem.")
+    -- If lastRequestedItem is still set, but enough time has passed, reset it
+    -- This is for cases where a craft might have been cancelled or didn't start for some reason,
+    -- and AE2 didn't add it to craftingJobs.
+    if lastRequestedItem and computer.uptime() - lastRequestTime > 20 then -- 20 second timeout
+        addLog(logs, "WARN: Timeout waiting for status of '"..(lastRequestedItem.id or "<??>").."'. Resetting lastRequestedItem flag.")
         lastRequestedItem = nil
         lastRequestTime = 0
     end
 end
 
--- Сохраняет текущие данные о предметах в файл
+-- Saves current item data to file
 local function save()
     local ok, err = pcall(uoc.savef, DATA_FILE, dataItems)
-    if not ok then addLog(logs, "ERROR: Ошибка сохранения: "..tostring(err)) end
+    if not ok then addLog(logs, "ERROR: Save error: "..tostring(err)) end
 end
 
--- Сбрасывает выбранный предмет и поиск
+-- Resets selected item and search
 local function resetSelection()
     search = ""
     itemScroll = 1
     selectedItem = nil
 end
 
--- Добавляет новый предмет в список для автокрафта
+-- Adds a new item to the autocraft list
 local function addItem()
     changeitem = true
     clear()
-    uoc.drawText(10,HEIGHT-7,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
-    uoc.drawText(10,HEIGHT-6,"Название: ",COLORS.text)
+    uoc.drawText(10,HEIGHT-7,"Insert item into ME interface slot 1 and enter parameters.",COLORS.ok)
+    uoc.drawText(10,HEIGHT-6,"Name: ",COLORS.text)
     term.setCursor(20,HEIGHT-6)
     local name = tostring(io.read())
-    uoc.drawText(10,HEIGHT-5,"Держать (число): ",COLORS.text)
+    uoc.drawText(10,HEIGHT-5,"Keep (number): ",COLORS.text)
     term.setCursor(29,HEIGHT-5)
     local count = tonumber(io.read()) or 0
-    uoc.drawText(10,HEIGHT-4,"Крафт за раз (число): ",COLORS.text)
+    uoc.drawText(10,HEIGHT-4,"Craft per batch (number): ",COLORS.text)
     term.setCursor(32,HEIGHT-4)
     local craftSize = tonumber(io.read()) or 1
     local stack = nil
@@ -354,223 +354,235 @@ local function addItem()
     if stack then
         table.insert(dataItems, {name=name, id=stack.id, dmg=stack.dmg, count=count, craftSize=craftSize})
         save()
-        addLog(logs, "INFO: Добавлен предмет: "..name)
+        addLog(logs, "INFO: Item added: "..name)
     else
-        addLog(logs, "ERROR: Ошибка: нет предмета в слоте 1!")
+        addLog(logs, "ERROR: Error: No item in slot 1!")
     end
     changeitem = false
     resetSelection()
     draw()
 end
 
--- Редактирует выбранный предмет
+-- Edits the selected item
 local function editItem()
-    if not selectedItem then return addLog(logs,"ERROR: Не выбран предмет!") end
+    if not selectedItem then return addLog(logs,"ERROR: No item selected!") end
     local item = dataItems[selectedItem]
     changeitem = true
     clear()
-    uoc.drawText(10,HEIGHT-7,"Изменение: "..(item.name or "<??>"),COLORS.ok)
-    -- Имя
-    uoc.drawText(10,HEIGHT-6,"Новое имя (Enter пропустить): ",COLORS.text)
+    uoc.drawText(10,HEIGHT-7,"Editing: "..(item.name or "<??>"),COLORS.ok)
+    -- Name
+    uoc.drawText(10,HEIGHT-6,"New name (Enter to skip): ",COLORS.text)
     term.setCursor(40,HEIGHT-6)
     local name = tostring(io.read())
     if name and name ~= "" then
         item.name = name
     end
-    -- Количество
-    uoc.drawText(10,HEIGHT-5,"Новое держать (число, Enter пропустить): ",COLORS.text)
+    -- Quantity
+    uoc.drawText(10,HEIGHT-5,"New keep quantity (number, Enter to skip): ",COLORS.text)
     term.setCursor(54,HEIGHT-5)
     local countstr = tostring(io.read())
     local count = tonumber(countstr)
     if countstr ~= "" and count then item.count = count end
-    -- Крафт за раз
-    uoc.drawText(10,HEIGHT-4,"Новый крафт за раз (число, Enter пропустить): ",COLORS.text)
+    -- Craft per batch
+    uoc.drawText(10,HEIGHT-4,"New craft batch size (number, Enter to skip): ",COLORS.text)
     term.setCursor(55,HEIGHT-4)
     local csstr = tostring(io.read())
     local cs = tonumber(csstr)
     if csstr ~= "" and cs then item.craftSize = cs end
     save()
-    addLog(logs, "INFO: Изменено: "..item.name)
+    addLog(logs, "INFO: Edited: "..item.name)
     changeitem = false
     resetSelection()
     draw()
 end
 
--- Удаляет выбранный предмет из списка
+-- Removes the selected item from the list
 local function removeItem()
-    if not selectedItem then return addLog(logs,"ERROR: Не выбран предмет!") end
-    addLog(logs, "WARN: Удалён: "..(dataItems[selectedItem].name or "<??>"))
+    if not selectedItem then return addLog(logs,"ERROR: No item selected!") end
+    addLog(logs, "WARN: Removed: "..(dataItems[selectedItem].name or "<??>"))
     table.remove(dataItems,selectedItem)
     selectedItem = nil
     save()
     draw()
 end
 
--- Запускает автокрафт
+-- Starts autocraft
 local function doCraft()
     isCrafting = true
-    craftStatus = "Автокрафт..."
+    craftStatus = "Autocrafting..."
     save()
-    addLog(logs,"INFO: Запущен автокрафт")
+    addLog(logs,"INFO: Autocraft started")
     draw()
 end
 
--- Останавливает автокрафт
+-- Stops autocraft
 local function stopCraft()
     isCrafting = false
-    craftStatus = "Остановлено"
-    addLog(logs, "WARN: Остановлен автокрафт")
+    craftStatus = "Stopped"
+    addLog(logs, "WARN: Autocraft stopped")
     draw()
 end
 
--------------------- Вспомогательная функция для крафта --------------------
--- Эта функция пытается заказать крафт для одного предмета
-local function tryCraftItem(itemToCraft) -- Переименовал параметр для ясности
+-------------------- Helper function for crafting --------------------
+-- This function attempts to order a craft for a single item
+local function tryCraftItem(itemToCraft)
     local count = tonumber(itemToCraft.count) or 0
-    local craftSize = tonumber(itemToCraft.craftSize) or 1
     local current = tonumber(itemToCraft.current) or 0
 
-    if current < count then
-        addLog(logs, "DEBUG: Предмет нуждается в крафте: "..(itemToCraft.name or "<??>").." (Текущее: "..current..", Нужно: "..count..")")
+    -- If current quantity is already sufficient (including what's being crafted), do nothing
+    if current >= count then
+        addLog(logs, "DEBUG: Item '"..(itemToCraft.name or "<??>").."' is already in sufficient quantity ("..current.." >= "..count..").")
+        return false
+    end
 
-        -- ПЕРВООЧЕРЕДНАЯ ПРОВЕРКА: Если этот предмет был только что запрошен, ждем подтверждения
-        if lastRequestedItem and lastRequestedItem.id == itemToCraft.id and
-           (itemToCraft.dmg == nil or lastRequestedItem.dmg == itemToCraft.dmg) then
-            addLog(logs, "INFO: Предмет '"..(itemToCraft.name or "<??>").."' был только что запрошен. Ожидание подтверждения ME-сети.")
-            craftStatus = "Ожидание подтверждения: "..(itemToCraft.name or "<??>")
-            return false -- Не отправляем новый запрос, так как предыдущий еще не подтвержден/завершен
-        end
+    addLog(logs, "DEBUG: Item needs crafting: "..(itemToCraft.name or "<??>").." (Current: "..current..", Needed: "..count..")")
 
-        local cpus_ok, cpus = pcall(me.getCpus)
-        if not cpus_ok then
-            addLog(logs, "ERROR: Ошибка получения списка CPU: "..tostring(cpus))
-            craftStatus = "Ошибка: ME CPU"
-            return false -- Крафт не сделан
-        end
-        cpus = cpus or {}
+    -- PRIMARY CHECK: If this item was just requested by our script, wait for confirmation
+    if lastRequestedItem and lastRequestedItem.id == itemToCraft.id and
+       (itemToCraft.dmg == nil or lastRequestedItem.dmg == itemToCraft.dmg) then
+        addLog(logs, "INFO: Item '"..(itemToCraft.name or "<??>").."' was just requested. Waiting for ME network confirmation.")
+        craftStatus = "Waiting for confirmation: "..(itemToCraft.name or "<??>")
+        return false -- Do not send another request for this item yet
+    end
 
-        -- Проверяем, крафтится ли уже этот конкретный предмет из нашей таблицы (через getCraftingJobs)
-        local isThisItemBeingCrafted = false
-        local craftingJobs_ok, craftingJobs = pcall(me.getCraftingJobs)
-        if craftingJobs_ok and craftingJobs and craftingJobs.n then
-            for _, job in ipairs(craftingJobs) do
-                -- Сравниваем ID и Damage выходного предмета задания крафта с нашим предметом
-                if job.output and job.output.id == itemToCraft.id and
-                   (itemToCraft.dmg == nil or job.output.damage == itemToCraft.dmg) then
-                    isThisItemBeingCrafted = true
-                    break
-                end
+    local cpus_ok, cpus = pcall(me.getCpus)
+    if not cpus_ok then
+        addLog(logs, "ERROR: Error getting CPU list: "..tostring(cpus))
+        craftStatus = "Error: ME CPU"
+        return false -- Craft not performed
+    end
+    cpus = cpus or {}
+
+    -- Check if this specific item is already being crafted in the ME network (from any source)
+    local isThisItemBeingCrafted = false
+    local craftingJobs_ok, craftingJobs = pcall(me.getCraftingJobs)
+    if craftingJobs_ok and craftingJobs and craftingJobs.n then
+        for _, job in ipairs(craftingJobs) do
+            -- Compare ID and Damage of the crafting job's output item with our item
+            if job.output and job.output.id == itemToCraft.id and
+               (itemToCraft.dmg == nil or job.output.damage == itemToCraft.dmg) then
+                isThisItemBeingCrafted = true
+                break
             end
-        end
-
-        if isThisItemBeingCrafted then
-            addLog(logs, "INFO: Предмет '"..(itemToCraft.name or "<??>").."' уже крафтится в ME-сети. Ожидание завершения.")
-            craftStatus = "Крафт в процессе: "..(itemToCraft.name or "<??>")
-            return false -- Не отправляем новый запрос, так как этот предмет уже крафтится
-        end
-
-        local freeCpu = nil
-        -- Ищем свободный CPU
-        for _,cpu in ipairs(cpus) do
-            if not cpu.busy then freeCpu = cpu.name break end
-        end
-
-        if freeCpu then
-            addLog(logs, "DEBUG: Найден свободный CPU: "..tostring(freeCpu))
-
-            local craftables_ok, craftables = pcall(me.getCraftables, {name=itemToCraft.id, damage=itemToCraft.dmg})
-            if not craftables_ok then
-                addLog(logs, "ERROR: Ошибка получения рецептов для ".. (itemToCraft.name or "<??>") ..": "..tostring(craftables))
-                craftStatus = "Ошибка: ME Рецепты"
-                return false -- Крафт не сделан
-            end
-            craftables = craftables or {n=0}
-
-            -- Проверяем, есть ли рецепт для предмета
-            if craftables.n and craftables.n >= 1 then
-                addLog(logs, "DEBUG: Найден рецепт для: "..(itemToCraft.name or "<??>"))
-                -- Вычисляем, сколько нужно скрафтить, основываясь на craftSize
-                -- Логика delta: запрашиваем craftSize, пока не достигнем нужного количества,
-                -- или остаток, если полная партия приведет к перепроизводству.
-                local delta = 0
-                if (count - current) >= craftSize then
-                    delta = craftSize
-                else
-                    delta = (count - current)
-                end
-                
-                if delta > 0 then
-                    -- Запрашиваем крафт с количеством 'delta'
-                    local succ, req = pcall(function() return craftables[1].request(delta, false, freeCpu) end)
-                    if succ then -- Запрос был отправлен без Lua-ошибки
-                        if req then -- ME-система подтвердила крафт (вернула IItemInfo)
-                            craftStatus = "Крафт: "..(itemToCraft.name or "<??>")
-                            addLog(logs, "INFO: Успешный запрос крафта " .. delta .. "x " .. (itemToCraft.name or "<??>") .. " на CPU " .. tostring(freeCpu) .. ". (Примечание: AE2 может использовать несколько CPU и крафтить полную партию по рецепту.)")
-                            -- Запоминаем последний запрошенный предмет для предотвращения дублирования
-                            lastRequestedItem = {id = itemToCraft.id, dmg = itemToCraft.dmg}
-                            lastRequestTime = computer.uptime()
-                            return true -- Крафт успешно запрошен
-                        else -- ME-система отклонила крафт (например, нет ресурсов)
-                            craftStatus = "Ошибка: крафт отклонен ME"
-                            addLog(logs, "ERROR: ME отклонил крафт " .. delta .. "x " .. (itemToCraft.name or "<??>") .. " (нет ресурсов/другая причина).")
-                            return false -- Крафт не сделан
-                        end
-                    else -- Произошла ошибка pcall при отправке запроса
-                        craftStatus = "Ошибка: запрос крафта"
-                        addLog(logs, "ERROR: Не удалось отправить крафт " .. (itemToCraft.name or "<??>") .. " (ошибка pcall: " .. tostring(req) .. ").")
-                        return false -- Крафт не сделан
-                    end
-                else
-                    addLog(logs, "DEBUG: Delta (количество для крафта) <= 0 для: "..(itemToCraft.name or "<??>"))
-                    return false -- Крафт не сделан
-                end
-            else
-                craftStatus = "Ошибка: нет рецепта "..(itemToCraft.name or "<??>")
-                addLog(logs, "ERROR: Нет рецепта "..(itemToCraft.name or "<??>").." (craftables.n: "..tostring(craftables.n)..")")
-                return false -- Крафт не сделан
-            end
-        else
-            craftStatus = "Ошибка: нет свободных CPU"
-            addLog(logs, "ERROR: Нет свободных CPU")
-            return false -- Крафт не сделан
         end
     end
-    return false -- Крафт не нужен или не удалось сделать
+
+    if isThisItemBeingCrafted then
+        addLog(logs, "INFO: Item '"..(itemToCraft.name or "<??>").."' is already being crafted in ME network. Waiting for completion.")
+        craftStatus = "Crafting in progress: "..(itemToCraft.name or "<??>")
+        return false -- Do not send a new request as this item is already being crafted
+    end
+
+    local freeCpu = nil
+    -- Find a free CPU
+    for _,cpu in ipairs(cpus) do
+        if not cpu.busy then freeCpu = cpu.name break end
+    end
+
+    if freeCpu then
+        addLog(logs, "DEBUG: Found free CPU: "..tostring(freeCpu))
+
+        local craftables_ok, craftables = pcall(me.getCraftables, {name=itemToCraft.id, damage=itemToCraft.dmg})
+        if not craftables_ok then
+            addLog(logs, "ERROR: Error getting recipes for ".. (itemToCraft.name or "<??>") ..": "..tostring(craftables))
+            craftStatus = "Error: ME Recipes"
+            return false -- Craft not performed
+        end
+        craftables = craftables or {n=0}
+
+        -- Check if a recipe exists for the item
+        if craftables.n and craftables.n >= 1 then
+            addLog(logs, "DEBUG: Recipe found for: "..(itemToCraft.name or "<??>"))
+            
+            -- Get the actual output batch size from the AE2 recipe
+            local actualAE2OutputBatch = (craftables[1].output and craftables[1].output.size) or 1
+            if actualAE2OutputBatch == 0 then actualAE2OutputBatch = 1 end -- Avoid division by zero or strange behavior
+
+            -- CRITICAL CHECK: If current quantity + actual AE2 batch output >= target quantity, then no craft is needed
+            if current + actualAE2OutputBatch >= count then
+                addLog(logs, "INFO: Item '"..(itemToCraft.name or "<??>").."' (target: "..count..", current: "..current..") will reach or exceed target quantity after next craft ("..actualAE2OutputBatch.."x). Cancelling request.")
+                craftStatus = "Sufficient: "..(itemToCraft.name or "<??>")
+                return false
+            end
+
+            -- Request craft with quantity equal to the actual AE2 batch output
+            local deltaToRequest = actualAE2OutputBatch
+            
+            if deltaToRequest > 0 then
+                -- Request the craft with 'deltaToRequest' quantity
+                local succ, req = pcall(function() return craftables[1].request(deltaToRequest, false, freeCpu) end)
+                if succ then -- Request was sent without Lua error
+                    if req then -- ME system confirmed the craft (returned IItemInfo)
+                        craftStatus = "Crafting: "..(itemToCraft.name or "<??>")
+                        addLog(logs, "INFO: Successfully requested craft of " .. deltaToRequest .. "x " .. (itemToCraft.name or "<??>") .. " on CPU " .. tostring(freeCpu) .. ". (AE2 expected output: "..(req.size or req.qty or "??").."x)")
+                        
+                        -- Store the last requested item and expected output to prevent duplication
+                        lastRequestedItem = {id = itemToCraft.id, dmg = itemToCraft.dmg, expectedOutput = (req.size or req.qty or deltaToRequest)}
+                        lastRequestTime = computer.uptime()
+                        
+                        -- Immediately update current quantity to account for the expected craft
+                        itemToCraft.current = itemToCraft.current + (req.size or req.qty or deltaToRequest)
+                        
+                        return true -- Craft successfully requested
+                    else -- ME system rejected the craft (e.g., missing resources)
+                        craftStatus = "Error: Craft rejected by ME"
+                        addLog(logs, "ERROR: ME rejected craft of " .. deltaToRequest .. "x " .. (itemToCraft.name or "<??>") .. " (missing resources/other reason).")
+                        return false -- Craft not performed
+                    end
+                else -- pcall error occurred when sending the request
+                    craftStatus = "Error: Craft request"
+                    addLog(logs, "ERROR: Failed to send craft for " .. (itemToCraft.name or "<??>") .. " (pcall error: " .. tostring(req) .. ").")
+                    return false -- Craft not performed
+                end
+            else
+                addLog(logs, "DEBUG: Delta (quantity to craft) <= 0 for: "..(itemToCraft.name or "<??>"))
+                return false -- Craft not performed
+            end
+        else
+            craftStatus = "Error: No recipe "..(itemToCraft.name or "<??>")
+            addLog(logs, "ERROR: No recipe for "..(itemToCraft.name or "<??>").." (craftables.n: "..tostring(craftables.n)..")")
+            return false -- Craft not performed
+        end
+    else
+        craftStatus = "Error: No free CPU"
+        addLog(logs, "ERROR: No free CPU")
+        return false -- Craft not performed
+    end
 end
 
--------------------- Основной цикл автокрафта --------------------
+-------------------- Main autocraft loop --------------------
 local function autoCraftLoop()
     while true do
         if isCrafting then
             local now = computer.uptime()
-            -- Проверяем, пришло ли время для следующего обновления статуса крафта
+            -- Check if it's time for the next craft status update
             if now >= nextCraftUpdate then
-                addLog(logs, "DEBUG: Начало цикла автокрафта...")
-                reload() -- Обновляем текущие количества предметов
-                local craftMadeThisCycle = false -- Флаг, чтобы крафтить только 1 предмет за цикл
+                addLog(logs, "DEBUG: Starting autocraft cycle...")
+                reload() -- Update current item quantities
+                local craftMadeThisCycle = false -- Flag to craft only 1 item per cycle
                 for i, item in ipairs(dataItems) do
-                    -- Если в этом цикле еще не было сделано запроса на крафт
+                    -- If no craft has been made in this cycle yet
                     if not craftMadeThisCycle then
                         if tryCraftItem(item) then
-                            craftMadeThisCycle = true -- Устанавливаем флаг, что крафт был сделан
-                            break -- Прерываем цикл по предметам, чтобы обработать только один крафт за раз
+                            craftMadeThisCycle = true -- Set flag that a craft was made
+                            break -- Break the item loop to process only one craft at a time
                         end
                     end
                 end
-                save() -- Сохраняем обновленные данные
-                nextCraftUpdate = now + 15 -- Устанавливаем время для следующего обновления (15 секунд)
-                addLog(logs, "DEBUG: Конец цикла автокрафта. Крафт сделан в этом цикле: " .. tostring(craftMadeThisCycle))
+                save() -- Save updated data
+                nextCraftUpdate = now + 15 -- Set time for next update (15 seconds)
+                addLog(logs, "DEBUG: End of autocraft cycle. Craft made this cycle: " .. tostring(craftMadeThisCycle))
             end
         end
-        draw() -- Перерисовываем интерфейс
-        os.sleep(0.2) -- Небольшая задержка, чтобы не нагружать CPU
+        draw() -- Redraw the interface
+        os.sleep(0.2) -- Small delay to avoid CPU overload
     end
 end
 
--------------------- События --------------------
--- Обработчик события касания (клика)
+-------------------- Events --------------------
+-- Touch (click) event handler
 event.listen("touch", function(_,_,x,y,_,_)
-    if changeitem then return end -- Если идет изменение предмета, игнорируем касания
+    if changeitem then return end -- If item modification is in progress, ignore touches
     local btns = {
         {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
         {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
@@ -588,16 +600,16 @@ event.listen("touch", function(_,_,x,y,_,_)
             return
         end
     end
-    -- Обработка касания поля поиска
+    -- Search bar touch handling
     if y >= HEIGHT-17 and y <= HEIGHT-15 then
         searchActive = false
-        -- Кнопка очистки поиска (крестик)
+        -- Clear search button (cross)
         if x >= 3+(WIDTH-6)-3 and x <= 3+(WIDTH-6)-1 and search ~= "" then
             search = ""
             draw()
             return
         end
-        -- Активация поля поиска
+        -- Activate search field
         if x >= 3+1 and x <= 3+(WIDTH-6)-4 then
             searchActive = true
             draw()
@@ -606,7 +618,7 @@ event.listen("touch", function(_,_,x,y,_,_)
     else
         searchActive = false
     end
-    -- Обработка выбора предмета в списке
+    -- Item list selection handling
     local showItems = {}
     for i,item in ipairs(dataItems) do
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
@@ -629,7 +641,7 @@ event.listen("touch", function(_,_,x,y,_,_)
     draw()
 end)
 
--- Обработчик события перетаскивания (для подсказок кнопок)
+-- Drag event handler (for button tooltips)
 event.listen("drag", function(_,_,x,y,_,_)
     local btns = {
         {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
@@ -646,9 +658,9 @@ event.listen("drag", function(_,_,x,y,_,_)
     draw()
 end)
 
--- Обработчик события нажатия клавиши
+-- Key press event handler
 event.listen("key_down", function(_,_,key,_,_)
-    if changeitem then return end -- Если идет изменение предмета, игнорируем нажатия клавиш
+    if changeitem then return end -- If item modification is in progress, ignore key presses
     local showItems = {}
     for i,item in ipairs(dataItems) do
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
@@ -663,7 +675,7 @@ event.listen("key_down", function(_,_,key,_,_)
             search = ""
         elseif key == 28 then -- enter
             searchActive = false
-        elseif key >= 32 and key < 128 then -- Ввод символов
+        elseif key >= 32 and key < 128 then -- Character input
             if unicode.len(search) < WIDTH-15 then
                 search = search .. unicode.char(key)
             end
@@ -681,13 +693,13 @@ event.listen("key_down", function(_,_,key,_,_)
     draw()
 end)
 
--------------------- Старт --------------------
-g.setResolution(WIDTH,HEIGHT) -- Устанавливаем разрешение GPU
-reload() -- Загружаем начальные данные
-draw() -- Отрисовываем интерфейс
-local ok, err = pcall(autoCraftLoop) -- Запускаем основной цикл автокрафта
+-------------------- Start --------------------
+g.setResolution(WIDTH,HEIGHT) -- Set GPU resolution
+reload() -- Load initial data
+draw() -- Draw the interface
+local ok, err = pcall(autoCraftLoop) -- Start the main autocraft loop
 if not ok then
-    addLog(logs, "ERROR: Фатальная ошибка: "..tostring(err))
+    addLog(logs, "ERROR: Fatal error: "..tostring(err))
     draw()
     os.sleep(3)
     computer.shutdown(true)
