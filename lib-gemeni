@@ -98,6 +98,6 @@ function ultimateOC.progressBar(x, y, w, progress)
     g.fill(x, y, w, 1, " ")
     g.setBackground(0x50FA7B)
     g.fill(x, y, math.floor(w * progress), 1, " ")
-end
+END
 
 return ultimateOC
