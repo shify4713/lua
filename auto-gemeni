@@ -446,12 +446,14 @@ local function autoCraftLoop()
                                     local succ, req = pcall(function() return craftables[1].request(1, false, freeCpu) end)
                                     if succ and req then
                                         craftStatus = "Крафт: "..(item.name or "<??>")
-                                        addLog(logs, "Успешный запрос крафта 1x "..(item.name or "<??>").." на CPU "..tostring(freeCpu),"INFO")
+                                        -- Исправленная строка с использованием string.format
+                                        addLog(logs, string.format("Успешный запрос крафта 1x %s на CPU %s", (item.name or "<??>"), tostring(freeCpu)), "INFO")
                                         craftedThisCycle = true -- Устанавливаем флаг, чтобы не крафтить больше в этом цикле
                                         break -- Останавливаемся после одного успешного крафта в этом цикле
                                     else
                                         craftStatus = "Ошибка: не удалось отправить крафт "..(item.name or "<??>")
-                                        addLog(logs, "Ошибка: не удалось отправить крафт "..(item.name or "<??>").." (succ: "..tostring(succ)..", res: "..tostring(req)..")","ERROR")
+                                        -- Исправленная строка с использованием string.format
+                                        addLog(logs, string.format("Ошибка: не удалось отправить крафт %s (succ: %s, res: %s)", (item.name or "<??>"), tostring(succ), tostring(req)), "ERROR")
                                     end
                                 else
                                     addLog(logs, "Delta (количество для крафта) <= 0 для: "..(item.name or "<??>"), "DEBUG")
