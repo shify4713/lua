@@ -28,7 +28,7 @@ end
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua" -- Обновите, если загружаете мою версию
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni" -- Обновите, если загружаете мою версию
 
 -- Загрузка или скачивание библиотеки
 if not fs.exists(LIB_PATH) then
