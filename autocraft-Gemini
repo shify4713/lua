@@ -4,75 +4,111 @@ local fs = require("filesystem")
 local shell = require("shell")
 local event = require("event")
 local unicode = require("unicode")
--- local term = require("term") -- Original line, will be handled below
 local computer = require("computer")
-local g = component.gpu
-local me = component.me_interface
 
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
 local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
--- Enhanced terminal loading with error handling
-local term = require("term")
-if not term then
-  -- Output to stderr if available, otherwise print (which might not be visible if term is broken)
-  local err_out = io.stderr or io.output()
-  err_out:write("CRITICAL ERROR: The terminal component ('term') could not be loaded.\n")
-  err_out:write("The program's UI will likely be broken. Please check your OpenComputers setup (e.g., ensure a Screen and GPU are attached and configured).\n")
-  
-  -- Create a dummy 'term' table to prevent crashes on method calls.
-  -- Functionality relying on these terminal operations will not work.
-  term = {
-    setCursorPos = function(x, y)
-      -- This is a no-operation function. The cursor will not be moved.
-    end,
-    setCursorBlink = function(blink)
-      -- This is a no-operation function. Cursor blinking will not change.
-    end,
-    -- If other 'term' functions were directly used by this script, they would need stubs too.
-    -- Note: io.read() for input might also be affected if the terminal is non-functional.
-    -- This workaround primarily prevents the script from crashing due to 'term' being nil.
-  }
+--[[
+  Критически важная проверка наличия GPU и загрузка терминала.
+  Без GPU компонент терминала работать не будет.
+]]
+
+local g = component.gpu
+local terminal -- Эта переменная будет содержать либо реальный компонент term, либо заглушку
+
+if not g then
+    (io.stderr or io.output()):write("КРИТИЧЕСКАЯ ОШИБКА: Компонент GPU (видеокарта) не найден!\n")
+    (io.stderr or io.output()):write("Программа не может работать без GPU. Убедитесь, что видеокарта установлена и подключена.\n")
+    -- Создаем заглушку для g, чтобы избежать дальнейших ошибок, хотя UI не будет работать
+    g = {
+        setBackground = function() end, fill = function() end, setForeground = function() end,
+        set = function() end, setResolution = function() end, getResolution = function() return 1,1 end,
+        isAvailable = function() return false end
+    }
+    -- Также создаем заглушку для terminal, так как без GPU он точно не будет работать
+    terminal = {
+        setCursorPos = function(x, y) end,
+        setCursorBlink = function(blink) end,
+        isAvailable = function() return false end,
+        write = function() end, -- Добавим основные функции, которые могут быть вызваны
+        read = function() return "" end,
+        getCursorPos = function() return 1,1 end,
+        getCursorBlink = function() return false end,
+        getSize = function() return 1,1 end,
+        clear = function() end,
+        clearLine = function() end,
+        scroll = function() end
+    }
+else
+    -- GPU есть, пытаемся загрузить терминал
+    local term_load_ok, term_instance_or_error = pcall(require, "term")
+
+    if term_load_ok and term_instance_or_error and term_instance_or_error.isAvailable and term_instance_or_error:isAvailable() then
+        terminal = term_instance_or_error
+        -- (io.stdout or io.output()):write("INFO: Компонент terminal успешно загружен и доступен.\n")
+    else
+        local err_out = io.stderr or io.output()
+        err_out:write("ПРЕДУПРЕЖДЕНИЕ: Компонент terminal не удалось загрузить или он недоступен.\n")
+        if not term_load_ok then
+            err_out:write("Причина ошибки при загрузке: " .. tostring(term_instance_or_error) .. "\n")
+        elseif not term_instance_or_error then
+             err_out:write("Причина: require('term') вернул nil.\n")
+        elseif not term_instance_or_error.isAvailable then
+            err_out:write("Причина: у компонента terminal отсутствует функция isAvailable().\n")
+        else -- not term_instance_or_error:isAvailable()
+            err_out:write("Причина: terminal:isAvailable() вернул false.\n")
+        end
+        err_out:write("Пользовательский интерфейс программы может быть нарушен. Проверьте настройки OpenComputers (экран, GPU).\n")
+        
+        terminal = {
+            setCursorPos = function(x, y) end,
+            setCursorBlink = function(blink) end,
+            isAvailable = function() return false end,
+            write = function() end, read = function() return "" end,
+            getCursorPos = function() return 1,1 end, getCursorBlink = function() return false end,
+            getSize = function() return 1,1 end, clear = function() end,
+            clearLine = function() end, scroll = function() end
+        }
+    end
 end
 
+
+-- Загрузка библиотеки uoc
 if not fs.exists(LIB_PATH) then
-    -- This command might print to the console, like "Saved data to ..."
     shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
 end
-local ok, uoc = pcall(require, "ultimateOC")
-if not ok then
-    (io.stderr or io.output()):write("Не удалось загрузить ultimateOC.lua: " .. tostring(uoc) .. "\n")
-    os.exit(1) -- Exit if library is essential and fails to load
+local uoc_load_ok, uoc_instance_or_error = pcall(require, "ultimateOC")
+local uoc
+if uoc_load_ok and uoc_instance_or_error then
+    uoc = uoc_instance_or_error
+else
+    (io.stderr or io.output()):write("КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить библиотеку ultimateOC.lua: " .. tostring(uoc_instance_or_error) .. "\n")
+    os.exit(1)
 end
 
 if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {})
 end
 
+local me = component.me_interface
+if not me then
+    (io.stderr or io.output()):write("КРИТИЧЕСКАЯ ОШИБКА: Компонент me_interface не найден! Убедитесь, что ME интерфейс подключен.\n")
+    -- Можно создать заглушку для me, если программа должна пытаться работать дальше,
+    -- но для автокрафта это, скорее всего, фатально.
+    os.exit(1)
+end
+
+
 -------------------- Настройки --------------------
 local COLORS = {
-    button = 0x00BFFF,
-    buttonActive = 0x1E90FF,
-    border = 0x44475a,
-    text = 0xF8F8F2,
-    shadow = 0x282A36,
-    bg = 0x23242b,
-    error = 0xFF5555,
-    ok = 0x50FA7B,
-    log = 0x8BE9FD,
-    progress_bg = 0x44475a,
-    progress_fg = 0x50FA7B,
-    select = 0x31313A,
-    select_active = 0x44B3FF,
-    search_bg = 0x282B36,
-    search_border = 0x00BFFF,
-    search_cross = 0xFF5555,
-    search_hint = 0x888888,
-    bar_shadow = 0x181920,
-    tooltip_bg = 0x44475a,
-    tooltip_text = 0xF8F8F2,
+    button = 0x00BFFF, buttonActive = 0x1E90FF, border = 0x44475a, text = 0xF8F8F2,
+    shadow = 0x282A36, bg = 0x23242b, error = 0xFF5555, ok = 0x50FA7B, log = 0x8BE9FD,
+    progress_bg = 0x44475a, progress_fg = 0x50FA7B, select = 0x31313A, select_active = 0x44B3FF,
+    search_bg = 0x282B36, search_border = 0x00BFFF, search_cross = 0xFF5555, search_hint = 0x888888,
+    bar_shadow = 0x181920, tooltip_bg = 0x44475a, tooltip_text = 0xF8F8F2,
 }
 local WIDTH, HEIGHT = 110, 40
 local craftStatus = "Ожидание..."
@@ -94,7 +130,6 @@ local tooltipTimeout = 0
 -------------------- Логгирование без времени --------------------
 local function addLog(logsTable, text, lvl)
     lvl = lvl or "INFO"
-    -- Время удалено из логов по запросу
     local t = string.format("[%s] %s", lvl, text)
     table.insert(logsTable, t)
     while #logsTable > 50 do table.remove(logsTable, 1) end
@@ -102,12 +137,14 @@ end
 
 -------------------- Визуал --------------------
 local function clear()
+    if not g or not g.isAvailable or not g:isAvailable() then return end
     g.setBackground(COLORS.bg)
     g.fill(1,1,WIDTH,HEIGHT," ")
     g.setForeground(COLORS.text)
 end
 
 local function shadowRect(x, y, w, h)
+    if not g or not g.isAvailable or not g:isAvailable() then return end
     g.setBackground(COLORS.bar_shadow)
     g.fill(x+1, y+h, w, 1, " ")
     g.fill(x+w, y, 1, h, " ")
@@ -115,6 +152,7 @@ local function shadowRect(x, y, w, h)
 end
 
 local function drawHeader()
+    if not g or not g.isAvailable or not g:isAvailable() then return end
     uoc.drawText(3,3,"Ultimate AutoCraft",COLORS.ok,true)
     g.setBackground(COLORS.progress_fg)
     g.fill(2,4,WIDTH-2,1," ")
@@ -122,15 +160,16 @@ local function drawHeader()
     g.setBackground(COLORS.bg)
     uoc.drawText(WIDTH-34,3,"Статус: "..craftStatus,
         (craftStatus:find("Ошибка") and COLORS.error) or COLORS.ok)
-    uoc.progressBar(3,5,WIDTH-6, isCrafting and 0.9 or 0) -- Progress bar might represent overall activity
+    uoc.progressBar(3,5,WIDTH-6, isCrafting and 0.9 or 0)
 end
 
 local function drawLogs()
-    -- Логи перемещены ниже строки поиска и их количество изменено на 3
+    if not g or not g.isAvailable or not g:isAvailable() then return end
     uoc.drawLogs(3, HEIGHT-10, logs, 3, COLORS.log)
 end
 
 local function drawItems()
+    if not g or not g.isAvailable or not g:isAvailable() then return end
     local x, y = 2, 8
     local totalWidth = WIDTH-4
     local col_name = math.floor(totalWidth * 0.45)
@@ -160,12 +199,12 @@ local function drawItems()
     g.set(x, y+2, "├"..string.rep("─",col_name).."┼"..string.rep("─",col_now).."┼"..string.rep("─",col_hold).."┼"..string.rep("─",col_once).."┤")
 
     local showItems = {}
-    for i,item in ipairs(dataItems) do
-        if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
-            table.insert(showItems, item)
+    for i,item_entry in ipairs(dataItems) do
+        if search == "" or unicode.lower(item_entry.name or ""):find(unicode.lower(search), 1, true) then
+            table.insert(showItems, item_entry)
         end
     end
-    local perPage = HEIGHT-24 -- Height for item list area
+    local perPage = HEIGHT-24
     for i = itemScroll, math.min(#showItems, itemScroll+perPage-1) do
         local it = showItems[i]
         local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem])
@@ -194,19 +233,20 @@ local function drawItems()
         local barLen = math.max(2, math.floor(perPage * perPage / #showItems))
         local barTop = y+3 + math.floor((perPage-barLen) * (itemScroll-1) / math.max(1,#showItems-perPage))
         g.setForeground(COLORS.select_active)
-        g.set(WIDTH-2, y+3, "│") -- Part of scrollbar track
+        g.set(WIDTH-2, y+3, "│")
         for i=1,perPage do
-            g.set(WIDTH-2, y+2+i, "│") -- Scrollbar track
+            g.set(WIDTH-2, y+2+i, "│")
         end
         g.setForeground(COLORS.ok)
         for i=0,barLen-1 do
-            g.set(WIDTH-2, barTop+i, "█") -- Scrollbar handle
+            g.set(WIDTH-2, barTop+i, "█")
         end
         g.setForeground(COLORS.text)
     end
 end
 
 local function drawSearchBar()
+    if not g or not g.isAvailable or not g:isAvailable() then return end
     local x, y, w, h = 3, HEIGHT-13, WIDTH-6, 3
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
@@ -218,9 +258,9 @@ local function drawSearchBar()
     if display=="" and not searchActive then display = "Поиск: введите часть названия..." end
     if searchActive then display = display .. "_" end
     
-    local maxDisplayLen = w-7 -- Max characters to display in search bar
+    local maxDisplayLen = w-7
     if unicode.len(display) > maxDisplayLen then
-        display = "..." .. unicode.sub(display, unicode.len(display)-maxDisplayLen+4) -- Show tail of long string
+        display = "..." .. unicode.sub(display, unicode.len(display)-maxDisplayLen+4)
     end
     g.set(x+2, y+1, display)
     g.setBackground(COLORS.bg)
@@ -228,6 +268,7 @@ local function drawSearchBar()
 end
 
 local function drawButtons()
+    if not g or not g.isAvailable or not g:isAvailable() then return end
     local btns = {
         {name="Удалить", x=WIDTH-60, tip="Удалить выбранный предмет из списка"},
         {name="Изменить", x=WIDTH-45, tip="Изменить параметры предмета"},
@@ -239,74 +280,72 @@ local function drawButtons()
         uoc.animatedButton(v.x, HEIGHT-4, 12, 3, v.name, hover, COLORS.button, COLORS.buttonActive, COLORS.text)
         if hover then
             tooltip = v.tip
-            tooltipTimeout = computer.uptime() -- Use computer.uptime for consistency with other timers
+            tooltipTimeout = computer.uptime()
         end
     end
 end
 
 local function drawTooltip()
+    if not g or not g.isAvailable or not g:isAvailable() then return end
     if tooltip ~= "" and computer.uptime() - tooltipTimeout < 3 then
         local txt = " "..tooltip.." "
         local w = unicode.len(txt)
-        local xPos, yPos = WIDTH-w-3, HEIGHT-7 -- Position tooltip
-        -- Ensure tooltip doesn't go off screen
+        local xPos, yPos = WIDTH-w-3, HEIGHT-7
         if xPos < 1 then xPos = 1 end
 
         g.setBackground(COLORS.tooltip_bg)
         g.setForeground(COLORS.tooltip_text)
-        g.fill(xPos, yPos, w+2, 3, " ") -- Tooltip box
-        g.set(xPos+1, yPos+1, txt) -- Tooltip text
+        g.fill(xPos, yPos, w+2, 3, " ")
+        g.set(xPos+1, yPos+1, txt)
         g.setBackground(COLORS.bg)
         g.setForeground(COLORS.text)
     end
 end
 
 local function draw()
-    g.setResolution(WIDTH, HEIGHT) -- Ensure resolution is set before drawing
+    if not g or not g.isAvailable or not g:isAvailable() then
+        -- (io.stderr or io.output()):write("INFO: draw() called but GPU is not available. Skipping draw.\n")
+        return
+    end
+    g.setResolution(WIDTH, HEIGHT)
     clear()
     drawHeader()
     drawItems()
-    drawSearchBar() -- Search bar drawn before logs
-    drawLogs()      -- Logs drawn after search bar
+    drawSearchBar()
+    drawLogs()
     drawButtons()
     drawTooltip()
-    term.setCursorPos(1,1) -- Hide terminal cursor (will use dummy if term failed to load)
-    term.setCursorBlink(false) -- (will use dummy if term failed to load)
+    terminal.setCursorPos(1,1) 
+    terminal.setCursorBlink(false)
 end
 
 -------------------- IO и действия --------------------
 local function reload()
     local r_ok, res = pcall(uoc.loadf, DATA_FILE)
     dataItems = r_ok and res or {}
-    for _,item in ipairs(dataItems) do
+    if not me or not me.getItemsInNetwork then -- Проверка на наличие me_interface и его методов
+        addLog(logs, "Ошибка: ME интерфейс недоступен для reload()", "ERROR")
+        return
+    end
+    for _,item_entry in ipairs(dataItems) do
         local qty = 0
-        local stackList = {}
-        -- Attempt to get item count from network
-        local get_items_ok, items_data = pcall(function() return me.getItemsInNetwork({name = item.id, damage = item.dmg}) end)
+        local get_items_ok, items_data = pcall(me.getItemsInNetwork, {name = item_entry.id, damage = item_entry.dmg})
         if get_items_ok and items_data and items_data.n and items_data.n > 0 then
             for _,stack in ipairs(items_data) do
-                 -- Ensure correct item matching, especially with damage values
-                if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg or (item.dmg == 0 and stack.damage == nil) or (item.dmg == nil and stack.damage == 0)) then
-                    qty = qty + (stack.size or stack.qty or 0) -- Sum up if multiple stacks match
+                if stack.name == item_entry.id and (item_entry.dmg == nil or stack.damage == item_entry.dmg or (item_entry.dmg == 0 and stack.damage == nil) or (item_entry.dmg == nil and stack.damage == 0)) then
+                    qty = qty + (stack.size or stack.qty or 0)
                 end
             end
-             if items_data.n == 1 and items_data[1].name == item.id and (item.dmg == nil or items_data[1].damage == item.dmg) then
-                qty = items_data[1].size or items_data[1].qty or 0
-            else -- If multiple results, iterate and sum, or handle specific logic
-                for i=1,items_data.n do
-                    local stack = items_data[i]
-                    if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
-                         qty = qty + (stack.size or stack.qty or 0)
-                    end
-                end
-            end
-        else -- Fallback if getItemsInNetwork fails or returns no items
-            local get_detail_ok, d = pcall(me.getItemDetail, {name = item.id, damage = item.dmg})
+        else
+            if not get_items_ok then addLog(logs, "Ошибка getItemsInNetwork: " .. tostring(items_data), "ERROR") end
+            local get_detail_ok, d = pcall(me.getItemDetail, {name = item_entry.id, damage = item_entry.dmg})
             if get_detail_ok and d then
                 qty = d.qty or d.size or 0
+            elseif not get_detail_ok then
+                 addLog(logs, "Ошибка getItemDetail: " .. tostring(d), "ERROR")
             end
         end
-        item.current = qty
+        item_entry.current = qty
     end
 end
 
@@ -322,33 +361,56 @@ local function resetSelection()
     selectedItem = nil
 end
 
+local function inputWithPrompt(promptText, x, y, defaultColor, promptColor)
+    if terminal.isAvailable and terminal:isAvailable() then
+        uoc.drawText(x, y, promptText, promptColor or COLORS.text)
+        terminal.setCursorPos(x + unicode.len(promptText) + 1, y)
+        terminal.setCursorBlink(true)
+        io.write("\027[?25h") -- ANSI показать курсор
+        local input = io.read()
+        io.write("\027[?25l") -- ANSI спрятать курсор
+        terminal.setCursorBlink(false)
+        return input or ""
+    else
+        -- Fallback if terminal is not available (e.g., use a simple prompt if possible)
+        -- This part is tricky without a working terminal for io.read()
+        addLog(logs, "Ввод невозможен: терминал недоступен.", "WARN")
+        return "" -- Or prompt the user via logs/other means if absolutely necessary
+    end
+end
+
+
 local function addItem()
     changeitem = true
-    term.setCursorBlink(true) -- (will use dummy if term failed to load)
+    if terminal.isAvailable and terminal:isAvailable() then terminal.setCursorBlink(true) end
     clear()
     uoc.drawText(10,HEIGHT-7,"Вставьте предмет в 1-й слот ME интерфейса и введите параметры.",COLORS.ok)
-    uoc.drawText(10,HEIGHT-6,"Название: ",COLORS.text)
-    term.setCursorPos(20,HEIGHT-6) -- (will use dummy if term failed to load)
-    io.write("\027[?25h") -- Attempt to show cursor via ANSI, might not work if term is broken
-    local name = tostring(io.read() or "")
-    uoc.drawText(10,HEIGHT-5,"Держать (число): ",COLORS.text)
-    term.setCursorPos(29,HEIGHT-5) -- (will use dummy if term failed to load)
-    local count = tonumber(io.read()) or 0
-    uoc.drawText(10,HEIGHT-4,"Крафт за раз (число): ",COLORS.text)
-    term.setCursorPos(32,HEIGHT-4) -- (will use dummy if term failed to load)
-    local craftSize = tonumber(io.read()) or 1
-    io.write("\027[?25l") -- Attempt to hide cursor via ANSI
-    term.setCursorBlink(false) -- (will use dummy if term failed to load)
+    
+    local name = inputWithPrompt("Название: ", 10, HEIGHT-6, COLORS.text, COLORS.text)
+    local count_str = inputWithPrompt("Держать (число): ", 10, HEIGHT-5, COLORS.text, COLORS.text)
+    local count = tonumber(count_str) or 0
+    local craftSize_str = inputWithPrompt("Крафт за раз (число): ", 10, HEIGHT-4, COLORS.text, COLORS.text)
+    local craftSize = tonumber(craftSize_str) or 1
+
+    if terminal.isAvailable and terminal:isAvailable() then terminal.setCursorBlink(false) end
+
+    if not me or not me.getStackInSlot then
+        addLog(logs, "Ошибка: ME интерфейс недоступен для addItem()", "ERROR")
+        changeitem = false
+        resetSelection()
+        return
+    end
 
     local stack = nil
     local get_stack_ok, res = pcall(me.getStackInSlot, 1)
     if get_stack_ok then stack = res end
 
-    if stack and stack.name then -- Check if stack.name exists
+    if stack and stack.name then
         table.insert(dataItems, {name=name, id=stack.name, dmg=stack.damage, count=count, craftSize=craftSize})
         save()
         addLog(logs, "Добавлен предмет: "..name,"INFO")
     else
+        if not get_stack_ok then addLog(logs, "Ошибка getStackInSlot: " .. tostring(res), "ERROR") end
         addLog(logs, "Ошибка: нет предмета в слоте 1 или предмет некорректен!","ERROR")
     end
     changeitem = false
@@ -361,41 +423,32 @@ local function editItem()
     if not item then return addLog(logs,"Ошибка: выбранный предмет не найден!","ERROR") end
 
     changeitem = true
-    term.setCursorBlink(true) -- (will use dummy if term failed to load)
+    if terminal.isAvailable and terminal:isAvailable() then terminal.setCursorBlink(true) end
     clear()
     uoc.drawText(10,HEIGHT-7,"Изменение: "..(item.name or "<??>"),COLORS.ok)
-    io.write("\027[?25h") -- Attempt to show cursor
 
-    uoc.drawText(10,HEIGHT-6,"Новое имя (Enter пропустить): ",COLORS.text)
-    term.setCursorPos(40,HEIGHT-6) -- (will use dummy if term failed to load)
-    local name = tostring(io.read() or "")
-    if name and name ~= "" then
-        item.name = name
-    end
+    local new_name = inputWithPrompt("Новое имя (Enter пропустить): ", 10, HEIGHT-6, COLORS.text, COLORS.text)
+    if new_name and new_name ~= "" then item.name = new_name end
 
-    uoc.drawText(10,HEIGHT-5,"Новое держать (число, Enter пропустить): ",COLORS.text)
-    term.setCursorPos(54,HEIGHT-5) -- (will use dummy if term failed to load)
-    local countstr = tostring(io.read() or "")
-    if countstr ~= "" then
-        local count = tonumber(countstr)
+    local count_str = inputWithPrompt("Новое держать (число, Enter пропустить): ", 10, HEIGHT-5, COLORS.text, COLORS.text)
+    if count_str ~= "" then
+        local count = tonumber(count_str)
         if count then item.count = count end
     end
 
-    uoc.drawText(10,HEIGHT-4,"Новый крафт за раз (число, Enter пропустить): ",COLORS.text)
-    term.setCursorPos(55,HEIGHT-4) -- (will use dummy if term failed to load)
-    local csstr = tostring(io.read() or "")
-    if csstr ~= "" then
-        local cs = tonumber(csstr)
+    local cs_str = inputWithPrompt("Новый крафт за раз (число, Enter пропустить): ", 10, HEIGHT-4, COLORS.text, COLORS.text)
+    if cs_str ~= "" then
+        local cs = tonumber(cs_str)
         if cs then item.craftSize = cs end
     end
     
-    io.write("\027[?25l") -- Attempt to hide cursor
-    term.setCursorBlink(false) -- (will use dummy if term failed to load)
+    if terminal.isAvailable and terminal:isAvailable() then terminal.setCursorBlink(false) end
     save()
     addLog(logs, "Изменено: "..item.name,"INFO")
     changeitem = false
     resetSelection()
 end
+
 
 local function removeItem()
     if not selectedItem then return addLog(logs,"Не выбран предмет!","ERROR") end
@@ -429,73 +482,81 @@ local function autoCraftLoop()
         if isCrafting then
             local now_time = computer.uptime()
             if now_time >= nextCraftUpdate then
-                reload() -- Reload item counts from ME network
+                reload() 
 
-                local cpus_list_ok, all_cpus_details = pcall(me.getCpus)
-                local available_cpus_for_this_scan = {}
-                if cpus_list_ok and all_cpus_details then
-                    for _, cpu_detail in ipairs(all_cpus_details) do
-                        if not cpu_detail.busy then
-                            table.insert(available_cpus_for_this_scan, cpu_detail.name)
+                if not me or not me.getCpus then
+                    addLog(logs, "Ошибка: ME интерфейс недоступен для autoCraftLoop()", "ERROR")
+                    craftStatus = "Ошибка ME"
+                    isCrafting = false -- Остановить крафт, если интерфейс отвалился
+                else
+                    local cpus_list_ok, all_cpus_details = pcall(me.getCpus)
+                    local available_cpus_for_this_scan = {}
+                    if cpus_list_ok and all_cpus_details then
+                        for _, cpu_detail in ipairs(all_cpus_details) do
+                            if not cpu_detail.busy then
+                                table.insert(available_cpus_for_this_scan, cpu_detail.name)
+                            end
                         end
+                    elseif not cpus_list_ok then
+                        addLog(logs, "Ошибка getCpus: " .. tostring(all_cpus_details), "ERROR")
                     end
-                end
-                
-                local assigned_cpus_in_this_scan = {} -- Track CPUs assigned in this specific scan
+                    
+                    local assigned_cpus_in_this_scan = {} 
 
-                for i, item in ipairs(dataItems) do
-                    local count = tonumber(item.count) or 0
-                    local craftSize = tonumber(item.craftSize) or 1
-                    local current = tonumber(item.current) or 0
+                    for i, item_entry in ipairs(dataItems) do
+                        local count = tonumber(item_entry.count) or 0
+                        local craftSize = tonumber(item_entry.craftSize) or 1
+                        local current = tonumber(item_entry.current) or 0
 
-                    if current < count then
-                        local freeCpuForThisItem = nil
-                        -- Find a CPU that is in available_cpus_for_this_scan AND not in assigned_cpus_in_this_scan
-                        for _, cpu_name_avail in ipairs(available_cpus_for_this_scan) do
-                            local is_assigned_already = false
-                            for _, assigned_name in ipairs(assigned_cpus_in_this_scan) do
-                                if cpu_name_avail == assigned_name then
-                                    is_assigned_already = true
+                        if current < count then
+                            local freeCpuForThisItem = nil
+                            for _, cpu_name_avail in ipairs(available_cpus_for_this_scan) do
+                                local is_assigned_already = false
+                                for _, assigned_name in ipairs(assigned_cpus_in_this_scan) do
+                                    if cpu_name_avail == assigned_name then
+                                        is_assigned_already = true
+                                        break
+                                    end
+                                end
+                                if not is_assigned_already then
+                                    freeCpuForThisItem = cpu_name_avail
+                                    table.insert(assigned_cpus_in_this_scan, freeCpuForThisItem) 
                                     break
                                 end
                             end
-                            if not is_assigned_already then
-                                freeCpuForThisItem = cpu_name_avail
-                                table.insert(assigned_cpus_in_this_scan, freeCpuForThisItem) -- Mark as assigned for this item in this scan
-                                break
-                            end
-                        end
 
-                        if freeCpuForThisItem then
-                            local craftables_ok, craftables_data = pcall(me.getCraftables, {name=item.id, damage=item.dmg})
-                            craftables_data = craftables_ok and craftables_data or {n=0}
+                            if freeCpuForThisItem then
+                                local craftables_ok, craftables_data = pcall(me.getCraftables, {name=item_entry.id, damage=item_entry.dmg})
+                                craftables_data = craftables_ok and craftables_data or {n=0}
+                                if not craftables_ok then addLog(logs, "Ошибка getCraftables: " .. tostring(craftables_data), "ERROR") end
 
-                            if craftables_data.n and craftables_data.n >= 1 then
-                                local delta = math.min(craftSize, count - current)
-                                if delta > 0 then
-                                    -- Ensure craftables_data[1] and its 'request' method exist
-                                    if craftables_data[1] and type(craftables_data[1].request) == "function" then
-                                        local succ_req, req_res = pcall(function() return craftables_data[1].request(delta, false, freeCpuForThisItem) end)
-                                        if succ_req and req_res then
-                                            craftStatus = "Крафт: "..(item.name or "<??>")
-                                            addLog(logs, "Крафт "..delta.."x "..(item.name or "<??>").." на CPU "..tostring(freeCpuForThisItem),"INFO")
+
+                                if craftables_data.n and craftables_data.n >= 1 then
+                                    local delta = math.min(craftSize, count - current)
+                                    if delta > 0 then
+                                        if craftables_data[1] and type(craftables_data[1].request) == "function" then
+                                            local succ_req, req_res = pcall(craftables_data[1].request, craftables_data[1], delta, false, freeCpuForThisItem)
+                                            if succ_req and req_res then
+                                                craftStatus = "Крафт: "..(item_entry.name or "<??>")
+                                                addLog(logs, "Крафт "..delta.."x "..(item_entry.name or "<??>").." на CPU "..tostring(freeCpuForThisItem),"INFO")
+                                            else
+                                                craftStatus = "Ошибка: запрос крафта"
+                                                addLog(logs, "Ошибка запроса крафта "..(item_entry.name or "<??>").." (" .. tostring(req_res) .. ")","ERROR")
+                                            end
                                         else
-                                            craftStatus = "Ошибка: запрос крафта"
-                                            addLog(logs, "Ошибка: не удалось отправить крафт "..(item.name or "<??>").." (" .. tostring(req_res) .. ")","ERROR")
+                                            craftStatus = "Ошибка: нет метода request"
+                                            addLog(logs, "Ошибка: нет метода request у рецепта для "..(item_entry.name or "<??>"),"ERROR")
                                         end
-                                    else
-                                        craftStatus = "Ошибка: нет метода request у рецепта"
-                                        addLog(logs, "Ошибка: нет метода request у рецепта для "..(item.name or "<??>"),"ERROR")
                                     end
+                                else
+                                    craftStatus = "Ошибка: нет рецепта "..(item_entry.name or "<??>")
+                                    addLog(logs, "Ошибка: нет рецепта "..(item_entry.name or "<??>"),"ERROR")
                                 end
                             else
-                                craftStatus = "Ошибка: нет рецепта "..(item.name or "<??>")
-                                addLog(logs, "Ошибка: нет рецепта "..(item.name or "<??>"),"ERROR")
-                            end
-                        else
-                            addLog(logs, "Инфо: нет свободных CPU для "..(item.name or "<?>").." в этом цикле","INFO")
-                            if craftStatus ~= "Ошибка: запрос крафта" and not craftStatus:find("Крафт:") then 
-                                craftStatus = "Ожидание CPU..."
+                                addLog(logs, "Инфо: нет свободных CPU для "..(item_entry.name or "<?>").." в этом цикле","INFO")
+                                if craftStatus ~= "Ошибка: запрос крафта" and not craftStatus:find("Крафт:") then 
+                                    craftStatus = "Ожидание CPU..."
+                                end
                             end
                         end
                     end
@@ -505,205 +566,168 @@ local function autoCraftLoop()
             end
         end
         draw() 
-        os.sleep(0.1) 
-    end
-end
-
--------------------- События --------------------
-event.listen("touch", function(_,_,x,y,button_code,_)
-    if changeitem then return end 
-
-    local prevHoveredButton = hoveredButton
-    hoveredButton = nil 
-
-    local btns_layout = {
-        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3, id=1}, 
-        {x=WIDTH-45, y=HEIGHT-4, w=12, h=3, id=2}, 
-        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3, id=3}, 
-        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3, id=4}, 
-    }
-
-    for i,btn_layout_item in ipairs(btns_layout) do
-        if x >= btn_layout_item.x and x < btn_layout_item.x+btn_layout_item.w and y >= btn_layout_item.y and y < btn_layout_item.y+btn_layout_item.h then
-            hoveredButton = btn_layout_item.id
-            if button_code == 0 then 
-                if btn_layout_item.id==1 then removeItem()
-                elseif btn_layout_item.id==2 then editItem()
-                elseif btn_layout_item.id==3 then if isCrafting then stopCraft() else doCraft() end
-                elseif btn_layout_item.id==4 then addItem()
+        local eventData = {event.pull(0.1)} -- Используем event.pull с таймаутом
+        if eventData[1] then
+            local eName = eventData[1]
+            if eName == "touch" then
+                -- event.listen("touch", function(_,_,x,y,button_code,_)
+                if not changeitem then
+                    local _,_,x,y,button_code = eventData[2],eventData[3],eventData[4],eventData[5],eventData[6]
+                    local prevHoveredButton = hoveredButton
+                    hoveredButton = nil 
+                    local btns_layout = {
+                        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3, id=1}, {x=WIDTH-45, y=HEIGHT-4, w=12, h=3, id=2}, 
+                        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3, id=3}, {x=WIDTH-15, y=HEIGHT-4, w=12, h=3, id=4}, 
+                    }
+                    for _,btn_layout_item in ipairs(btns_layout) do
+                        if x >= btn_layout_item.x and x < btn_layout_item.x+btn_layout_item.w and y >= btn_layout_item.y and y < btn_layout_item.y+btn_layout_item.h then
+                            hoveredButton = btn_layout_item.id
+                            if button_code == 0 then 
+                                if btn_layout_item.id==1 then removeItem() elseif btn_layout_item.id==2 then editItem()
+                                elseif btn_layout_item.id==3 then if isCrafting then stopCraft() else doCraft() end
+                                elseif btn_layout_item.id==4 then addItem() end
+                            end
+                            goto next_event_iteration -- Пропускаем остальную логику событий
+                        end
+                    end
+                    local searchBarX, searchBarY, searchBarW, searchBarH = 3, HEIGHT-13, WIDTH-6, 3
+                    if y >= searchBarY and y < searchBarY + searchBarH then
+                        if x >= searchBarX + searchBarW - 3 and x < searchBarX + searchBarW -1 and search ~= "" then
+                            if button_code == 0 then search = ""; itemScroll = 1; searchActive = false end
+                        elseif x >= searchBarX + 1 and x < searchBarX + searchBarW - 3 then
+                            if button_code == 0 then searchActive = true end
+                        else
+                            if button_code == 0 then searchActive = false end 
+                        end
+                        goto next_event_iteration
+                    else
+                        if button_code == 0 then searchActive = false end 
+                    end
+                    local showItemsTemp = {} 
+                    for _,item_entry_evt in ipairs(dataItems) do
+                        if search == "" or unicode.lower(item_entry_evt.name or ""):find(unicode.lower(search), 1, true) then
+                            table.insert(showItemsTemp, item_entry_evt) end
+                    end
+                    local items_per_page_count_evt = HEIGHT-24; local itemsListY_start_evt = 8 + 3 
+                    local itemsListY_end_evt = itemsListY_start_evt + items_per_page_count_evt -1
+                    if y >= itemsListY_start_evt and y <= itemsListY_end_evt then
+                        if button_code == 0 then
+                            local clicked_idx_in_view = y - itemsListY_start_evt
+                            local actual_idx_in_showItems = itemScroll + clicked_idx_in_view
+                            if showItemsTemp[actual_idx_in_showItems] then
+                                for k,v_data_item in ipairs(dataItems) do
+                                    if v_data_item == showItemsTemp[actual_idx_in_showItems] then selectedItem = k; break end
+                                end
+                            end
+                        end
+                    end
                 end
-            end
-            return
-        end
-    end
-
-    local searchBarX, searchBarY, searchBarW, searchBarH = 3, HEIGHT-13, WIDTH-6, 3
-    if y >= searchBarY and y < searchBarY + searchBarH then
-        if x >= searchBarX + searchBarW - 3 and x < searchBarX + searchBarW -1 and search ~= "" then
-            if button_code == 0 then
-                search = ""
-                itemScroll = 1 
-                searchActive = false 
-            end
-        elseif x >= searchBarX + 1 and x < searchBarX + searchBarW - 3 then
-             if button_code == 0 then
-                searchActive = true
-             end
-        else
-            if button_code == 0 then searchActive = false end 
-        end
-        return
-    else
-      if button_code == 0 then searchActive = false end 
-    end
-
-    local showItemsTemp = {} 
-    for _,item_entry in ipairs(dataItems) do
-        if search == "" or unicode.lower(item_entry.name or ""):find(unicode.lower(search), 1, true) then
-            table.insert(showItemsTemp, item_entry)
-        end
-    end
-    local items_per_page_count = HEIGHT-24
-    local itemsListY_start = 8 + 3 
-    local itemsListY_end = itemsListY_start + items_per_page_count -1
-
-    if y >= itemsListY_start and y <= itemsListY_end then
-        if button_code == 0 then
-            local clicked_idx_in_view = y - itemsListY_start
-            local actual_idx_in_showItems = itemScroll + clicked_idx_in_view
-            if showItemsTemp[actual_idx_in_showItems] then
-                for k,v_data_item in ipairs(dataItems) do
-                    if v_data_item == showItemsTemp[actual_idx_in_showItems] then
-                        selectedItem = k
-                        break
+            elseif eName == "drag" then
+                -- event.listen("drag", function(_,_,x,y,_,_)
+                if not changeitem then
+                    local _,_,x,y = eventData[2],eventData[3],eventData[4],eventData[5]
+                    local currentHover = nil
+                    local btns_drag_layout = {
+                        {name="Удалить", x=WIDTH-60, y=HEIGHT-4, w=12, h=3, id=1, tip="Удалить выбранный предмет из списка"},
+                        {name="Изменить", x=WIDTH-45, y=HEIGHT-4, w=12, h=3, id=2, tip="Изменить параметры предмета"},
+                        {name=isCrafting and "Остановить" or "Автокрафт", x=WIDTH-30, y=HEIGHT-4, w=12, h=3, id=3, tip=isCrafting and "Остановить автокрафт" or "Запустить автокрафт"},
+                        {name="Добавить", x=WIDTH-15, y=HEIGHT-4, w=12, h=3, id=4, tip="Добавить новый предмет (предмет в 1 слоте интерфейса ME)"},
+                    }
+                    for _,btn_layout_item in ipairs(btns_drag_layout) do
+                        if x >= btn_layout_item.x and x < btn_layout_item.x+btn_layout_item.w and y >= btn_layout_item.y and y < btn_layout_item.y+btn_layout_item.h then
+                            currentHover = btn_layout_item.id; tooltip = btn_layout_item.tip; tooltipTimeout = computer.uptime(); break
+                        end
+                    end
+                    if hoveredButton ~= currentHover then hoveredButton = currentHover; if not hoveredButton then tooltip = "" end end
+                end
+            elseif eName == "scroll" then
+                -- event.listen("scroll", function(_, _, x, y, direction, _)
+                if not changeitem then
+                    local _, _, x, y, direction = eventData[2],eventData[3],eventData[4],eventData[5],eventData[6]
+                    local items_per_page_count_scr = HEIGHT-24; local itemsListY_start_scr = 8 + 3 
+                    local itemsListY_end_scr = itemsListY_start_scr + items_per_page_count_scr -1
+                    if y >= itemsListY_start_scr and y <= itemsListY_end_scr then
+                        local showItemsTemp_scr = {}
+                        for _,item_entry_scr in ipairs(dataItems) do
+                            if search == "" or unicode.lower(item_entry_scr.name or ""):find(unicode.lower(search), 1, true) then
+                                table.insert(showItemsTemp_scr, item_entry_scr) end
+                        end
+                        if direction < 0 then itemScroll = math.max(1, itemScroll - 1)
+                        elseif direction > 0 then if #showItemsTemp_scr > items_per_page_count_scr then itemScroll = math.min(#showItemsTemp_scr - items_per_page_count_scr + 1, itemScroll + 1) end end
+                    end
+                end
+            elseif eName == "key_down" then
+                -- event.listen("key_down", function(_, _, keyCode, charStr, _)
+                if not changeitem then
+                    local _, _, keyCode, charStr = eventData[2],eventData[3],eventData[4],eventData[5]
+                    local showItemsFiltered_key = {} 
+                    for _,item_entry_key in ipairs(dataItems) do
+                        if search == "" or unicode.lower(item_entry_key.name or ""):find(unicode.lower(search), 1, true) then
+                            table.insert(showItemsFiltered_key, item_entry_key) end
+                    end
+                    local items_per_page_count_key = HEIGHT-24; local search_max_len_key = (WIDTH-6)-7 
+                    if searchActive then
+                        if keyCode == 14 then if unicode.len(search) > 0 then search = unicode.sub(search, 1, unicode.len(search) - 1) end
+                        elseif keyCode == 211 then search = ""
+                        elseif keyCode == 28 or keyCode == 156 then searchActive = false
+                        elseif type(charStr) == "string" and unicode.len(charStr) > 0 then
+                            local firstByte = string.byte(charStr, 1)
+                            if firstByte >= 32 or unicode.len(charStr) > 1 then 
+                                if unicode.len(search) < search_max_len_key then search = search .. charStr end
+                            end
+                        end
+                        itemScroll = 1 
+                    else 
+                        if keyCode == 200 then itemScroll = math.max(1,itemScroll-1)
+                        elseif keyCode == 208 then if #showItemsFiltered_key > items_per_page_count_key then itemScroll = math.min(#showItemsFiltered_key - items_per_page_count_key + 1, itemScroll + 1) end
+                        elseif keyCode == 201 then itemScroll = math.max(1, itemScroll - items_per_page_count_key)
+                        elseif keyCode == 209 then if #showItemsFiltered_key > items_per_page_count_key then itemScroll = math.min(#showItemsFiltered_key - items_per_page_count_key + 1, itemScroll + items_per_page_count_key) end
+                        end
                     end
                 end
             end
         end
-        return
+        ::next_event_iteration::
     end
-    if prevHoveredButton ~= hoveredButton then 
-    end
-end)
-
-event.listen("drag", function(_,_,x,y,_,_)
-    if changeitem then return end
-    local currentHover = nil
-    local btns_layout = {
-        {name="Удалить", x=WIDTH-60, y=HEIGHT-4, w=12, h=3, id=1, tip="Удалить выбранный предмет из списка"},
-        {name="Изменить", x=WIDTH-45, y=HEIGHT-4, w=12, h=3, id=2, tip="Изменить параметры предмета"},
-        {name=isCrafting and "Остановить" or "Автокрафт", x=WIDTH-30, y=HEIGHT-4, w=12, h=3, id=3, tip=isCrafting and "Остановить автокрафт" or "Запустить автокрафт"},
-        {name="Добавить", x=WIDTH-15, y=HEIGHT-4, w=12, h=3, id=4, tip="Добавить новый предмет (предмет в 1 слоте интерфейса ME)"},
-    }
-    for _,btn_layout_item in ipairs(btns_layout) do
-        if x >= btn_layout_item.x and x < btn_layout_item.x+btn_layout_item.w and y >= btn_layout_item.y and y < btn_layout_item.y+btn_layout_item.h then
-            currentHover = btn_layout_item.id
-            tooltip = btn_layout_item.tip
-            tooltipTimeout = computer.uptime()
-            break
-        end
-    end
-    if hoveredButton ~= currentHover then
-        hoveredButton = currentHover
-        if not hoveredButton then tooltip = "" end 
-    end
-end)
-
-event.listen("scroll", function(_, _, x, y, direction, _)
-    if changeitem then return end
-    local items_per_page_count = HEIGHT-24
-    local itemsListY_start = 8 + 3 
-    local itemsListY_end = itemsListY_start + items_per_page_count -1
-    
-    if y >= itemsListY_start and y <= itemsListY_end then
-        local showItemsTemp = {}
-        for _,item_entry in ipairs(dataItems) do
-            if search == "" or unicode.lower(item_entry.name or ""):find(unicode.lower(search), 1, true) then
-                table.insert(showItemsTemp, item_entry)
-            end
-        end
-
-        if direction < 0 then 
-            itemScroll = math.max(1, itemScroll - 1)
-        elseif direction > 0 then 
-            if #showItemsTemp > items_per_page_count then
-                itemScroll = math.min(#showItemsTemp - items_per_page_count + 1, itemScroll + 1)
-            end
-        end
-    end
-end)
-
-
-event.listen("key_down", function(_, _, keyCode, charStr, _)
-    if changeitem then return end
-
-    local showItemsFiltered = {} 
-    for _,item_entry in ipairs(dataItems) do
-        if search == "" or unicode.lower(item_entry.name or ""):find(unicode.lower(search), 1, true) then
-            table.insert(showItemsFiltered, item_entry)
-        end
-    end
-    local items_per_page_count = HEIGHT-24
-    local search_max_len = (WIDTH-6)-7 
-
-    if searchActive then
-        if keyCode == 14 then 
-            if unicode.len(search) > 0 then
-                search = unicode.sub(search, 1, unicode.len(search) - 1)
-            end
-        elseif keyCode == 211 then 
-            search = ""
-        elseif keyCode == 28 or keyCode == 156 then 
-            searchActive = false
-        elseif type(charStr) == "string" and unicode.len(charStr) > 0 then
-            local firstByte = string.byte(charStr, 1)
-            if firstByte >= 32 or unicode.len(charStr) > 1 then 
-                 if unicode.len(search) < search_max_len then
-                    search = search .. charStr
-                end
-            end
-        end
-        itemScroll = 1 
-    else 
-        if keyCode == 200 then 
-            itemScroll = math.max(1,itemScroll-1)
-        elseif keyCode == 208 then 
-            if #showItemsFiltered > items_per_page_count then
-                itemScroll = math.min(#showItemsFiltered - items_per_page_count + 1, itemScroll + 1)
-            end
-        elseif keyCode == 201 then 
-            itemScroll = math.max(1, itemScroll - items_per_page_count)
-        elseif keyCode == 209 then 
-             if #showItemsFiltered > items_per_page_count then
-                itemScroll = math.min(#showItemsFiltered - items_per_page_count + 1, itemScroll + items_per_page_count)
-            end
-        elseif keyCode == 28 or keyCode == 156 then 
-        end
-    end
-end)
+end
 
 -------------------- Старт --------------------
--- term.setCursorBlink and term.setCursorPos are called after term is potentially replaced by a dummy
-term.setCursorBlink(false)
-term.setCursorPos(1,1)
-g.setResolution(WIDTH,HEIGHT) 
+if g and g.isAvailable and g:isAvailable() then
+    g.setResolution(WIDTH,HEIGHT) 
+else
+    (io.stderr or io.output()):write("ПРЕДУПРЕЖДЕНИЕ: Невозможно установить разрешение экрана, GPU недоступен.\n")
+end
+
+if terminal.isAvailable and terminal:isAvailable() then
+    terminal.setCursorBlink(false)
+    terminal.setCursorPos(1,1)
+else
+    (io.stderr or io.output()):write("ПРЕДУПРЕЖДЕНИЕ: Невозможно настроить курсор, терминал недоступен.\n")
+end
+
 reload()
 
 local final_ok, final_err = pcall(autoCraftLoop)
 if not final_ok then
     pcall(function()
-        clear()
-        g.setForeground(COLORS.error)
+        if g and g.isAvailable and g:isAvailable() then clear() g.setForeground(COLORS.error) end
         local err_msg = "Фатальная ошибка: " .. tostring(final_err)
-        local y_pos = math.floor(HEIGHT / 2)
-        g.set(math.floor((WIDTH - unicode.len(err_msg)) / 2), y_pos, err_msg)
+        if g and g.isAvailable and g:isAvailable() then
+            local y_pos = math.floor(HEIGHT / 2)
+            g.set(math.max(1,math.floor((WIDTH - unicode.len(err_msg)) / 2)), y_pos, err_msg)
+        end
         
-        local temp_logs = {}
-        addLog(temp_logs, "Фатальная ошибка: "..tostring(final_err), "FATAL") 
-        if temp_logs[1] then
-             g.set(math.floor((WIDTH - unicode.len(temp_logs[1])) / 2), y_pos + 1, temp_logs[1])
+        local temp_logs_fatal = {}
+        addLog(temp_logs_fatal, "Фатальная ошибка: "..tostring(final_err), "FATAL") 
+        if temp_logs_fatal[1] and g and g.isAvailable and g:isAvailable() then
+             g.set(math.max(1,math.floor((WIDTH - unicode.len(temp_logs_fatal[1])) / 2)), math.floor(HEIGHT / 2) + 1, temp_logs_fatal[1])
         end
         (io.stderr or io.output()):write("LUA SCRIPT FATAL ERROR: " .. err_msg .. "\n")
+        if final_err and type(final_err) == "table" and final_err.traceback then -- OpenOS style error
+            (io.stderr or io.output()):write("TRACEBACK:\n" .. final_err.traceback .. "\n")
+        elseif type(final_err) == "string" and debug and debug.traceback then -- Generic Lua error
+             (io.stderr or io.output()):write("TRACEBACK:\n" .. debug.traceback(final_err, 2) .. "\n")
+        end
     end)
     os.sleep(5)
     computer.shutdown(true) 
