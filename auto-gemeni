@@ -65,14 +65,9 @@ local logs = {} -- Массив для хранения логов
 local dataItems = {} -- Массив для хранения данных о предметах
 local search = "" -- Строка поиска
 local selectedItem = nil -- Индекс выбранного предмета
-local itemScroll = 1 -- Позиция прокрутки списка предметов
+local currentPage = 1 -- Текущая страница прокрутки списка предметов
 local changeitem = false -- Флаг, указывающий, находится ли пользователь в режиме изменения предмета
 local searchActive = false -- Флаг, указывающий, активно ли поле поиска
-
--- Переменные для скроллинга мышью
-local isDraggingScroll = false -- Флаг, активна ли прокрутка перетаскиванием
-local dragStartY = 0 -- Начальная Y-координата мыши при начале перетаскивания
-local initialScrollOnDrag = 1 -- Значение itemScroll в начале перетаскивания
 
 -- Глобальные переменные для контроля последнего запрошенного крафта (для предотвращения дублирования)
 local lastRequestedItem = nil -- Хранит {id, dmg, expectedOutput} последнего успешно запрошенного предмета для крафта
@@ -114,10 +109,16 @@ local function drawHeader()
         (craftStatus:find("Ошибка") and COLORS.error) or COLORS.ok)
     uoc.progressBar(3,5,WIDTH-6, isCrafting and 0.9 or 0)
     
-    -- Визуальный индикатор прокрутки
+    -- Визуальный индикатор страницы
     local perPage = HEIGHT-24 - 7
-    local maxScroll = math.max(1, #dataItems - perPage + 1)
-    uoc.drawText(3, 6, "Scroll: " .. itemScroll .. "/" .. maxScroll, COLORS.text)
+    local showItemsCount = 0
+    for i,item in ipairs(dataItems) do
+        if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+            showItemsCount = showItemsCount + 1
+        end
+    end
+    local maxPages = math.max(1, math.ceil(showItemsCount / perPage))
+    uoc.drawText(3, 6, "Страница: " .. currentPage .. "/" .. maxPages, COLORS.text)
 end
 
 -- Рисует логи в нижней части экрана, под поиском
@@ -166,10 +167,12 @@ local function drawItems()
         end
     end
     local perPage = HEIGHT-24 - 7 -- Учитываем место под поиск и логи
-    for i = itemScroll, math.min(#showItems, itemScroll+perPage-1) do
+    local startIndex = (currentPage - 1) * perPage + 1
+    
+    for i = startIndex, math.min(#showItems, startIndex + perPage - 1) do
         local it = showItems[i]
         local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem])
-        local row = y+2+(i-itemScroll)+1
+        local row = y+2+(i-startIndex)+1 -- Относительная позиция строки на текущей странице
         
         -- Явно заполняем всю строку нужным цветом фона перед отрисовкой
         g.setBackground(isSel and COLORS.select_active or COLORS.bg)
@@ -213,7 +216,13 @@ local function drawItems()
             craftSize_str = unicode.sub(craftSize_str, 1, col_once - 1) .. "…"
         end
         g.set(x+col_name+col_now+col_hold+4, row, string.format("%-"..(col_once).."s", craftSize_str)) -- За раз по левому краю
-        g.set(x+col_name+col_now+col_hold+col_once+4, y+1, "│")
+        g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
+    end
+    -- Очищаем оставшиеся строки на странице, если их меньше, чем perPage
+    for i = math.min(#showItems, startIndex + perPage - 1) + 1, startIndex + perPage - 1 do
+        local row = y+2+(i-startIndex)+1
+        g.setBackground(COLORS.bg)
+        g.fill(x, row, totalWidth + 2, 1, " ")
     end
 
     -- Низ рамки таблицы
@@ -222,13 +231,16 @@ local function drawItems()
     g.set(x, lastRow, "└"..string.rep("─",col_name).."┴"..string.rep("─",col_now).."┴"..string.rep("─",col_hold).."┴"..string.rep("─",col_once).."┘")
     g.setForeground(COLORS.text)
 
-    -- Скроллбар
+    -- Скроллбар (теперь просто индикатор страницы, без перетаскивания)
     local scrollBarX = WIDTH-2
     local scrollBarY = y+3
     local scrollBarH = perPage
-    if #showItems > perPage then
-        local barLen = math.max(2, math.floor(scrollBarH * scrollBarH / #showItems))
-        local barTop = scrollBarY + math.floor((scrollBarH-barLen) * (itemScroll-1) / math.max(1,#showItems-perPage))
+    local showItemsCount = #showItems
+    local maxPages = math.max(1, math.ceil(showItemsCount / perPage))
+
+    if showItemsCount > perPage then
+        local barLen = math.max(2, math.floor(scrollBarH / maxPages))
+        local barTop = scrollBarY + math.floor((scrollBarH-barLen) * (currentPage-1) / math.max(1, maxPages-1))
         
         -- Очищаем всю область полосы прокрутки перед отрисовкой
         g.setBackground(COLORS.bg) -- Используем фоновый цвет основной области
@@ -244,6 +256,10 @@ local function drawItems()
             g.set(scrollBarX, barTop+i, "█")
         end
         g.setForeground(COLORS.text)
+    else
+        -- Если предметов меньше, чем на одну страницу, очищаем скроллбар
+        g.setBackground(COLORS.bg)
+        g.fill(scrollBarX, scrollBarY, 1, scrollBarH, " ")
     end
 end
 
@@ -280,6 +296,36 @@ local function drawButtons()
         local hover = false -- Подсказки удалены, поэтому hover всегда false для отображения
         uoc.animatedButton(v.x, HEIGHT-4, 12, 3, v.name, hover, COLORS.button, COLORS.buttonActive, COLORS.text)
     end
+
+    -- Кнопки постраничной навигации
+    local perPage = HEIGHT-24 - 7
+    local showItemsCount = 0
+    for i,item in ipairs(dataItems) do
+        if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+            showItemsCount = showItemsCount + 1
+        end
+    end
+    local maxPages = math.max(1, math.ceil(showItemsCount / perPage))
+
+    local prevBtnX = 2
+    local nextBtnX = WIDTH - 2 - 12 -- 12 - ширина кнопки
+    local btnY = HEIGHT-4
+    local btnW = 12
+    local btnH = 3
+
+    -- Кнопка "Предыдущая"
+    local prevEnabled = (currentPage > 1)
+    uoc.animatedButton(prevBtnX, btnY, btnW, btnH, "Предыдущая", false, 
+                       prevEnabled and COLORS.button or COLORS.border, 
+                       prevEnabled and COLORS.buttonActive or COLORS.border, 
+                       prevEnabled and COLORS.text or COLORS.search_hint)
+
+    -- Кнопка "Следующая"
+    local nextEnabled = (currentPage < maxPages)
+    uoc.animatedButton(nextBtnX, btnY, btnW, btnH, "Следующая", false, 
+                       nextEnabled and COLORS.button or COLORS.border, 
+                       nextEnabled and COLORS.buttonActive or COLORS.border, 
+                       nextEnabled and COLORS.text or COLORS.search_hint)
 end
 
 local function draw()
@@ -355,7 +401,7 @@ end
 -- Сбрасывает выбранный предмет и поиск
 local function resetSelection()
     search = ""
-    itemScroll = 1
+    currentPage = 1
     selectedItem = nil
 end
 
@@ -615,17 +661,47 @@ end
 event.listen("touch", function(_,_,x,y,_,_)
     if changeitem then return end -- Если идет изменение предмета, игнорируем касания
     local btns = {
-        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3},
+        {name="Удалить", x=WIDTH-60, action="delete"},
+        {name="Изменить", x=WIDTH-45, action="edit"},
+        {name=isCrafting and "Остановить" or "Автокрафт", x=WIDTH-30, action="toggleCraft"},
+        {name="Добавить", x=WIDTH-15, action="add"},
+        -- Новые кнопки постраничной навигации
+        {name="Предыдущая", x=2, action="prevPage"},
+        {name="Следующая", x=WIDTH - 2 - 12, action="nextPage"}
     }
     for i,btn in ipairs(btns) do
-        if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
-            if i==1 then removeItem()
-            elseif i==2 then editItem()
-            elseif i==3 then if isCrafting then stopCraft() else doCraft() end
-            elseif i==4 then addItem()
+        local btnY = (btn.action == "prevPage" or btn.action == "nextPage") and HEIGHT-4 or HEIGHT-4
+        local btnW = (btn.action == "prevPage" or btn.action == "nextPage") and 12 or 12
+        local btnH = 3
+        if x >= btn.x and x <= btn.x+btnW-1 and y >= btnY and y <= btnY+btnH-1 then
+            if btn.action == "delete" then removeItem()
+            elseif btn.action == "edit" then editItem()
+            elseif btn.action == "toggleCraft" then if isCrafting then stopCraft() else doCraft() end
+            elseif btn.action == "add" then addItem()
+            elseif btn.action == "prevPage" then 
+                local perPage = HEIGHT-24 - 7
+                local showItemsCount = 0
+                for _,item in ipairs(dataItems) do
+                    if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+                        showItemsCount = showItemsCount + 1
+                    end
+                end
+                local maxPages = math.max(1, math.ceil(showItemsCount / perPage))
+                if currentPage > 1 then
+                    currentPage = currentPage - 1
+                end
+            elseif btn.action == "nextPage" then 
+                local perPage = HEIGHT-24 - 7
+                local showItemsCount = 0
+                for _,item in ipairs(dataItems) do
+                    if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+                        showItemsCount = showItemsCount + 1
+                    end
+                end
+                local maxPages = math.max(1, math.ceil(showItemsCount / perPage))
+                if currentPage < maxPages then
+                    currentPage = currentPage + 1
+                end
             end
             draw()
             return
@@ -650,18 +726,6 @@ event.listen("touch", function(_,_,x,y,_,_)
         searchActive = false
     end
 
-    -- Обработка клика по полосе прокрутки (начало перетаскивания)
-    local perPage = HEIGHT-24 - 7
-    local scrollBarX = WIDTH-2
-    local scrollBarY = 8+3 -- y+3 из drawItems
-    local scrollBarH = perPage
-    if x == scrollBarX and y >= scrollBarY and y < scrollBarY + scrollBarH then
-        isDraggingScroll = true
-        dragStartY = y
-        initialScrollOnDrag = itemScroll
-        return -- Не обрабатываем как выбор элемента, если это полоса прокрутки
-    end
-
     -- Обработка выбора предмета в списке
     local showItems = {}
     for i,item in ipairs(dataItems) do
@@ -669,13 +733,16 @@ event.listen("touch", function(_,_,x,y,_,_)
             table.insert(showItems, item)
         end
     end
+    local perPage = HEIGHT-24 - 7
     local itemsStartY = 11
     local itemsEndY = itemsStartY + perPage - 1
     if y >= itemsStartY and y <= itemsEndY then
-        local idx = itemScroll + (y-itemsStartY)
-        if showItems[idx] then
+        local idxOnPage = (y-itemsStartY) -- Индекс элемента на текущей странице (от 0 до perPage-1)
+        local actualIndex = (currentPage - 1) * perPage + idxOnPage + 1 -- Фактический индекс в showItems
+        if showItems[actualIndex] then
+            -- Находим фактический индекс в dataItems
             for k,v in ipairs(dataItems) do
-                if v == showItems[idx] then selectedItem = k break end
+                if v == showItems[actualIndex] then selectedItem = k break end
             end
         end
         draw()
@@ -684,67 +751,22 @@ event.listen("touch", function(_,_,x,y,_,_)
     draw()
 end)
 
--- Обработчик события перетаскивания (для прокрутки)
+-- Обработчик события перетаскивания (удален, так как прокрутка теперь постраничная)
 event.listen("drag", function(_,_,x,y,_,_)
+    -- Этот обработчик теперь пуст, так как прокрутка перетаскиванием удалена.
+    -- Он остается, чтобы избежать ошибок, если OpenComputers все еще генерирует событие drag.
     if changeitem then return end
-    if isDraggingScroll then
-        local perPage = HEIGHT-24 - 7
-        local scrollBarH = perPage
-        local maxScroll = math.max(1, #dataItems - perPage + 1)
-        
-        local deltaY = y - dragStartY
-        -- Масштабируем перемещение мыши к диапазону прокрутки
-        local scrollRange = math.max(1, #showItems - perPage) -- Используем #showItems для корректного расчета
-        if scrollRange == 0 then scrollRange = 1 end -- Избегаем деления на ноль
-        
-        local scrollDelta = math.floor(deltaY * scrollRange / scrollBarH)
-        
-        itemScroll = math.max(1, math.min(maxScroll, initialScrollOnDrag + scrollDelta))
-        draw()
-        return
-    end
-    -- Если не перетаскиваем полосу прокрутки, проверяем кнопки
-    local btns = {
-        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3},
-    }
-    for i,btn in ipairs(btns) do
-        if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
-            draw()
-            return
-        end
-    end
-    draw()
+    draw() -- Всегда перерисовываем, чтобы кнопки не "залипали"
 end)
 
--- Обработчик события отпускания кнопки мыши
+-- Обработчик события отпускания кнопки мыши (удален, так как прокрутка теперь постраничная)
 event.listen("mouse_up", function()
-    isDraggingScroll = false
+    -- Этот обработчик теперь пуст.
 end)
 
--- Обработчик события прокрутки колесика мыши
+-- Обработчик события прокрутки колесика мыши (удален, так как прокрутка теперь постраничная)
 event.listen("mouse_scroll", function(_,_,x,y,delta)
-    if changeitem then return end
-    local perPage = HEIGHT-24 - 7
-    local showItems = {} -- Нужно пересчитать showItems, так как search мог измениться
-    for i,item in ipairs(dataItems) do
-        if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
-            table.insert(showItems, item)
-        end
-    end
-    local maxScroll = math.max(1, #showItems - perPage + 1)
-    
-    -- Определяем направление прокрутки: delta > 0 для прокрутки вниз, delta < 0 для прокрутки вверх
-    local scrollAmount = 3 -- Прокручиваем на 3 строки за один "тик" колесика
-    
-    if delta > 0 then -- Прокрутка вниз
-        itemScroll = math.min(maxScroll, itemScroll + scrollAmount)
-    elseif delta < 0 then -- Прокрутка вверх
-        itemScroll = math.max(1, itemScroll - scrollAmount)
-    end
-    draw()
+    -- Этот обработчик теперь пуст.
 end)
 
 
@@ -758,6 +780,8 @@ event.listen("key_down", function(_,_,key,_,_ )
         end
     end
     local perPage = HEIGHT-24 - 7
+    local maxPages = math.max(1, math.ceil(#showItems / perPage))
+
     if searchActive then
         if key == 14 then -- backspace
             search = search:sub(1,-2)
@@ -770,13 +794,73 @@ event.listen("key_down", function(_,_,key,_,_ )
                 search = search .. unicode.char(key)
             end
         end
-        itemScroll = 1
+        currentPage = 1 -- Сбрасываем страницу при изменении поиска
     else
-        if key == 200 then -- up arrow
-            itemScroll = math.max(1,itemScroll-1)
-        elseif key == 208 then -- down arrow
-            if #showItems > perPage then
-                itemScroll = math.min(#showItems-perPage+1,itemScroll+1)
+        if key == 200 then -- up arrow (для выбора элемента)
+            local currentShowItems = {}
+            for i,item in ipairs(dataItems) do
+                if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+                    table.insert(currentShowItems, item)
+                end
+            end
+            if selectedItem then
+                local foundIndex = nil
+                for i,v in ipairs(currentShowItems) do
+                    if v == dataItems[selectedItem] then
+                        foundIndex = i
+                        break
+                    end
+                end
+                if foundIndex and foundIndex > 1 then
+                    selectedItem = nil -- Сбрасываем, чтобы найти новый индекс в dataItems
+                    for k,v in ipairs(dataItems) do
+                        if v == currentShowItems[foundIndex - 1] then selectedItem = k break end
+                    end
+                    -- Проверяем, нужно ли прокрутить страницу вверх
+                    local itemOnPage = (foundIndex - 1) % perPage
+                    if itemOnPage == perPage - 1 then -- Если перешли на последнюю строку предыдущей страницы
+                        currentPage = math.max(1, currentPage - 1)
+                    end
+                end
+            elseif #currentShowItems > 0 then
+                selectedItem = 1 -- Выбираем первый элемент, если ничего не выбрано
+            end
+        elseif key == 208 then -- down arrow (для выбора элемента)
+            local currentShowItems = {}
+            for i,item in ipairs(dataItems) do
+                if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
+                    table.insert(currentShowItems, item)
+                end
+            end
+            if selectedItem then
+                local foundIndex = nil
+                for i,v in ipairs(currentShowItems) do
+                    if v == dataItems[selectedItem] then
+                        foundIndex = i
+                        break
+                    end
+                end
+                if foundIndex and foundIndex < #currentShowItems then
+                    selectedItem = nil -- Сбрасываем, чтобы найти новый индекс в dataItems
+                    for k,v in ipairs(dataItems) do
+                        if v == currentShowItems[foundIndex + 1] then selectedItem = k break end
+                    end
+                    -- Проверяем, нужно ли прокрутить страницу вниз
+                    local itemOnPage = (foundIndex + 1 - 1) % perPage
+                    if itemOnPage == 0 and #currentShowItems > perPage then -- Если перешли на первую строку следующей страницы
+                        currentPage = math.min(maxPages, currentPage + 1)
+                    end
+                end
+            elseif #currentShowItems > 0 then
+                selectedItem = 1 -- Выбираем первый элемент, если ничего не выбрано
+            end
+        elseif key == 203 then -- left arrow (для постраничной навигации)
+            if currentPage > 1 then
+                currentPage = currentPage - 1
+            end
+        elseif key == 205 then -- right arrow (для постраничной навигации)
+            if currentPage < maxPages then
+                currentPage = currentPage + 1
             end
         end
     end
