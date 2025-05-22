@@ -5,20 +5,25 @@ local event = require("event")
 local unicode = require("unicode")
 local computer = require("computer")
 
--- Прямая инициализация GPU и Term. Если их нет, g или term будут nil.
--- Добавим nil, чтобы избежать ошибок, если компоненты отсутствуют на старте.
+-- Инициализация компонентов с более надежной проверкой
 local g = component.gpu
-local term = component.term or require("term") -- Попытка получить term через component, затем require
+local term = component.term -- Попробуем получить через component.term сначала
 local me = component.me_interface
+
+-- Если term не найден через component.term, попробуем require("term")
+if not term then
+    local ok, res = pcall(require, "term")
+    if ok then term = res end
+end
 
 -- Проверка наличия компонентов
 if not g then
     io.stderr:write("Ошибка: GPU не найден. Убедитесь, что он подключен.\n")
     os.exit(1)
 end
+-- Критично: если term все еще nil, мы не сможем управлять курсором, но программа может продолжить работу (хотя и с ошибками ввода)
 if not term then
-    io.stderr:write("Ошибка: Terminal не найден. Убедитесь, что он подключен.\n")
-    os.exit(1)
+    io.stderr:write("Внимание: Terminal не найден. Функции ввода могут работать некорректно.\n")
 end
 if not me then
     io.stderr:write("Ошибка: ME интерфейс не найден. Убедитесь, что он подключен.\n")
@@ -89,9 +94,9 @@ end
 
 -------------------- Ввод данных (блокирующий UI) --------------------
 local function safeReadInput(promptText, x, y, defaultColor, promptColor)
-    -- Повторная попытка получить term, если он стал nil
+    -- Повторная попытка получить term, если он стал nil, и проверка его методов
     if not term then
-        term = component.term or require("term")
+        term = component.term or pcall(require, "term")
         if not term then
             addLog("Критическая ошибка: term недоступен, не могу принять ввод.", "ERROR")
             return nil
@@ -103,7 +108,7 @@ local function safeReadInput(promptText, x, y, defaultColor, promptColor)
     uoc.drawText(g, x, y, promptText, promptColor or COLORS.text)
 
     -- Если term доступен, управляем курсором
-    if term and term.setCursorPos and term.setCursorBlink then
+    if term and type(term) == "table" and term.setCursorPos and term.setCursorBlink then
         term.setCursorPos(x + unicode.len(promptText) + 1, y)
         term.setCursorBlink(true)
     else
@@ -113,7 +118,7 @@ local function safeReadInput(promptText, x, y, defaultColor, promptColor)
     local input = io.read()
 
     -- Выключаем мигание курсора после ввода
-    if term and term.setCursorBlink then
+    if term and type(term) == "table" and term.setCursorBlink then
         term.setCursorBlink(false)
     end
     return input
@@ -152,9 +157,9 @@ local function drawItems()
     local x, y = 2, 8
     local totalWidth = WIDTH-4
     local col_name = math.floor(totalWidth * 0.45)
-    -- Дополнительно уменьшаем ширину столбцов
-    local col_now = math.floor(totalWidth * 0.13) -- Было 0.14
-    local col_hold = math.floor(totalWidth * 0.13) -- Было 0.14
+    -- Уменьшаем ширину столбцов еще немного
+    local col_now = math.floor(totalWidth * 0.12) -- Было 0.13
+    local col_hold = math.floor(totalWidth * 0.12) -- Было 0.13
     local col_once = totalWidth - col_name - col_now - col_hold
 
     g.setForeground(COLORS.select_active)
@@ -187,7 +192,8 @@ local function drawItems()
     local perPage = HEIGHT-24
     for i = itemScroll, math.min(#showItems, itemScroll+perPage-1) do
         local it = showItems[i]
-        local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem])
+        -- Проверяем, что selectedItem соответствует выбранному элементу в dataItems
+        local isSel = (selectedItem and dataItems[selectedItem] and it == dataItems[selectedItem])
         local row = y+2+(i-itemScroll)+1
         g.setBackground(isSel and COLORS.select_active or COLORS.bg)
         g.setForeground(COLORS.text)
@@ -195,7 +201,7 @@ local function drawItems()
         g.set(x, row, "│")
         g.set(x+1, row, string.format("%-"..col_name.."s",nameStr))
         g.set(x+col_name+1, row, "│")
-        -- Форматируем числа, обрезая, если они слишком длинные
+        -- Форматируем числа, обрезая с конца, если они слишком длинные
         g.set(x+col_name+2, row, string.format("%"..col_now.."s",unicode.sub(tostring(tonumber(it.current) or 0), 1, col_now)))
         g.set(x+col_name+col_now+2, row, "│")
         g.set(x+col_name+col_now+3, row, string.format("%"..col_hold.."s",unicode.sub(tostring(tonumber(it.count) or 0), 1, col_hold)))
@@ -204,6 +210,7 @@ local function drawItems()
         g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
         g.setBackground(COLORS.bg)
     end
+    -- Заполняем оставшиеся строки пустой рамкой
     for i = math.min(#showItems, itemScroll + perPage - 1) + 1, itemScroll + perPage - 1 do
         local row = y + 2 + (i - itemScroll) + 1
         g.setBackground(COLORS.bg)
@@ -257,13 +264,14 @@ local function drawSearchBar()
     g.setForeground(COLORS.text)
 
     -- Управляем миганием курсора
-    if searchActive and term and term.setCursorPos and term.setCursorBlink then
+    -- Дополнительная проверка type(term) == "table"
+    if searchActive and term and type(term) == "table" and term.setCursorPos and term.setCursorBlink then
         -- Если поле поиска активно и есть ввод, курсор мигает за вводом
         term.setCursorPos(x + 2 + unicode.len(search), y + 1)
         term.setCursorBlink(true)
     else
         -- В противном случае, курсор выключен
-        if term and term.setCursorBlink then
+        if term and type(term) == "table" and term.setCursorBlink then
             term.setCursorBlink(false)
         end
     end
@@ -299,8 +307,13 @@ local function reload()
     for _,item in ipairs(dataItems) do
         local qty = 0
         local stackList = {}
-        pcall(function() stackList = me.getItemsInNetwork({id = item.id, damage = item.dmg}) end)
-        if stackList and #stackList > 0 then
+        -- Обернем вызов me.getItemsInNetwork в pcall
+        local ok_get, res_get = pcall(me.getItemsInNetwork, {id = item.id, damage = item.dmg})
+        if ok_get and res_get and #res_get > 0 then
+            stackList = res_get
+        end
+
+        if #stackList > 0 then
             for _,stack in ipairs(stackList) do
                 if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
                     qty = qty + (stack.size or stack.qty or 0)
@@ -308,8 +321,6 @@ local function reload()
             end
         else
             -- Если getItemsInNetwork вернул пустой список или ошибку, пробуем getItemDetail
-            -- Это для случаев, когда предмет есть, но его нет в сети в данный момент (qty = 0)
-            -- или когда его вообще нет, но нам нужен name, id, dmg для отображения
             local ok2, d = pcall(me.getItemDetail, {id = item.id, dmg = item.dmg})
             if ok2 and d then
                 qty = d.qty or d.size or 0 -- Обновляем qty, если получили детали
@@ -333,9 +344,9 @@ end
 local function addItem()
     changeitem = true
     clear()
-    -- Корректировка позиций для полей ввода
+    -- Корректировка позиций для полей ввода (выше, чтобы не смещалось)
     local inputX = 10
-    local inputY = HEIGHT - 10 -- Поднимаем чуть выше, чтобы не было смещения
+    local inputY = HEIGHT - 10 -- Используем фиксированное положение для лучшей стабильности
     uoc.drawText(g, inputX, inputY, "Вставьте предмет в 1-й слот ME интерфейса и введите параметры.", COLORS.ok)
 
     local name = safeReadInput("Название: ", inputX, inputY + 1, COLORS.text, COLORS.text)
@@ -367,7 +378,7 @@ local function editItem()
     clear()
     -- Корректировка позиций для полей ввода
     local inputX = 10
-    local inputY = HEIGHT - 10 -- Поднимаем чуть выше
+    local inputY = HEIGHT - 10 -- Используем фиксированное положение для лучшей стабильности
     uoc.drawText(g, inputX, inputY, "Изменение: "..(item.name or "<??>"),COLORS.ok)
 
     local new_name = safeReadInput("Новое имя (Enter пропустить): ", inputX, inputY + 1, COLORS.text, COLORS.text)
@@ -515,7 +526,7 @@ event.listen("touch", function(_,_,x,y,_,_)
         {x=WIDTH-60, y=HEIGHT-4, w=12, h=3, id=1},
         {x=WIDTH-45, y=HEIGHT-4, w=12, h=3, id=2},
         {x=WIDTH-30, y=HEIGHT-4, w=12, h=3, id=3},
-        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3, id=4},
+        {name="Добавить", x=WIDTH-15, id=4}, -- Добавлено имя для кнопки Добавить, для корректного отображения (возможно, не хватало)
     }
     for i,btn in ipairs(btns) do
         if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
@@ -547,8 +558,8 @@ event.listen("touch", function(_,_,x,y,_,_)
     else
         searchActive = false
     end
-    -- Выключаем мигание курсора, если поиск неактивен (это повторная мера безопасности)
-    if not searchActive and term and term.setCursorBlink then
+    -- Выключаем мигание курсора, если поиск неактивен
+    if not searchActive and term and type(term) == "table" and term.setCursorBlink then
         term.setCursorBlink(false)
     end
 
@@ -562,11 +573,19 @@ event.listen("touch", function(_,_,x,y,_,_)
     local itemsStartY = 11
     local itemsEndY = itemsStartY + perPage - 1
     if y >= itemsStartY and y <= itemsEndY then
-        local idx = itemScroll + (y-itemsStartY)
-        if showItems[idx] then
+        local idx_in_shown_items = y-itemsStartY+1
+        if showItems[idx_in_shown_items] then
+            -- Найдем индекс выбранного элемента в исходном dataItems
+            local actual_selected_item_index = nil
             for k,v in ipairs(dataItems) do
-                if v == showItems[idx] then selectedItem = k break end
+                if v == showItems[idx_in_shown_items] then
+                    actual_selected_item_index = k
+                    break
+                end
             end
+            selectedItem = actual_selected_item_index
+        else
+            selectedItem = nil -- Если клик вне элементов, сбрасываем выделение
         end
         draw()
         return
@@ -575,8 +594,7 @@ event.listen("touch", function(_,_,x,y,_,_)
 end)
 
 event.listen("drag", function(_,_,x,y,_,_)
-    -- В Drag не должно быть мигания, так как это не активное взаимодействие с полем ввода
-    -- currentActiveButton = nil -- Сбрасываем активно нажатую кнопку при перетаскивании
+    -- currentActiveButton = nil -- Сбрасываем активно нажатую кнопку при перетаскивании (можно раскомментировать, если нужно)
     draw()
 end)
 
@@ -619,7 +637,7 @@ g.setResolution(WIDTH,HEIGHT)
 reload()
 draw()
 -- Добавим окончательное отключение мигания курсора на старте, если term доступен
-if term and term.setCursorBlink then
+if term and type(term) == "table" and term.setCursorBlink then
     term.setCursorBlink(false)
 end
 
