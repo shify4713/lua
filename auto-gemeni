@@ -444,16 +444,19 @@ local function autoCraftLoop()
                                 if delta > 0 then
                                     -- Запрашиваем крафт только 1 единицы, чтобы использовать 1 ЦПУ за проверку
                                     local succ, req = pcall(function() return craftables[1].request(1, false, freeCpu) end)
-                                    if succ and req then
-                                        craftStatus = "Крафт: "..(item.name or "<??>")
-                                        -- Исправленная строка с использованием string.format
-                                        addLog(logs, "Успешный запрос крафта 1x " .. (item.name or "<??>") .. " на CPU " .. tostring(freeCpu), "INFO")
-                                        craftedThisCycle = true -- Устанавливаем флаг, чтобы не крафтить больше в этом цикле
-                                        break -- Останавливаемся после одного успешного крафта в этом цикле
-                                    else
-                                        craftStatus = "Ошибка: не удалось отправить крафт "..(item.name or "<??>")
-                                        -- Исправленная строка с использованием конкатенации
-                                        addLog(logs, "Ошибка: не удалось отправить крафт " .. (item.name or "<??>") .. " (succ: " .. tostring(succ) .. ", res: " .. tostring(req) .. ")", "ERROR")
+                                    if succ then -- Запрос был отправлен без Lua-ошибки
+                                        if req then -- ME-система подтвердила крафт (вернула IItemInfo)
+                                            craftStatus = "Крафт: "..(item.name or "<??>")
+                                            addLog(logs, "Успешный запрос крафта 1x " .. (item.name or "<??>") .. " на CPU " .. tostring(freeCpu), "INFO")
+                                            craftedThisCycle = true -- Устанавливаем флаг, чтобы не крафтить больше в этом цикле
+                                            break -- Останавливаемся после одного успешного крафта в этом цикле
+                                        else -- ME-система отклонила крафт (например, нет ресурсов)
+                                            craftStatus = "Ошибка: крафт отклонен ME"
+                                            addLog(logs, "Ошибка: ME отклонил крафт 1x " .. (item.name or "<??>") .. " (нет ресурсов/другая причина)", "ERROR")
+                                        end
+                                    else -- Произошла ошибка pcall при отправке запроса
+                                        craftStatus = "Ошибка: запрос крафта"
+                                        addLog(logs, "Ошибка: не удалось отправить крафт " .. (item.name or "<??>") .. " (pcall error: " .. tostring(req) .. ")", "ERROR")
                                     end
                                 else
                                     addLog(logs, "Delta (количество для крафта) <= 0 для: "..(item.name or "<??>"), "DEBUG")
@@ -534,7 +537,7 @@ event.listen("touch", function(_,_,x,y,_,_)
         if showItems[idx] then
             for k,v in ipairs(dataItems) do
                 if v == showItems[idx] then selectedItem = k break end
-            end
+            Fend
         end
         draw()
         return
