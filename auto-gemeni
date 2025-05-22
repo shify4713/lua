@@ -3,56 +3,49 @@ local fs = require("filesystem")
 local shell = require("shell")
 local event = require("event")
 local unicode = require("unicode")
-local term = require("term") -- Оригинальная инициализация term
 local computer = require("computer")
-local g = component.gpu -- Оригинальная инициализация gpu
+
+-- Инициализация компонентов OpenComputers.
+-- Добавлена проверка на наличие, чтобы скрипт не падал сразу.
+local g = component.gpu
+local term = require("term") -- Терминал (связан с GPU/Screen)
 local me = component.me_interface
 
--- Проверка наличия компонентов
-if not g then
-    io.stderr:write("Ошибка: GPU не найден. Убедитесь, что он подключен.\n")
+-- Проверки на наличие компонентов
+if not g or type(g) ~= "table" or not g.setResolution then
+    io.stderr:write("Ошибка: GPU не найден или недоступен. Убедитесь, что он подключен к монитору.\n")
     os.exit(1)
 end
-if not term then
-    io.stderr:write("Ошибка: Terminal не найден. Убедитесь, что он подключен.\n")
+if not term or type(term) ~= "table" or not term.setCursorPos then
+    io.stderr:write("Ошибка: Terminal (дисплей) не найден или недоступен. Убедитесь, что монитор подключен.\n")
     os.exit(1)
 end
-if not me then
-    io.stderr:write("Ошибка: ME интерфейс не найден. Убедитесь, что он подключен.\n")
+if not me or type(me) ~= "table" or not me.getItemsInNetwork then
+    io.stderr:write("Ошибка: ME интерфейс не найден или недоступен. Убедитесь, что он подключен.\n")
     os.exit(1)
 end
 
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 if not fs.exists(LIB_PATH) then
     shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
 end
+
+-- Загрузка библиотеки ultimateOC
 local ok, uoc = pcall(require, "ultimateOC")
 if not ok then
     io.stderr:write("Не удалось загрузить ultimateOC.lua: ", tostring(uoc), "\n")
     os.exit(1)
 end
 
+-- Передаем глобальные объекты GPU и Term в библиотеку uoc
+uoc.setGlobals(g, term)
+
 if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {})
-end
-
--------------------- Реальное UTC+3 (по Киеву) --------------------
-local function getKyivTime()
-    local handle = io.popen("wget -qO- https://worldtimeapi.org/api/timezone/Europe/Kyiv.txt 2>/dev/null")
-    if handle then
-        local text = handle:read("*a")
-        handle:close()
-        local h, m, s = text:match("datetime:%s*%d+%-%d+%-%d+T(%d+):(%d+):(%d+)")
-        if h and m and s then
-            return string.format("%02d:%02d:%02d", tonumber(h), tonumber(m), tonumber(s))
-        end
-    end
-    local t = os.date("!*t", os.time() + 3*3600)
-    return string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
 end
 
 -------------------- Настройки --------------------
@@ -84,44 +77,43 @@ local nextCraftUpdate = 0
 local isCrafting = false
 
 -------------------- Переменные --------------------
-local logs = {}
+local logs = {} -- Логи теперь без времени
 local dataItems = {}
 local search = ""
 local selectedItem = nil
 local itemScroll = 1
-local changeitem = false
+local changeitem = false -- Флаг для блокировки UI во время ввода
 local searchActive = false
 local hoveredButton = nil
 local tooltip = ""
 local tooltipTimeout = 0
 
--------------------- Логгирование с реальным временем --------------------
-local function addLog(text, lvl) -- Изменил под вашу сигнатуру: logs передавать не нужно
+-------------------- Логгирование --------------------
+local function addLog(text, lvl)
     lvl = lvl or "INFO"
-    local now = getKyivTime()
-    local t = string.format("[%s][%s] %s", now, lvl, text)
+    local t = string.format("[%s] %s", lvl, text) -- Убрано время
     table.insert(logs, t)
     while #logs > 50 do table.remove(logs, 1) end
 end
 
 -------------------- Ввод данных (блокирующий UI) --------------------
--- Адаптированная safeReadInput, которая использует term.setCursor
 local function safeReadInput(promptText, promptX, promptY, inputX, inputY, defaultColor, promptColor)
+    -- Очищаем строку для приглашения и курсора
     g.setBackground(COLORS.bg)
-    g.fill(promptX, promptY, WIDTH - promptX + 1, 1, " ") -- Очищаем строку для приглашения
+    g.fill(promptX, promptY, WIDTH - promptX + 1, 1, " ")
     uoc.drawText(promptX, promptY, promptText, promptColor or COLORS.text)
 
-    -- Проверяем term перед использованием setCursor
+    -- Включаем мигание курсора, если term доступен
     if term and type(term) == "table" and term.setCursorPos and term.setCursorBlink then
         term.setCursorPos(inputX, inputY)
         term.setCursorBlink(true)
     else
-        addLog("Ошибка: term.setCursorPos/setCursorBlink недоступны. Курсор может не мигать.", "ERROR")
+        addLog("Ошибка: term недоступен для safeReadInput. Курсор может не мигать.", "ERROR")
     end
 
     local input = io.read()
 
-    -- Выключаем мигание курсора после ввода, если term доступен
+    -- Выключаем мигание курсора после ввода
     if term and type(term) == "table" and term.setCursorBlink then
         term.setCursorBlink(false)
     end
@@ -154,17 +146,17 @@ local function drawHeader()
 end
 
 local function drawLogs()
-    -- Сдвигаем логи ниже таблицы
-    uoc.drawLogs(3, HEIGHT-9, logs, 4, COLORS.log) -- Скорректировано, чтобы не пересекалось с полем поиска
+    -- Сдвигаем логи ниже таблицы и поля поиска
+    uoc.drawLogs(3, HEIGHT-9, logs, 4, COLORS.log) -- 4 строки логов
 end
 
 local function drawItems()
     local x, y = 2, 8
     local totalWidth = WIDTH-4
     local col_name = math.floor(totalWidth * 0.45)
-    -- Увеличены для лучшего отображения чисел, но не слишком широкие
-    local col_now = math.floor(totalWidth * 0.15) -- Было 0.11
-    local col_hold = math.floor(totalWidth * 0.15) -- Было 0.11
+    -- Скорректированы для лучшего форматирования чисел
+    local col_now = math.floor(totalWidth * 0.16)
+    local col_hold = math.floor(totalWidth * 0.16)
     local col_once = totalWidth - col_name - col_now - col_hold
 
     g.setForeground(COLORS.select_active)
@@ -194,8 +186,7 @@ local function drawItems()
             table.insert(showItems, item)
         end
     end
-    -- Уменьшаем количество строк для отображения, чтобы логи поместились
-    local perPage = HEIGHT-20 -- Изменено с 24 на 20, чтобы освободить место для логов и поиска
+    local perPage = HEIGHT-20 -- Максимальное количество строк для предметов
     for i = itemScroll, math.min(#showItems, itemScroll+perPage-1) do
         local it = showItems[i]
         local isSel = (selectedItem and dataItems[selectedItem] and it==dataItems[selectedItem]) -- Убедиться, что это тот же объект
@@ -207,7 +198,7 @@ local function drawItems()
         g.set(x, row, "│")
         g.set(x+1, row, string.format("%-"..col_name.."s",nameStr))
         g.set(x+col_name+1, row, "│")
-        -- Форматируем и обрезаем числа, чтобы они вписывались в колонки
+        -- Форматируем числа с выравниванием по правому краю, обрезаем если длинные
         g.set(x+col_name+2, row, string.format("%"..col_now.."s",unicode.sub(tostring(tonumber(it.current) or 0), 1, col_now)))
         g.set(x+col_name+col_now+2, row, "│")
         g.set(x+col_name+col_now+3, row, string.format("%"..col_hold.."s",unicode.sub(tostring(tonumber(it.count) or 0), 1, col_hold)))
@@ -216,7 +207,7 @@ local function drawItems()
         g.set(x+col_name+col_now+col_hold+col_once+4, row, "│")
         g.setBackground(COLORS.bg)
     end
-    -- Заполняем оставшиеся строки пустой рамкой
+    -- Заполняем оставшиеся строки пустой рамкой, чтобы избежать "мусора"
     for i = math.min(#showItems, itemScroll + perPage - 1) + 1, itemScroll + perPage - 1 do
         local row = y + 2 + (i - itemScroll) + 1
         g.setBackground(COLORS.bg)
@@ -224,7 +215,7 @@ local function drawItems()
         g.set(x, row, "│" .. string.rep(" ", totalWidth) .. "│")
     end
 
-    local lastRow = y+perPage+3 -- Корректируем, чтобы рамка была в конце таблицы
+    local lastRow = y+perPage+3
     g.setForeground(COLORS.select_active)
     g.set(x, lastRow, "└"..string.rep("─",col_name).."┴"..string.rep("─",col_now).."┴"..string.rep("─",col_hold).."┴"..string.rep("─",col_once).."┘")
     g.setForeground(COLORS.text)
@@ -234,15 +225,16 @@ local function drawItems()
         local barLen = math.max(2, math.floor(perPage * perPage / #showItems))
         local barTop = y+3 + math.floor((perPage-barLen) * (itemScroll-1) / math.max(1,#showItems-perPage))
         g.setForeground(COLORS.select_active)
-        for i=0,perPage do g.set(WIDTH-2, y+3+i, "│") end -- Скорректировано
+        for i=0,perPage do g.set(WIDTH-2, y+3+i, "│") end
         g.setForeground(COLORS.ok)
         for i=0,barLen-1 do
             g.set(WIDTH-2, barTop+i, "█")
         end
         g.setForeground(COLORS.text)
     else
+        -- Очищаем область скроллбара, если он не нужен
         g.setBackground(COLORS.bg)
-        for i=0,perPage do g.set(WIDTH-2, y+3+i, " ") end -- Очищаем, если скроллбар не нужен
+        for i=0,perPage do g.set(WIDTH-2, y+3+i, " ") end
     end
 end
 
@@ -254,33 +246,28 @@ local function drawSearchBar()
     g.setForeground(COLORS.search_cross)
     g.set(x+w-3, y+1, (search ~= "" and "×" or " "))
 
-    g.setForeground(COLORS.search_hint)
+    g.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
     local display = search
-    if display == "" and not searchActive then
+    if not searchActive and display == "" then
         display = "Поиск: введите часть названия..."
     end
 
     local maxDisplayLen = w-7
     if unicode.len(display) > maxDisplayLen then
-        -- Обрезаем с конца, если слишком длинно, но оставляем место для курсора если активен
-        display = unicode.sub(display, 1, maxDisplayLen - (searchActive and 1 or 0))
+        -- Обрезаем с конца, чтобы всегда видеть конец ввода
+        display = unicode.sub(display, unicode.len(display) - maxDisplayLen + 1)
     end
-    
+
     g.set(x+2, y+1, display)
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
 
-    -- Управление миганием курсора, только если поле активно и term доступен
-    if searchActive then
-        if term and type(term) == "table" and term.setCursorPos and term.setCursorBlink then
+    -- Управление миганием курсора
+    if term and type(term) == "table" and term.setCursorPos and term.setCursorBlink then
+        if searchActive then
             term.setCursorPos(x + 2 + unicode.len(search), y + 1)
             term.setCursorBlink(true)
         else
-            addLog("Ошибка: term.setCursorPos/setCursorBlink недоступны для поиска.", "ERROR")
-        end
-    else
-        -- В противном случае, курсор выключен
-        if term and type(term) == "table" and term.setCursorBlink then
             term.setCursorBlink(false)
         end
     end
@@ -340,15 +327,11 @@ local function reload()
             stackList = res_get
         end
 
-        -- Важно: Original-код использует `qty = stack.size or stack.qty or 0` и `break` после первого найденного
-        -- Если у вас несколько стаков одного типа, это не будет суммировать их.
-        -- Моя предыдущая версия суммировала, ваш оригинал - нет.
-        -- Я оставляю логику оригинала для надежности.
         if #stackList > 0 then
+            -- Суммируем количество всех стаков, а не только первого
             for _,stack in ipairs(stackList) do
                 if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
-                    qty = stack.size or stack.qty or 0
-                    break -- Берем количество только из первого найденного стака
+                    qty = qty + (stack.size or stack.qty or 0)
                 end
             end
         else
@@ -379,6 +362,7 @@ local function addItem()
     local promptY = HEIGHT - 10 -- Начальная Y-координата для подсказок
     uoc.drawText(10, promptY, "Вставьте предмет в 1-й слот ME интерфейса и введите параметры.", COLORS.ok)
 
+    -- Поля ввода выровнены
     local name = safeReadInput("Название: ", 10, promptY + 1, 20, promptY + 1, COLORS.text, COLORS.text)
     local count_str = safeReadInput("Держать (число): ", 10, promptY + 2, 29, promptY + 2, COLORS.text, COLORS.text)
     local count = tonumber(count_str) or 0
@@ -409,6 +393,7 @@ local function editItem()
     local promptY = HEIGHT - 10 -- Начальная Y-координата для подсказок
     uoc.drawText(10, promptY, "Изменение: "..(item.name or "<??>"),COLORS.ok)
 
+    -- Поля ввода выровнены
     local new_name = safeReadInput("Новое имя (Enter пропустить): ", 10, promptY + 1, 40, promptY + 1, COLORS.text, COLORS.text)
     if new_name and new_name ~= "" then
         item.name = new_name
@@ -460,8 +445,8 @@ local function autoCraftLoop()
             local now = computer.uptime()
             if now >= nextCraftUpdate then
                 reload()
-                -- Проверяем ME интерфейс в цикле, если он пропал
-                if not me or not me.getCpus then
+                -- Проверяем ME интерфейс в цикле
+                if not me or type(me) ~= "table" or not me.getCpus then
                     addLog("Ошибка: ME интерфейс недоступен для autoCraftLoop()", "ERROR")
                     craftStatus = "Ошибка ME"
                     isCrafting = false
@@ -507,28 +492,31 @@ local function autoCraftLoop()
                                 craftables_data = craftables_ok and craftables_data or {n=0}
                                 if not craftables_ok then addLog("Ошибка getCraftables: " .. tostring(craftables_data), "ERROR") end
 
-                                if craftables_data.n and craftables_data.n >= 1 then
-                                    local delta = math.min(craftSize, count - current)
-                                    if delta > 0 then
-                                        -- Original-код вызывает request через pcall без self-таблицы, что может быть некорректно.
-                                        -- Лучше передать таблицу как self, как в документации OpenComputers.
-                                        -- Но чтобы не ломать то, что у вас работает, я оставляю вашу логику вызова craftables[1].request.
-                                        local succ_req, req_res = pcall(function() return craftables[1].request(delta, false, freeCpu) end)
-                                        if succ_req and req_res then
-                                            craftStatus = "Крафт: "..(item_entry.name or "<??>")
-                                            addLog("Крафт "..delta.."x "..(item_entry.name or "<??>").." на CPU "..tostring(freeCpu),"INFO")
-                                        else
-                                            craftStatus = "Ошибка: запрос крафта"
-                                            addLog("Ошибка запроса крафта "..(item_entry.name or "<??>").." (" .. tostring(req_res) .. ")","ERROR")
+                                if craftables_data.n and #craftables_data >= 1 then -- Проверяем и .n, и размер таблицы
+                                    -- Дополнительная проверка на наличие метода request у найденного рецепта
+                                    if craftables_data[1] and type(craftables_data[1].request) == "function" then
+                                        local delta = math.min(craftSize, count - current)
+                                        if delta > 0 then
+                                            local succ_req, req_res = pcall(function() return craftables_data[1].request(delta, false, freeCpuForThisItem) end)
+                                            if succ_req and req_res then
+                                                craftStatus = "Крафт: "..(item_entry.name or "<??>")
+                                                addLog("Крафт "..delta.."x "..(item_entry.name or "<??>").." на CPU "..tostring(freeCpuForThisItem),"INFO")
+                                            else
+                                                craftStatus = "Ошибка: запрос крафта"
+                                                addLog("Ошибка запроса крафта "..(item_entry.name or "<??>").." (" .. tostring(req_res) .. ")","ERROR")
+                                            end
                                         end
+                                    else
+                                        craftStatus = "Ошибка: нет метода request для ".. (item_entry.name or "<??>")
+                                        addLog("Ошибка: нет метода request у рецепта для "..(item_entry.name or "<??>"),"ERROR")
                                     end
                                 else
                                     craftStatus = "Ошибка: нет рецепта "..(item_entry.name or "<??>")
                                     addLog("Ошибка: нет рецепта "..(item_entry.name or "<??>"),"ERROR")
                                 end
                             else
-                                addLog("Инфо: нет свободных CPU для "..(item_entry.name or "<?>").." в этом цикле","INFO")
-                                if craftStatus ~= "Ошибка: запрос крафта" and not craftStatus:find("Крафт:") then
+                                -- Только если нет более критичных ошибок, обновляем статус на ожидание CPU
+                                if not craftStatus:find("Ошибка:") and not craftStatus:find("Крафт:") then
                                     craftStatus = "Ожидание CPU..."
                                 end
                             end
@@ -536,7 +524,7 @@ local function autoCraftLoop()
                     end
                 end
                 save()
-                nextCraftUpdate = now + 5
+                nextCraftUpdate = now + 5 -- Обновление каждые 5 секунд
             end
         end
         draw()
@@ -546,33 +534,26 @@ end
 
 -------------------- События --------------------
 event.listen("touch", function(_,_,x,y,_,_)
-    if changeitem then return end
+    if changeitem then return end -- Блокируем UI во время ввода
     hoveredButton = nil -- Сбрасываем при каждом клике
 
     local btns = {
-        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3},
-        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3},
+        {x=WIDTH-60, y=HEIGHT-4, w=12, h=3, action=removeItem},
+        {x=WIDTH-45, y=HEIGHT-4, w=12, h=3, action=editItem},
+        {x=WIDTH-30, y=HEIGHT-4, w=12, h=3, action=function() if isCrafting then stopCraft() else doCraft() end end},
+        {x=WIDTH-15, y=HEIGHT-4, w=12, h=3, action=addItem},
     }
     for i,btn in ipairs(btns) do
         if x >= btn.x and x <= btn.x+btn.w-1 and y >= btn.y and y <= btn.y+btn.h-1 then
             hoveredButton = i
-            -- Выключаем мигание курсора, если он был активен в поле поиска
-            if searchActive and term and type(term) == "table" and term.setCursorBlink then
-                term.setCursorBlink(false)
-            end
             searchActive = false -- Выключаем активность поиска при клике на кнопку
-
-            if i==1 then removeItem()
-            elseif i==2 then editItem()
-            elseif i==3 then if isCrafting then stopCraft() else doCraft() end
-            elseif i==4 then addItem()
-            end
+            if term and type(term) == "table" and term.setCursorBlink then term.setCursorBlink(false) end
+            btn.action() -- Выполняем действие кнопки
             draw()
             return
         end
     end
+
     -- Проверка на клик по крестику или в поле поиска
     local search_x, search_y, search_w, search_h = 3, HEIGHT-13, WIDTH-6, 3
     if y >= search_y and y <= search_y + search_h - 1 then
@@ -581,29 +562,23 @@ event.listen("touch", function(_,_,x,y,_,_)
             search = ""
             addLog("Поиск очищен.", "INFO")
             searchActive = false
-            -- Убедимся, что курсор выключен
-            if term and type(term) == "table" and term.setCursorBlink then
-                term.setCursorBlink(false)
-            end
+            if term and type(term) == "table" and term.setCursorBlink then term.setCursorBlink(false) end
             draw()
             return
         end
         -- Клик в поле поиска
         if x >= search_x + 1 and x <= search_x + search_w - 4 then
             searchActive = true
-            -- Курсор включится в drawSearchBar
-            draw()
+            draw() -- Курсор включится в drawSearchBar
             return
         end
     end
-    -- Если клик вне поля поиска, выключаем searchActive и курсор
-    if searchActive then -- Если был активен, то теперь выключаем
-        searchActive = false
-        if term and type(term) == "table" and term.setCursorBlink then
-            term.setCursorBlink(false)
-        end
-    end
 
+    -- Если клик вне поля поиска, выключаем searchActive и курсор
+    if searchActive then
+        searchActive = false
+        if term and type(term) == "table" and term.setCursorBlink then term.setCursorBlink(false) end
+    end
 
     -- Список предметов (выбор)
     local showItems = {}
@@ -639,7 +614,6 @@ event.listen("touch", function(_,_,x,y,_,_)
 end)
 
 event.listen("drag", function(_,_,x,y,_,_)
-    -- Логика drag для hoveredButton и tooltip
     local btns = {
         {x=WIDTH-60, y=HEIGHT-4, w=12, h=3},
         {x=WIDTH-45, y=HEIGHT-4, w=12, h=3},
@@ -666,9 +640,8 @@ event.listen("drag", function(_,_,x,y,_,_)
     end
 end)
 
-
 event.listen("key_down", function(_,_,key,_,_)
-    if changeitem then return end
+    if changeitem then return end -- Блокируем обработку клавиатуры во время ввода
     local showItems = {}
     for i,item in ipairs(dataItems) do
         if search == "" or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true) then
@@ -676,27 +649,26 @@ event.listen("key_down", function(_,_,key,_,_)
         end
     end
     local perPage = HEIGHT-20 -- Используем скорректированный perPage
+
     if searchActive then
         if key == 14 then -- backspace
             search = unicode.sub(search, 1, math.max(0, unicode.len(search)-1))
-        elseif key == 211 then -- delete
+        elseif key == 211 then -- delete (очистка всей строки поиска)
             search = ""
         elseif key == 28 then -- enter
             searchActive = false
-            -- Выключаем мигание курсора после Enter, если term доступен
-            if term and type(term) == "table" and term.setCursorBlink then
-                term.setCursorBlink(false)
-            end
-        elseif key >= 32 and key < 128 then -- Добавляем только печатные символы
+            if term and type(term) == "table" and term.setCursorBlink then term.setCursorBlink(false) end
+        elseif key >= 32 and key < 128 then -- Добавляем только печатные ASCII символы
             if unicode.len(search) < WIDTH-15 then -- Ограничение длины строки поиска
                 search = search .. unicode.char(key)
             end
         end
-        itemScroll = 1
+        itemScroll = 1 -- Сброс скролла при изменении поиска
     else
-        if key == 200 then -- up
+        -- Навигация по списку
+        if key == 200 then -- up arrow
             itemScroll = math.max(1,itemScroll-1)
-        elseif key == 208 then -- down
+        elseif key == 208 then -- down arrow
             if #showItems > perPage then
                 itemScroll = math.min(#showItems-perPage+1,itemScroll+1)
             end
@@ -710,7 +682,7 @@ g.setResolution(WIDTH,HEIGHT)
 reload()
 draw()
 
--- Убедимся, что курсор выключен при старте, если term доступен
+-- Убедимся, что курсор выключен при старте и вне полей ввода
 if term and type(term) == "table" and term.setCursorBlink then
     term.setCursorBlink(false)
 end
