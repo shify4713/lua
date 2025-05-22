@@ -13,6 +13,7 @@ local me = component.me_interface
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
 local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+
 -- Глобальные переменные (M будет инициализирована позже)
 local M
 local WIDTH, HEIGHT
@@ -36,18 +37,13 @@ local editItemQuantity = "0"
 local editCraftQuantity = "0"
 
 -- **ВАЖНОЕ ИЗМЕНЕНИЕ:** Локальная функция addLog для использования до загрузки M.addLog
+-- Она будет использоваться до тех пор, пока M.addLog из библиотеки не станет доступна
 local function addLog(text, lvl)
     lvl = lvl or "INFO"
     local now = os.date("!*t", os.time()+3*3600) -- МСК (для единообразия)
     local t = string.format("[%02d:%02d:%02d][%s] %s", now.hour, now.min, now.sec, lvl, text)
     table.insert(logs, t)
     while #logs > 50 do table.remove(logs, 1) end
-    -- Если M уже загружена и у нее есть addLog, используем ее.
-    -- Это нужно, чтобы впоследствии использовалась более полная версия M.addLog (если она отличается)
-    -- Но в данном случае, M.addLog и эта локальная addLog одинаковы, так что это скорее для структуры
-    -- if M and M.addLog then
-    --    M.addLog(logs, text, lvl)
-    -- end
 end
 
 -- Проверка доступности компонентов
@@ -201,8 +197,9 @@ local function draw()
 
     M.drawText(startX, startY, "Название", 0xFFB86C)
     -- Используем correct Y position (startY - 1) для кнопок сортировки
-    M.drawButton(startX + col1Width + 1, startY - 1, col2Width, 2, "В наличии " .. (sortColumn == "available" and (sortOrder == "asc" and "▲" or "▼") or ""), 0x6272A4, 0xF8F8F2, buttonHover == "sortAvailable")
-    M.drawButton(startX + col1Width + col2Width + 2, startY - 1, col3Width, 2, "Крафт " .. (sortColumn == "craft" and (sortOrder == "asc" and "▲" or "▼") or ""), 0x6272A4, 0xF8F8F2, buttonHover == "sortCraft")
+    local sortButtonsY = startY - 1
+    M.drawButton(startX + col1Width + 1, sortButtonsY, col2Width, 2, "В наличии " .. (sortColumn == "available" and (sortOrder == "asc" and "▲" or "▼") or ""), 0x6272A4, 0xF8F8F2, buttonHover == "sortAvailable")
+    M.drawButton(startX + col1Width + col2Width + 2, sortButtonsY, col3Width, 2, "Крафт " .. (sortColumn == "craft" and (sortOrder == "asc" and "▲" or "▼") or ""), 0x6272A4, 0xF8F8F2, buttonHover == "sortCraft")
     startY = startY + 1
 
     -- Разделитель
@@ -355,10 +352,10 @@ local function on_mouse_click(x, y, button, isTouch)
             addLog("Отмена редактирования/добавления.", "INFO")
         end
     else -- Главный экран
-        -- Кнопки сортировки (используем startY - 2, т.к. текст на startY, кнопка на startY-1)
+        -- Кнопки сортировки (используем sortButtonsY)
         local col1Width = math.floor(WIDTH * 0.4)
         local col2Width = math.floor(WIDTH * 0.3)
-        local sortButtonsY = 3 -- Это Y-координата начала кнопки сортировки
+        local sortButtonsY = 5 -- Y-координата начала кнопки сортировки
 
         -- Сортировка по "В наличии"
         if M.isInside(x, y, startX + col1Width + 1, sortButtonsY, col2Width, 2) then
@@ -439,7 +436,7 @@ local function on_mouse_click(x, y, button, isTouch)
         end
 
         -- Выбор элемента в списке
-        local startListY = 6 -- Начальная Y-координата списка (текст "Поиск: " на 3, строка поиска на 4, Название на 5, разделитель на 6, список с 7)
+        local startListY = 7 -- Начальная Y-координата списка (текст "Поиск: " на 3, строка поиска на 4, Название на 5, разделитель на 6, список с 7)
         local visibleItems = M.scrollArray(M.filterItems(dataItems, filterText), currentPage, itemsPerPage)
         for i, item in ipairs(visibleItems) do
             if M.isInside(x, y, 1, startListY + i - 1, WIDTH, 1) then
@@ -664,38 +661,38 @@ local function on_mouse_move(x, y)
     local startX = 1
     local buttonY = HEIGHT - 6
     local pagY = HEIGHT - 9
-    local sortButtonsY = 3 -- Y-координата начала кнопки сортировки (текст "Название" на 5, кнопка выше)
+    local sortButtonsY = 5 -- Y-координата начала кнопки сортировки
 
     -- Кнопки пагинации
-    if M.isInside(x, y, startX, pagY, 8, 2) then
+    if M and M.isInside(x, y, startX, pagY, 8, 2) then
         newButtonHover = "prevPage"
-    elseif M.isInside(x, y, startX + 10 + unicode.len(string.format("Страница %d/%d", currentPage, maxPages)) + 2, pagY, 8, 2) then
+    elseif M and M.isInside(x, y, startX + 10 + unicode.len(string.format("Страница %d/%d", currentPage, maxPages)) + 2, pagY, 8, 2) then
         newButtonHover = "nextPage"
     end
 
     -- Кнопки сортировки
     local col1Width = math.floor(WIDTH * 0.4)
     local col2Width = math.floor(WIDTH * 0.3)
-    if M.isInside(x, y, startX + col1Width + 1, sortButtonsY, col2Width, 2) then
+    if M and M.isInside(x, y, startX + col1Width + 1, sortButtonsY, col2Width, 2) then
         newButtonHover = "sortAvailable"
-    elseif M.isInside(x, y, startX + col1Width + col2Width + 2, sortButtonsY, WIDTH - col1Width - col2Width - 2, 2) then
+    elseif M and M.isInside(x, y, startX + col1Width + col2Width + 2, sortButtonsY, WIDTH - col1Width - col2Width - 2, 2) then
         newButtonHover = "sortCraft"
     end
 
     -- Кнопки действий
-    if M.isInside(x, y, startX, buttonY, 15, 2) then
+    if M and M.isInside(x, y, startX, buttonY, 15, 2) then
         newButtonHover = "add"
-    elseif M.isInside(x, y, startX + 16, buttonY, 15, 2) then
+    elseif M and M.isInside(x, y, startX + 16, buttonY, 15, 2) then
         newButtonHover = "edit"
-    elseif M.isInside(x, y, startX + 32, buttonY, 15, 2) then
+    elseif M and M.isInside(x, y, startX + 32, buttonY, 15, 2) then
         newButtonHover = "delete"
-    elseif M.isInside(x, y, startX + 48, buttonY, 15, 2) then
+    elseif M and M.isInside(x, y, startX + 48, buttonY, 15, 2) then
         newButtonHover = "refresh"
-    elseif M.isInside(x, y, startX + 64, buttonY, 15, 2) then
+    elseif M and M.isInside(x, y, startX + 64, buttonY, 15, 2) then
         newButtonHover = "save"
     end
 
-    if editMode then
+    if editMode and M then
         local fieldY = 5
         -- Кнопка "Принять"
         if M.isInside(x, y, math.floor(WIDTH / 2 - 10), fieldY + 7 + 2, 10, 2) then
@@ -720,10 +717,13 @@ g.setResolution(WIDTH, HEIGHT)
 addLog("Программа запущена", "INFO") -- Теперь вызываем локальную addLog
 loadLibrary() -- Здесь M инициализируется
 
--- Теперь M.addLog доступна, и все последующие вызовы `addLog` будут использовать её.
--- Если хотите убедиться, что всегда используется M.addLog после загрузки,
--- можно явно переопределить локальную функцию:
--- addLog = M.addLog 
+-- После загрузки библиотеки, если ultimateOC.lua содержит более продвинутый addLog,
+-- мы можем его переопределить. Но поскольку наш локальный addLog соответствует
+-- M.addLog из ultimateOC.lua, это не является строго необходимым, но для
+-- ясности структуры можно сделать:
+-- if M and M.addLog then
+--    addLog = M.addLog
+-- end
 
 local ok, err = pcall(reload)
 if not ok then
@@ -739,6 +739,7 @@ event.listen("mouse_click", on_mouse_click)
 event.listen("mouse_drag", on_mouse_drag)
 event.listen("mouse_scroll", on_mouse_scroll)
 event.listen("key_down", on_key)
+event.listen("mouse_move", on_mouse_move) -- Добавлено прослушивание mouse_move для корректной работы buttonHover
 
 while true do
     local status, res = coroutine.resume(autoCraftCoroutine)
@@ -747,16 +748,14 @@ while true do
         autoCraftCoroutine = coroutine.create(autoCraftLoop)
     end
 
-    local e = {event.pull(0.05)}
+    local e = {event.pull(0.05)} -- Ждем событие 0.05 секунды
+    -- Эти проверки `e[1] == "mouse_move"` и т.д. избыточны, так как есть event.listen,
+    -- но их наличие не критично. Оставим их, чтобы не менять слишком много в логике цикла.
     if e[1] == "mouse_move" then
         on_mouse_move(e[2], e[3])
-    elseif e[1] == "mouse_click" then
-        on_mouse_click(e[2], e[3], e[4], e[5])
-    elseif e[1] == "mouse_drag" then
-        on_mouse_drag(e[2], e[3], e[4], e[5])
-    elseif e[1] == "mouse_scroll" then
-        on_mouse_scroll(e[2], e[3], e[4])
-    elseif e[1] == "key_down" then
-        on_key(e[2], e[3])
+    -- Остальные события обрабатываются через event.listen, поэтому их здесь повторять не нужно.
+    -- Они были удалены из цикла для чистоты, так как on_mouse_click, on_key и т.д. вызываются
+    -- через соответствующие listener'ы.
     end
+    -- draw() -- Отрисовка теперь вызывается в обработчиках событий, если есть изменения, или в autoCraftLoop
 end
