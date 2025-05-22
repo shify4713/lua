@@ -269,15 +269,26 @@ local function reload()
             for _,stack in ipairs(stackList) do
                 -- Проверяем, что это именно тот предмет, который нам нужен
                 if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
-                    qty = stack.size or stack.qty or 0
-                    break
+                    qty = qty + (stack.size or stack.qty or 0) -- Накапливаем количество
                 end
             end
         else
             -- Если не удалось получить из сети, пытаемся получить детали предмета напрямую
             local ok2, d = pcall(me.getItemDetail, {id = item.id, dmg = item.dmg})
             if ok2 and d then
-                qty = d.qty or d.size or 0
+                qty = qty + (d.qty or d.size or 0)
+            end
+        end
+
+        -- ДОБАВЛЕНО: Учитываем предметы, которые уже находятся в процессе крафта
+        local craftingJobs_ok, craftingJobs = pcall(me.getCraftingJobs)
+        if craftingJobs_ok and craftingJobs and craftingJobs.n then
+            for _, job in ipairs(craftingJobs) do
+                -- Сравниваем ID и Damage выходного предмета задания крафта с нашим предметом
+                if job.output and job.output.id == item.id and
+                   (item.dmg == nil or job.output.damage == item.dmg) then
+                    qty = qty + (job.output.size or job.output.qty or 0) -- Добавляем количество, которое крафтится
+                end
             end
         end
         item.current = qty
@@ -565,6 +576,8 @@ event.listen("touch", function(_,_,x,y,_,_)
         if showItems[idx] then
             for k,v in ipairs(dataItems) do
                 if v == showItems[idx] then selectedItem = k break end
+            -- else -- This 'else' was causing an issue if the selected item was filtered out
+            --     selectedItem = nil
             end
         end
         draw()
