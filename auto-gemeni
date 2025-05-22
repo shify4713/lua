@@ -59,25 +59,25 @@ local ok, uoc = pcall(require, "ultimateOC")
 if not ok then
     io.stderr:write("Не удалось загрузить ultimateOC.lua: " .. tostring(uoc) .. "\n")
     uoc = {
-        drawText = function(x, y, text, color) 
-            g.setForeground(color or 0xFFFFFF) 
-            g.set(x, y, text) 
+        drawText = function(x, y, text, color)
+            g.setForeground(color or 0xFFFFFF)
+            g.set(x, y, text)
         end,
-        roundRect = function(x, y, w, h, borderColor, bgColor) 
-            g.setForeground(borderColor or 0xFFFFFF) 
-            g.setBackground(bgColor or 0x000000) 
-            g.fill(x, y, w, h, " ") 
+        roundRect = function(x, y, w, h, borderColor, bgColor)
+            g.setForeground(borderColor or 0xFFFFFF)
+            g.setBackground(bgColor or 0x000000)
+            g.fill(x, y, w, h, " ")
         end,
-        animatedButton = function(x, y, w, h, text, hover, bgColor, activeColor, textColor) 
-            g.setBackground(hover and activeColor or bgColor) 
-            g.fill(x, y, w, h, " ") 
-            g.setForeground(textColor) 
+        animatedButton = function(x, y, w, h, text, hover, bgColor, activeColor, textColor)
+            g.setBackground(hover and activeColor or bgColor)
+            g.fill(x, y, w, h, " ")
+            g.setForeground(textColor)
             local textX = x + math.floor((w - unicode.len(text)) / 2)
             local textY = y + math.floor(h / 2)
-            g.set(textX, textY, text) 
+            g.set(textX, textY, text)
         end,
-        drawLogs = function(x, y, logs, lines, color, offset) 
-            g.setForeground(color) 
+        drawLogs = function(x, y, logs, lines, color, offset)
+            g.setForeground(color)
             for i = 1, lines do
                 local logIndex = #logs - lines + i - offset
                 if logIndex > 0 then
@@ -85,25 +85,25 @@ if not ok then
                 end
             end
         end,
-        savef = function(path, data) 
-            local file = io.open(path, "w") 
-            if file then 
-                file:write(serialization.serialize(data)) 
-                file:close() 
-            end 
+        savef = function(path, data)
+            local file = io.open(path, "w")
+            if file then
+                file:write(serialization.serialize(data))
+                file:close()
+            end
         end,
-        loadf = function(path) 
-            local file = io.open(path, "r") 
-            if not file then return nil end 
-            local content = file:read("*a") 
-            file:close() 
-            return serialization.unserialize(content) 
+        loadf = function(path)
+            local file = io.open(path, "r")
+            if not file then return nil end
+            local content = file:read("*a")
+            file:close()
+            return serialization.unserialize(content)
         end,
-        progressBar = function(x, y, w, progress) 
-            g.setBackground(0x44475a) 
-            g.fill(x, y, w, 1, " ") 
-            g.setBackground(0x50FA7B) 
-            g.fill(x, y, math.floor(w * progress), 1, " ") 
+        progressBar = function(x, y, w, progress)
+            g.setBackground(0x44475a)
+            g.fill(x, y, w, 1, " ")
+            g.setBackground(0x50FA7B)
+            g.fill(x, y, math.floor(w * progress), 1, " ")
         end
     }
 end
@@ -381,8 +381,11 @@ local function drawButtons()
         nextEnabled and COLORS.button or COLORS.border,
         nextEnabled and COLORS.buttonActive or COLORS.border,
         nextEnabled and COLORS.text or COLORS.search_hint)
+
+    -- Fixed "Сортировать" button display
     local sortBtnY = arrowBtnY + arrowBtnH + 2
     local sortBtnW = 12
+    local sortText = "Сорт:"
     local sortIndicatorText = ""
     if settings.sortCriteria == "name" then
         sortIndicatorText = "Назв."
@@ -396,9 +399,16 @@ local function drawButtons()
         sortIndicatorText = "Кат."
     end
     sortIndicatorText = sortIndicatorText .. (settings.sortAscending and "↑" or "↓")
+    local fullSortText = sortText .. " " .. sortIndicatorText
+
+    -- Ensure the button text fits within the button
+    local displaySortText = fullSortText
+    if unicode.len(fullSortText) > sortBtnW then
+        displaySortText = unicode.sub(fullSortText, 1, sortBtnW - 1)
+    end
+
     local sortHover = (buttonHover == "sort")
-    uoc.animatedButton(btnX, sortBtnY, sortBtnW, arrowBtnH, "Сортировать", sortHover, COLORS.button, COLORS.buttonActive, COLORS.text)
-    uoc.drawText(btnX + 2, sortBtnY + 1, sortIndicatorText, COLORS.text)
+    uoc.animatedButton(btnX, sortBtnY, sortBtnW, arrowBtnH, displaySortText, sortHover, COLORS.button, COLORS.buttonActive, COLORS.text)
 end
 
 local function drawInputScreen()
@@ -438,7 +448,8 @@ local function drawInputScreen()
     end
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
-    uoc.drawText(2, baseY + 12, "Tab: переключить поле, Enter: сохранить, Esc: отменить", COLORS.text)
+    -- Removed "Tab: переключить поле, Esc: отменить"
+    uoc.drawText(2, baseY + 12, "Enter: сохранить", COLORS.text)
 end
 
 local function draw()
@@ -530,7 +541,7 @@ local function addItem()
 end
 
 local function editItem()
-    if not selectedItem then 
+    if not selectedItem then
         addLog(logs, "ERROR: Не выбран предмет!", "ERROR")
         return
     end
@@ -573,10 +584,10 @@ local function saveItem()
         end
     elseif inputMode == "edit" then
         local item = dataItems[selectedItem]
-        if inputFields.name and inputFields.name ~= "" then item.name = inputFields.name end
-        if inputFields.category and inputFields.category ~= "" then item.category = inputFields.category end
-        if inputFields.count and inputFields.count ~= "" then item.count = tonumber(inputFields.count) or item.count end
-        if inputFields.craftSize and inputFields.craftSize ~= "" then item.craftSize = tonumber(inputFields.craftSize) or item.craftSize end
+        if inputFields.name then item.name = inputFields.name end
+        if inputFields.category then item.category = inputFields.category end
+        if inputFields.count then item.count = tonumber(inputFields.count) or item.count end
+        if inputFields.craftSize then item.craftSize = tonumber(inputFields.craftSize) or item.craftSize end
         save()
         addLog(logs, "INFO: Изменено: " .. item.name .. " (Категория: " .. (item.category or "Без категории") .. ")", "INFO")
     end
@@ -598,7 +609,7 @@ local function cancelInput()
 end
 
 local function removeItem()
-    if not selectedItem then 
+    if not selectedItem then
         addLog(logs, "ERROR: Не выбран предмет!", "ERROR")
         return
     end
@@ -885,9 +896,9 @@ event.listen("touch", function(_, _, x, y, _, _)
         local actualIndexInFiltered = startIndex + idxOnPage
         if filteredAndSortedItems[actualIndexInFiltered] then
             for k, v in ipairs(dataItems) do
-                if v == filteredAndSortedItems[actualIndexInFiltered] then 
-                    selectedItem = k 
-                    break 
+                if v == filteredAndSortedItems[actualIndexInFiltered] then
+                    selectedItem = k
+                    break
                 end
             end
         end
@@ -916,7 +927,7 @@ event.listen("key_down", function(_, _, key, _, _)
             draw()
         elseif key == 28 then -- Enter
             saveItem()
-        elseif key == 1 then -- Esc
+        elseif key == 1 then -- Esc (now behaves as cancel input)
             cancelInput()
         elseif inputActive then
             local fieldNames = {"name", "category", "count", "craftSize"}
@@ -926,9 +937,9 @@ event.listen("key_down", function(_, _, key, _, _)
                 inputFields[currentFieldName] = unicode.sub(currentValue, 1, -2)
             elseif key == 211 then -- Delete
                 inputFields[currentFieldName] = ""
-            elseif key >= 32 and key < 128 then
+            elseif key >= 32 and key < 128 then -- Basic ASCII for now, for broader Unicode support, a different approach might be needed.
                 if (currentFieldName == "count" or currentFieldName == "craftSize") and not (key >= 48 and key <= 57) then
-                    return -- Только цифры для count и craftSize
+                    return -- Only digits for count and craftSize
                 end
                 if unicode.len(currentValue) < 30 then
                     inputFields[currentFieldName] = currentValue .. unicode.char(key)
@@ -948,7 +959,7 @@ event.listen("key_down", function(_, _, key, _, _)
             search = ""
         elseif key == 28 then
             searchActive = false
-        elseif key >= 32 and key < 128 then
+        elseif key >= 32 and key < 128 then -- Again, basic ASCII handling for search
             if unicode.len(search) < WIDTH - 25 then
                 search = search .. unicode.char(key)
             end
@@ -972,22 +983,22 @@ event.listen("key_down", function(_, _, key, _, _)
                     end
                 end
             end
-            if #visibleItems == 0 then 
+            if #visibleItems == 0 then
                 selectedItem = nil
             elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered > 1 then
                 selectedItem = nil
                 for k, v in ipairs(dataItems) do
-                    if v == visibleItems[currentSelectedItemInFiltered - 1] then 
-                        selectedItem = k 
-                        break 
+                    if v == visibleItems[currentSelectedItemInFiltered - 1] then
+                        selectedItem = k
+                        break
                     end
                 end
             elseif #visibleItems > 0 then
                 selectedItem = nil
                 for k, v in ipairs(dataItems) do
-                    if v == visibleItems[#visibleItems] then 
-                        selectedItem = k 
-                        break 
+                    if v == visibleItems[#visibleItems] then
+                        selectedItem = k
+                        break
                     end
                 end
             end
@@ -1006,22 +1017,22 @@ event.listen("key_down", function(_, _, key, _, _)
                     end
                 end
             end
-            if #visibleItems == 0 then 
+            if #visibleItems == 0 then
                 selectedItem = nil
             elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered < #visibleItems then
                 selectedItem = nil
                 for k, v in ipairs(dataItems) do
-                    if v == visibleItems[currentSelectedItemInFiltered + 1] then 
-                        selectedItem = k 
-                        break 
+                    if v == visibleItems[currentSelectedItemInFiltered + 1] then
+                        selectedItem = k
+                        break
                     end
                 end
             elseif #visibleItems > 0 then
                 selectedItem = nil
                 for k, v in ipairs(dataItems) do
-                    if v == visibleItems[1] then 
-                        selectedItem = k 
-                        break 
+                    if v == visibleItems[1] then
+                        selectedItem = k
+                        break
                     end
                 end
             end
