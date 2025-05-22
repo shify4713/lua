@@ -12,40 +12,33 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Загружаем библиотеку ultimateOC
+-- Проверяем, существует ли файл библиотеки
+if not fs.exists(LIB_PATH) then
+    io.stderr:write("Библиотека ultimateOC.lua не найдена по пути: " .. LIB_PATH .. "\n")
+    io.stderr:write("Попытка загрузки с GitHub...\n")
+    local success, err = shell.exec("wget", LIB_URL, LIB_PATH)
+    if not success then
+        io.stderr:write("Ошибка: Не удалось загрузить ultimateOC.lua с GitHub: " .. tostring(err) .. "\n")
+        os.exit(1)
+    else
+        io.stderr:write("ultimateOC.lua успешно загружен.\n")
+    end
+end
+
+-- Теперь пытаемся загрузить библиотеку
 local ok, ultimateOC = pcall(require, LIB_PATH)
 if not ok then
-    io.stderr:write("Ошибка: Не удалось загрузить библиотеку ultimateOC.lua по пути: " .. LIB_PATH .. "\n")
-    io.stderr:write("Пожалуйста, убедитесь, что файл существует и корректен.\n")
-    -- Попытка загрузить из интернета, если не найдено локально
-    io.stderr:write("Попытка загрузки с GitHub...\n")
-    local handle = shell.open(LIB_URL)
-    if handle then
-        local content = handle:readAll()
-        handle:close()
-        local file = io.open(LIB_PATH, "w")
-        if file then
-            file:write(content)
-            file:close()
-            ok, ultimateOC = pcall(require, LIB_PATH)
-            if not ok then
-                io.stderr:write("Ошибка: Не удалось загрузить и использовать библиотеку ultimateOC.lua\n")
-                os.exit(1)
-            end
-        else
-            io.stderr:write("Ошибка: Не удалось записать ultimateOC.lua в " .. LIB_PATH .. "\n")
-            os.exit(1)
-        end
-    else
-        io.stderr:write("Ошибка: Не удалось загрузить ultimateOC.lua с GitHub.\n")
-        os.exit(1)
-    end
+    io.stderr:write("Ошибка: Не удалось загрузить библиотеку ultimateOC.lua: " .. tostring(ultimateOC) .. "\n")
+    io.stderr:write("Пожалуйста, проверьте файл " .. LIB_PATH .. " на наличие синтаксических ошибок.\n")
+    os.exit(1)
 end
 
 local uoc = ultimateOC -- Используем более короткое имя для удобства
 
+-- ... (остальной ваш код без изменений) ...
 -- Проверка доступности компонентов
 local function checkComponents()
     if not component.isAvailable("gpu") then
