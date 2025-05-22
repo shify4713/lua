@@ -32,9 +32,10 @@ function M.drawText(x, y, text, color, shadow)
     color = color or 0xFFFFFF -- По умолчанию белый
     gpu.setForeground(color)
     if shadow then
+        -- For shadow, we temporarily set background, then reset it
         gpu.setBackground(0x282A36) -- Цвет тени
         gpu.set(x+1, y+1, text)
-        gpu.setBackground(originalBg) -- Восстанавливаем оригинальный фон после отрисовки тени
+        gpu.setBackground(originalBg) -- Restore original background
     end
     -- НЕ устанавливаем фон для основного текста. Вызывающая функция (например, drawItems) отвечает за фон.
     gpu.set(x, y, text)
