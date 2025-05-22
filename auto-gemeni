@@ -109,7 +109,7 @@ end
 -- Проверяем файл данных
 if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {items = {}, settings = {sortCriteria = "name", sortAscending = true}})
-    io.stdout:write("DEBUG: Создан новый файл BD.txt\n")
+    io.stdout:write("Создан новый файл BD.txt\n")
 end
 
 -------------------- Настройки --------------------
@@ -133,6 +133,9 @@ local COLORS = {
     search_hint = 0x888888,
     bar_shadow = 0x181920,
     warning = 0xFFB86C,
+    input_bg = 0x282B36,
+    input_border = 0x00BFFF,
+    input_text = 0xF8F8F2,
 }
 local WIDTH, HEIGHT = g.maxResolution()
 local craftStatus = "Ожидание..."
@@ -150,6 +153,10 @@ local logOffset = 0
 local lastRequestedItem = nil
 local lastRequestTime = 0
 local buttonHover = nil
+local inputMode = nil -- "add" or "edit"
+local inputFields = {}
+local currentField = 1
+local inputActive = false
 
 -------------------- Логгирование --------------------
 local function addLog(logs, text, lvl)
@@ -196,7 +203,7 @@ local function getFilteredAndSortedItems()
 end
 
 local function getItemsPerPage()
-    return HEIGHT - 20 -- Увеличено пространство
+    return HEIGHT - 20
 end
 
 local function getMaxPages()
@@ -234,7 +241,7 @@ end
 local function drawItems()
     local filteredAndSortedItems = getFilteredAndSortedItems()
     local x, y = 1, 8
-    local totalWidth = WIDTH - 20
+    local totalWidth = WIDTH - 25 -- Уменьшено для большего пространства справа
     local col_name = math.floor(totalWidth * 0.35)
     local col_category = math.floor(totalWidth * 0.15)
     local col_now = math.floor(totalWidth * 0.15)
@@ -349,8 +356,8 @@ end
 local function drawButtons()
     local btnWidth = 12
     local btnHeight = 3
-    local btnX = WIDTH - btnWidth - 2
-    local btnPadding = 1
+    local btnX = WIDTH - btnWidth - 5 -- Больше пространства от таблицы
+    local btnPadding = 2 -- Увеличено расстояние между кнопками
     local btns = {
         {name = "Крафт всех", action = "craftAll"},
         {name = "Удалить", action = "delete"},
@@ -359,13 +366,13 @@ local function drawButtons()
         {name = "Добавить", action = "add"},
     }
     for i, btn in ipairs(btns) do
-        local btnY = 8 + (i - 1) * (btnHeight + btnPadding)
+        local btnY = 10 + (i - 1) * (btnHeight + btnPadding) -- Сдвинули вниз
         local hover = (buttonHover == btn.action)
         uoc.animatedButton(btnX, btnY, btnWidth, btnHeight, btn.name, hover, COLORS.button, COLORS.buttonActive, COLORS.text)
     end
     local arrowBtnW = 4
     local arrowBtnH = 3
-    local arrowBtnY = 8 + (#btns * (btnHeight + btnPadding))
+    local arrowBtnY = 10 + (#btns * (btnHeight + btnPadding))
     local prevArrowBtnX = btnX
     local nextArrowBtnX = btnX + arrowBtnW + 1
     local maxPages = getMaxPages()
@@ -402,28 +409,70 @@ local function drawButtons()
     uoc.drawText(btnX, sortBtnY + 1, sortIndicatorText, COLORS.text)
 end
 
-local function draw()
+local function drawInputScreen()
     clear()
-    drawHeader()
-    drawItems()
-    drawSearchBar()
-    drawLogs()
-    drawButtons()
+    local baseY = HEIGHT - 15
+    local title = (inputMode == "add") and "Добавление предмета" or "Изменение: " .. (dataItems[selectedItem].name or "<?>")
+    uoc.drawText(2, baseY, title, COLORS.ok)
+    uoc.drawText(2, baseY + 1, "Вставьте предмет в 1-й слот ME интерфейса (для добавления).", COLORS.ok)
+
+    local fields = {
+        {label = "Название:", value = inputFields.name or "", x = 2, y = baseY + 3, w = 40},
+        {label = "Категория:", value = inputFields.category or "", x = 2, y = baseY + 5, w = 40},
+        {label = "Держать:", value = inputFields.count or "", x = 2, y = baseY + 7, w = 20},
+        {label = "Крафт за раз:", value = inputFields.craftSize or "", x = 2, y = baseY + 9, w = 20},
+    }
+
+    for i, field in ipairs(fields) do
+        local isActive = (i == currentField and inputActive)
+        uoc.roundRect(field.x, field.y, field.w, 3, COLORS.input_border, COLORS.input_bg)
+        g.setForeground(COLORS.text)
+        g.set(field.x + 1, field.y, field.label)
+        g.setBackground(COLORS.input_bg)
+        g.fill(field.x + 1, field.y + 1, field.w - 2, 1, " ")
+        g.setForeground(isActive and COLORS.ok or COLORS.input_text)
+        local display = field.value
+        if display == "" and not isActive then
+            display = "Введите значение..."
+        end
+        if isActive then
+            display = display .. "_"
+        end
+        local maxlen = field.w - 4
+        if unicode.len(display) > maxlen then
+            display = unicode.sub(display, unicode.len(display) - maxlen + 1)
+        end
+        g.set(field.x + 2, field.y + 1, display)
+    end
+    g.setBackground(COLORS.bg)
+    g.setForeground(COLORS.text)
+    uoc.drawText(2, baseY + 12, "Tab: переключить поле, Enter: сохранить, Esc: отменить", COLORS.text)
+end
+
+local function draw()
+    if changeitem then
+        drawInputScreen()
+    else
+        clear()
+        drawHeader()
+        drawItems()
+        drawSearchBar()
+        drawLogs()
+        drawButtons()
+    end
 end
 
 -------------------- IO и действия --------------------
 local function reload()
-    io.stdout:write("DEBUG: Загрузка данных из BD.txt\n")
     local ok, res = pcall(uoc.loadf, DATA_FILE)
     if not ok then
-        addLog(logs, "ERROR: Ошибка загрузки BD.txt: " .. tostring(res))
+        addLog(logs, "ERROR: Ошибка загрузки BD.txt: " .. tostring(res), "ERROR")
         dataItems = {}
         settings = {sortCriteria = "name", sortAscending = true}
     else
         res = res or {items = {}, settings = {sortCriteria = "name", sortAscending = true}}
         dataItems = res.items or {}
         settings = res.settings or {sortCriteria = "name", sortAscending = true}
-        io.stdout:write("DEBUG: Загружено " .. #dataItems .. " предметов\n")
     end
     clampPage()
     for _, item in ipairs(dataItems) do
@@ -451,7 +500,6 @@ local function reload()
                     qty = qty + (job.output.size or job.output.qty or 0)
                     if lastRequestedItem and lastRequestedItem.id == item.id and
                        (lastRequestedItem.dmg == nil or lastRequestedItem.dmg == item.dmg) then
-                        addLog(logs, "DEBUG: Предмет '" .. (item.name or "<??>") .. "' в активных крафтах. Сброс lastRequestedItem.")
                         lastRequestedItem = nil
                         lastRequestTime = 0
                     end
@@ -459,22 +507,18 @@ local function reload()
             end
         end
         item.current = qty
-        io.stdout:write("DEBUG: Обновлено количество для " .. (item.name or "<??>") .. ": " .. qty .. "\n")
     end
     if lastRequestedItem and computer.uptime() - lastRequestTime > 30 then
-        addLog(logs, "WARN: Таймаут ожидания для '" .. (lastRequestedItem.id or "<??>") .. "'. Сброс lastRequestedItem.")
+        addLog(logs, "WARN: Таймаут ожидания для '" .. (lastRequestedItem.id or "<??>") .. "'. Сброс lastRequestedItem.", "WARN")
         lastRequestedItem = nil
         lastRequestTime = 0
     end
 end
 
 local function save()
-    io.stdout:write("DEBUG: Сохранение данных в BD.txt\n")
     local ok, err = pcall(uoc.savef, DATA_FILE, {items = dataItems, settings = settings})
     if not ok then
-        addLog(logs, "ERROR: Ошибка сохранения: " .. tostring(err))
-    else
-        io.stdout:write("DEBUG: Данные успешно сохранены\n")
+        addLog(logs, "ERROR: Ошибка сохранения: " .. tostring(err), "ERROR")
     end
 end
 
@@ -486,76 +530,87 @@ end
 
 local function addItem()
     changeitem = true
-    clear()
-    uoc.drawText(2, HEIGHT - 8, "Вставьте предмет в 1-й слот ME интерфейса и введите параметры.", COLORS.ok)
-    uoc.drawText(2, HEIGHT - 7, "Название: ", COLORS.text)
-    term.setCursor(12, HEIGHT - 7)
-    local name = tostring(term.read()):gsub("\n", "")
-    uoc.drawText(2, HEIGHT - 6, "Категория: ", COLORS.text)
-    term.setCursor(12, HEIGHT - 6)
-    local category = tostring(term.read()):gsub("\n", "")
-    uoc.drawText(2, HEIGHT - 5, "Держать (число): ", COLORS.text)
-    term.setCursor(15, HEIGHT - 5)
-    local count = tonumber(term.read()) or 0
-    uoc.drawText(2, HEIGHT - 4, "Крафт за раз (число): ", COLORS.text)
-    term.setCursor(18, HEIGHT - 4)
-    local craftSize = tonumber(term.read()) or 1
-    local stack = nil
-    local ok, res = pcall(me.getStackInSlot, 1)
-    if ok then stack = res end
-    if stack then
-        table.insert(dataItems, {
-            name = name ~= "" and name or stack.label or stack.id,
-            category = category ~= "" and category or "Без категории",
-            id = stack.id,
-            dmg = stack.dmg,
-            count = count,
-            craftSize = craftSize
-        })
-        save()
-        addLog(logs, "INFO: Добавлен предмет: " .. (name ~= "" and name or stack.label or stack.id) .. " (Категория: " .. (category ~= "" and category or "Без категории") .. ")")
-        currentPage = getMaxPages()
-        selectedItem = nil
-    else
-        addLog(logs, "ERROR: Нет предмета в слоте 1!")
-    end
-    changeitem = false
+    inputMode = "add"
+    inputFields = {name = "", category = "", count = "", craftSize = ""}
+    currentField = 1
+    inputActive = true
     draw()
 end
 
 local function editItem()
-    if not selectedItem then return addLog(logs, "ERROR: Не выбран предмет!") end
+    if not selectedItem then 
+        addLog(logs, "ERROR: Не выбран предмет!", "ERROR")
+        return
+    end
     local item = dataItems[selectedItem]
     changeitem = true
-    clear()
-    uoc.drawText(2, HEIGHT - 8, "Изменение: " .. (item.name or "<??>"), COLORS.ok)
-    uoc.drawText(2, HEIGHT - 7, "Новое имя (Enter пропустить): ", COLORS.text)
-    term.setCursor(28, HEIGHT - 7)
-    local name = tostring(term.read()):gsub("\n", "")
-    uoc.drawText(2, HEIGHT - 6, "Новая категория (Enter пропустить): ", COLORS.text)
-    term.setCursor(28, HEIGHT - 6)
-    local category = tostring(term.read()):gsub("\n", "")
-    uoc.drawText(2, HEIGHT - 5, "Новое держать (число, Enter пропустить): ", COLORS.text)
-    term.setCursor(36, HEIGHT - 5)
-    local countstr = tostring(term.read()):gsub("\n", "")
-    local count = tonumber(countstr)
-    uoc.drawText(2, HEIGHT - 4, "Новый крафт за раз (число, Enter пропустить): ", COLORS.text)
-    term.setCursor(37, HEIGHT - 4)
-    local csstr = tostring(term.read()):gsub("\n", "")
-    local cs = tonumber(csstr)
-    if name and name ~= "" then item.name = name end
-    if category and category ~= "" then item.category = category end
-    if countstr ~= "" and count then item.count = count end
-    if csstr ~= "" and cs then item.craftSize = cs end
-    save()
-    addLog(logs, "INFO: Изменено: " .. item.name .. " (Категория: " .. (item.category or "Без категории") .. ")")
+    inputMode = "edit"
+    inputFields = {
+        name = item.name or "",
+        category = item.category or "",
+        count = tostring(item.count or 0),
+        craftSize = tostring(item.craftSize or 1)
+    }
+    currentField = 1
+    inputActive = true
+    draw()
+end
+
+local function saveItem()
+    if inputMode == "add" then
+        local stack = nil
+        local ok, res = pcall(me.getStackInSlot, 1)
+        if ok then stack = res end
+        if stack then
+            local name = inputFields.name
+            local category = inputFields.category
+            table.insert(dataItems, {
+                name = name ~= "" and name or stack.label or stack.id,
+                category = category ~= "" and category or "Без категории",
+                id = stack.id,
+                dmg = stack.dmg,
+                count = tonumber(inputFields.count) or 0,
+                craftSize = tonumber(inputFields.craftSize) or 1
+            })
+            save()
+            addLog(logs, "INFO: Добавлен предмет: " .. (name ~= "" and name or stack.label or stack.id) .. " (Категория: " .. (category ~= "" and category or "Без категории") .. ")", "INFO")
+            currentPage = getMaxPages()
+            selectedItem = nil
+        else
+            addLog(logs, "ERROR: Нет предмета в слоте 1!", "ERROR")
+        end
+    elseif inputMode == "edit" then
+        local item = dataItems[selectedItem]
+        if inputFields.name and inputFields.name ~= "" then item.name = inputFields.name end
+        if inputFields.category and inputFields.category ~= "" then item.category = inputFields.category end
+        if inputFields.count and inputFields.count ~= "" then item.count = tonumber(inputFields.count) or item.count end
+        if inputFields.craftSize and inputFields.craftSize ~= "" then item.craftSize = tonumber(inputFields.craftSize) or item.craftSize end
+        save()
+        addLog(logs, "INFO: Изменено: " .. item.name .. " (Категория: " .. (item.category or "Без категории") .. ")", "INFO")
+    end
     changeitem = false
+    inputMode = nil
+    inputFields = {}
+    currentField = 1
+    inputActive = false
+    draw()
+end
+
+local function cancelInput()
+    changeitem = false
+    inputMode = nil
+    inputFields = {}
+    currentField = 1
+    inputActive = false
     draw()
 end
 
 local function removeItem()
-    if not selectedItem then return addLog(logs, "ERROR: Не выбран предмет!") end
-    addLog(logs, "WARN: Удалён: " .. (dataItems[selectedItem].name or "<??>"))
+    if not selectedItem then 
+        addLog(logs, "ERROR: Не выбран предмет!", "ERROR")
+        return
+    end
+    addLog(logs, "WARN: Удалён: " .. (dataItems[selectedItem].name or "<??>"), "WARN")
     table.remove(dataItems, selectedItem)
     selectedItem = nil
     clampPage()
@@ -567,21 +622,21 @@ local function doCraft()
     isCrafting = true
     craftStatus = "Автокрафт..."
     save()
-    addLog(logs, "INFO: Запущен автокрафт")
+    addLog(logs, "INFO: Запущен автокрафт", "INFO")
     draw()
 end
 
 local function stopCraft()
     isCrafting = false
     craftStatus = "Остановлено"
-    addLog(logs, "WARN: Остановлен автокрафт")
+    addLog(logs, "WARN: Остановлен автокрафт", "WARN")
     draw()
 end
 
 local function craftAll()
     isCrafting = true
     craftStatus = "Крафт всех..."
-    addLog(logs, "INFO: Запущен крафт всех предметов")
+    addLog(logs, "INFO: Запущен крафт всех предметов", "INFO")
     local craftMade = false
     for i, item in ipairs(dataItems) do
         if tryCraftItem(item) then
@@ -590,7 +645,7 @@ local function craftAll()
     end
     if not craftMade then
         craftStatus = "Все предметы в норме"
-        addLog(logs, "INFO: Нет предметов для крафта")
+        addLog(logs, "INFO: Нет предметов для крафта", "INFO")
     end
     draw()
 end
@@ -599,19 +654,17 @@ local function tryCraftItem(itemToCraft)
     local count = tonumber(itemToCraft.count) or 0
     local current = tonumber(itemToCraft.current) or 0
     if current >= count then
-        addLog(logs, "DEBUG: Предмет '" .. (itemToCraft.name or "<??>") .. "' уже в достаточном количестве (" .. current .. " >= " .. count .. ").")
         return false
     end
-    addLog(logs, "DEBUG: Попытка крафта: " .. (itemToCraft.name or "<??>") .. " (Текущее: " .. current .. ", Нужно: " .. count .. ")")
     if lastRequestedItem and lastRequestedItem.id == itemToCraft.id and
        (itemToCraft.dmg == nil or lastRequestedItem.dmg == itemToCraft.dmg) then
-        addLog(logs, "INFO: Предмет '" .. (itemToCraft.name or "<??>") .. "' недавно запрошен. Ожидание.")
+        addLog(logs, "INFO: Предмет '" .. (itemToCraft.name or "<??>") .. "' недавно запрошен. Ожидание.", "INFO")
         craftStatus = "Ожидание: " .. (itemToCraft.name or "<??>")
         return false
     end
     local cpus_ok, cpus = pcall(me.getCpus)
     if not cpus_ok then
-        addLog(logs, "ERROR: Ошибка получения CPU: " .. tostring(cpus))
+        addLog(logs, "ERROR: Ошибка получения CPU: " .. tostring(cpus), "ERROR")
         craftStatus = "Ошибка: ME CPU"
         return false
     end
@@ -621,23 +674,21 @@ local function tryCraftItem(itemToCraft)
         if not cpu.busy then freeCpu = cpu.name break end
     end
     if freeCpu then
-        addLog(logs, "DEBUG: Найден свободный CPU: " .. tostring(freeCpu))
         local craftables_ok, craftables = pcall(me.getCraftables, {name = itemToCraft.id, damage = itemToCraft.dmg})
         if not craftables_ok then
-            addLog(logs, "ERROR: Ошибка получения рецептов: " .. tostring(craftables))
+            addLog(logs, "ERROR: Ошибка получения рецептов: " .. tostring(craftables), "ERROR")
             craftStatus = "Ошибка: ME Рецепты"
             return false
         end
         craftables = craftables or {n = 0}
         if craftables.n and craftables.n >= 1 then
-            addLog(logs, "DEBUG: Найден рецепт для: " .. (itemToCraft.name or "<??>"))
             local actualAE2RecipeOutput = (craftables[1].output and craftables[1].output.size) or 1
             if actualAE2RecipeOutput == 0 then actualAE2RecipeOutput = 1 end
             local quantityToRequest = tonumber(itemToCraft.craftSize) or 1
             if quantityToRequest == 0 then quantityToRequest = 1 end
             local estimatedActualOutputFromAE2 = math.ceil(quantityToRequest / actualAE2RecipeOutput) * actualAE2RecipeOutput
             if current + estimatedActualOutputFromAE2 >= count then
-                addLog(logs, "INFO: Предмет '" .. (itemToCraft.name or "<??>") .. "' достигнет цели (" .. estimatedActualOutputFromAE2 .. "x).")
+                addLog(logs, "INFO: Предмет '" .. (itemToCraft.name or "<??>") .. "' достигнет цели (" .. estimatedActualOutputFromAE2 .. "x).", "INFO")
                 craftStatus = "Достаточно: " .. (itemToCraft.name or "<??>")
                 return false
             end
@@ -646,41 +697,38 @@ local function tryCraftItem(itemToCraft)
                 if succ and req then
                     local actualCommittedAmount = req.size or req.qty or quantityToRequest
                     craftStatus = "Крафт: " .. (itemToCraft.name or "<??>")
-                    addLog(logs, "INFO: Запрос крафта " .. quantityToRequest .. "x " .. (itemToCraft.name or "<??>") .. " на CPU " .. tostring(freeCpu))
+                    addLog(logs, "INFO: Запрос крафта " .. quantityToRequest .. "x " .. (itemToCraft.name or "<??>") .. " на CPU " .. tostring(freeCpu), "INFO")
                     lastRequestedItem = {id = itemToCraft.id, dmg = itemToCraft.dmg, expectedOutput = actualCommittedAmount}
                     lastRequestTime = computer.uptime()
                     return true
                 else
                     craftStatus = "Ошибка: крафт отклонен"
-                    addLog(logs, "ERROR: Не удалось крафтить " .. (itemToCraft.name or "<??>") .. ": " .. tostring(req))
+                    addLog(logs, "ERROR: Не удалось крафтить " .. (itemToCraft.name or "<??>") .. ": " .. tostring(req), "ERROR")
                     return false
                 end
             else
-                addLog(logs, "DEBUG: Количество для крафта <= 0 для: " .. (itemToCraft.name or "<??>"))
                 return false
             end
         else
             craftStatus = "Ошибка: нет рецепта " .. (itemToCraft.name or "<??>")
-            addLog(logs, "ERROR: Нет рецепта для " .. (itemToCraft.name or "<??>"))
+            addLog(logs, "ERROR: Нет рецепта для " .. (itemToCraft.name or "<??>"), "ERROR")
             return false
         end
     else
         craftStatus = "Ошибка: нет свободных CPU"
-        addLog(logs, "ERROR: Нет свободных CPU")
+        addLog(logs, "ERROR: Нет свободных CPU", "ERROR")
         return false
     end
 end
 
 local function autoCraftLoop()
-    addLog(logs, "DEBUG: Запуск autoCraftLoop")
     while true do
         if isCrafting then
             local now = computer.uptime()
             if now >= nextCraftUpdate then
-                addLog(logs, "DEBUG: Цикл автокрафта")
                 local ok, err = pcall(reload)
                 if not ok then
-                    addLog(logs, "ERROR: Ошибка в reload: " .. tostring(err))
+                    addLog(logs, "ERROR: Ошибка в reload: " .. tostring(err), "ERROR")
                     craftStatus = "Ошибка: обновление данных"
                 else
                     local craftMadeThisCycle = false
@@ -694,7 +742,6 @@ local function autoCraftLoop()
                     end
                     save()
                     nextCraftUpdate = now + 30
-                    addLog(logs, "DEBUG: Конец цикла автокрафта. Крафт: " .. tostring(craftMadeThisCycle))
                 end
             end
         end
@@ -707,8 +754,8 @@ end
 local function updateButtonHover(x, y)
     local btnWidth = 12
     local btnHeight = 3
-    local btnX = WIDTH - btnWidth - 2
-    local btnPadding = 1
+    local btnX = WIDTH - btnWidth - 5
+    local btnPadding = 2
     local btns = {
         {name = "Крафт всех", action = "craftAll"},
         {name = "Удалить", action = "delete"},
@@ -717,14 +764,14 @@ local function updateButtonHover(x, y)
         {name = "Добавить", action = "add"},
     }
     for i, btn in ipairs(btns) do
-        local btnY = 8 + (i - 1) * (btnHeight + btnPadding)
+        local btnY = 10 + (i - 1) * (btnHeight + btnPadding)
         if x >= btnX and x <= btnX + btnWidth - 1 and y >= btnY and y <= btnY + btnHeight - 1 then
             return btn.action
         end
     end
     local arrowBtnW = 4
     local arrowBtnH = 3
-    local arrowBtnY = 8 + (#btns * (btnHeight + btnPadding))
+    local arrowBtnY = 10 + (#btns * (btnHeight + btnPadding))
     local prevArrowBtnX = btnX
     local nextArrowBtnX = btnX + arrowBtnW + 1
     local sortBtnY = arrowBtnY + arrowBtnH + 2
@@ -743,8 +790,8 @@ event.listen("touch", function(_, _, x, y, _, _)
     if changeitem then return end
     local btnWidth = 12
     local btnHeight = 3
-    local btnX = WIDTH - btnWidth - 2
-    local btnPadding = 1
+    local btnX = WIDTH - btnWidth - 5
+    local btnPadding = 2
     local btns = {
         {name = "Крафт всех", action = "craftAll"},
         {name = "Удалить", action = "delete"},
@@ -753,9 +800,8 @@ event.listen("touch", function(_, _, x, y, _, _)
         {name = "Добавить", action = "add"},
     }
     for i, btn in ipairs(btns) do
-        local btnY = 8 + (i - 1) * (btnHeight + btnPadding)
+        local btnY = 10 + (i - 1) * (btnHeight + btnPadding)
         if x >= btnX and x <= btnX + btnWidth - 1 and y >= btnY and y <= btnY + btnHeight - 1 then
-            addLog(logs, "DEBUG: Кнопка '" .. btn.name .. "' нажата")
             if btn.action == "delete" then removeItem()
             elseif btn.action == "edit" then editItem()
             elseif btn.action == "toggleCraft" then if isCrafting then stopCraft() else doCraft() end
@@ -769,13 +815,12 @@ event.listen("touch", function(_, _, x, y, _, _)
     end
     local arrowBtnW = 4
     local arrowBtnH = 3
-    local arrowBtnY = 8 + (#btns * (btnHeight + btnPadding))
+    local arrowBtnY = 10 + (#btns * (btnHeight + btnPadding))
     local prevArrowBtnX = btnX
     local nextArrowBtnX = btnX + arrowBtnW + 1
     local sortBtnY = arrowBtnY + arrowBtnH + 2
     local sortBtnW = 12
     if x >= prevArrowBtnX and x <= prevArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
-        addLog(logs, "DEBUG: Кнопка '<-' нажата")
         if currentPage > 1 then
             currentPage = currentPage - 1
             selectedItem = nil
@@ -784,7 +829,6 @@ event.listen("touch", function(_, _, x, y, _, _)
         end
         return
     elseif x >= nextArrowBtnX and x <= nextArrowBtnX + arrowBtnW - 1 and y >= arrowBtnY and y <= arrowBtnY + arrowBtnH - 1 then
-        addLog(logs, "DEBUG: Кнопка '->' нажата")
         local maxPages = getMaxPages()
         if currentPage < maxPages then
             currentPage = currentPage + 1
@@ -794,7 +838,6 @@ event.listen("touch", function(_, _, x, y, _, _)
         end
         return
     elseif x >= btnX and x <= btnX + sortBtnW - 1 and y >= sortBtnY and y <= sortBtnY + arrowBtnH - 1 then
-        addLog(logs, "DEBUG: Кнопка 'Сортировать' нажата")
         local criteriaList = {"name", "category", "current", "count", "craftSize"}
         local currentCriteriaIndex = 1
         for i, v in ipairs(criteriaList) do
@@ -864,7 +907,6 @@ event.listen("touch", function(_, _, x, y, _, _)
     draw()
 end)
 
--- Добавим обработчик движения мыши для эффекта наведения
 event.listen("mouse_move", function(_, _, x, y)
     if changeitem then return end
     buttonHover = updateButtonHover(x, y)
@@ -872,12 +914,39 @@ event.listen("mouse_move", function(_, _, x, y)
 end)
 
 event.listen("key_down", function(_, _, key, _, _)
-    if changeitem then return end
+    if changeitem then
+        if key == 15 then -- Tab
+            currentField = currentField + 1
+            if currentField > 4 then currentField = 1 end
+            draw()
+        elseif key == 28 then -- Enter
+            saveItem()
+        elseif key == 1 then -- Esc
+            cancelInput()
+        elseif inputActive then
+            local fieldNames = {"name", "category", "count", "craftSize"}
+            local currentFieldName = fieldNames[currentField]
+            local currentValue = inputFields[currentFieldName] or ""
+            if key == 14 then -- Backspace
+                inputFields[currentFieldName] = unicode.sub(currentValue, 1, -2)
+            elseif key == 211 then -- Delete
+                inputFields[currentFieldName] = ""
+            elseif key >= 32 and key < 128 then
+                if (currentFieldName == "count" or currentFieldName == "craftSize") and not (key >= 48 and key <= 57) then
+                    return -- Только цифры для count и craftSize
+                end
+                if unicode.len(currentValue) < 30 then
+                    inputFields[currentFieldName] = currentValue .. unicode.char(key)
+                end
+            end
+            draw()
+        end
+        return
+    end
     local filteredAndSortedItems = getFilteredAndSortedItems()
     local perPage = getItemsPerPage()
     local maxPages = getMaxPages()
     if searchActive then
-        addLog(logs, "DEBUG: Ввод в поиске, клавиша: " .. key)
         if key == 14 then
             search = unicode.sub(search, 1, -2)
         elseif key == 211 then
@@ -893,7 +962,6 @@ event.listen("key_down", function(_, _, key, _, _)
         selectedItem = nil
         buttonHover = nil
     else
-        addLog(logs, "DEBUG: Нажата клавиша: " .. key)
         if key == 200 then -- Up arrow
             local currentSelectedItemInFiltered = nil
             local startIndex = (currentPage - 1) * perPage + 1
@@ -987,17 +1055,17 @@ checkComponents()
 bindGpu()
 WIDTH, HEIGHT = g.maxResolution()
 g.setResolution(WIDTH, HEIGHT)
-addLog(logs, "DEBUG: Программа запущена")
+addLog(logs, "INFO: Программа запущена", "INFO")
 local ok, err = pcall(reload)
 if not ok then
-    addLog(logs, "ERROR: Ошибка при начальной загрузке: " .. tostring(err))
+    addLog(logs, "ERROR: Ошибка при начальной загрузке: " .. tostring(err), "ERROR")
     draw()
     while true do os.sleep(1) end
 end
 draw()
 local ok, err = pcall(autoCraftLoop)
 if not ok then
-    addLog(logs, "ERROR: Фатальная ошибка в autoCraftLoop: " .. tostring(err))
+    addLog(logs, "ERROR: Фатальная ошибка в autoCraftLoop: " .. tostring(err), "ERROR")
     draw()
     while true do os.sleep(1) end
 end
