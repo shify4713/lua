@@ -11,7 +11,7 @@ local me = component.me_interface
 -- Пути и библиотека
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Проверка доступности компонентов
 local function checkComponents()
@@ -295,7 +295,9 @@ local function drawSearchBar()
 end
 
 local function drawButtons()
+    -- FIX START: Ensure all parts of btnState are strings
     local btnState = table.concat({tostring(isCrafting), settings.sortCriteria, tostring(settings.sortAscending)}, "|")
+    -- FIX END
     if lastDrawnState.buttons == btnState then return end
     local btns = {
         {name = "Удалить", x = WIDTH - 60, action = "delete", hover = false},
