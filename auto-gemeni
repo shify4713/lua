@@ -1,14 +1,12 @@
---wget -f https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/autoCraftUltimate.lua /home/autoCraftUltimate.lua
--- ultimateOC.lua - Улучшенная библиотека для визуала OpenComputers
-local fs = require("filesystem")
-local unicode = require("unicode")
 local component = require("component")
+local fs = require("filesystem")
 local shell = require("shell")
 local event = require("event")
+local unicode = require("unicode")
 local term = require("term")
 local computer = require("computer")
 
-local gpu = component.gpu
+local g = component.gpu
 local me = component.me_interface
 
 -- Пути и библиотека
@@ -16,7 +14,8 @@ local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
 local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/ultimateOC.lua"
 
-local M = {} -- Теперь M будет содержать функции из ultimateOC.lua
+-- Загружаем библиотеку
+local M = require(LIB_PATH) -- Теперь M содержит все функции из ultimateOC.lua, включая M.drawText
 
 -- Проверка доступности компонентов
 local function checkComponents()
@@ -41,91 +40,12 @@ local function bindGpu()
         io.stderr:write("Ошибка: Не найден экран для привязки GPU\n")
         os.exit(1)
     end
-    local success, err = pcall(gpu.bind, screen)
+    local success, err = pcall(g.bind, screen)
     if not success then
         io.stderr:write("Ошибка: Не удалось привязать GPU к экрану: "..tostring(err).."\n")
+        os.stderr:write("Попробуйте использовать 'gpu.bind <адрес экрана>'\n")
         os.exit(1)
     end
-end
-
--- Безопасное сохранение таблицы (быстрее и надёжнее)
-function M.savef(path, tbl)
-    local ok, ser = pcall(require("serialization").serialize, tbl)
-    if not ok then error("Ошибка сериализации: "..tostring(ser)) end
-    local f, err = io.open(path, "w")
-    if not f then error("Не могу открыть файл для записи: "..err) end
-    f:write(ser)
-    f:close()
-end
-
-function M.loadf(path)
-    if not fs.exists(path) then return {} end
-    local f, err = io.open(path, "r")
-    if not f then error("Не могу открыть файл: "..err) end
-    local data = f:read("*a")
-    f:close()
-    local ok, tbl = pcall(require("serialization").unserialize, data)
-    if not ok then error("Ошибка десериализации: "..tostring(tbl)) end
-    return tbl or {}
-end
-
--- Гибкий фильтр предметов по подстроке (поиск не зависит от регистра и ищет в любом месте)
-function M.filterItems(items, searchTerm)
-    local filtered = {}
-    if not searchTerm or searchTerm == "" then return items end
-    local lowerSearchTerm = unicode.lower(searchTerm)
-    for _, item in ipairs(items) do
-        if item.label and unicode.lower(item.label):find(lowerSearchTerm, 1, true) then
-            table.insert(filtered, item)
-        end
-    end
-    return filtered
-end
-
--- Рисует текст с обводкой (для читабельности)
-function M.drawText(x, y, text, color)
-    local bgColor = gpu.getBackground()
-    if M.buttonHover == x and M.buttonHoverY == y then -- Проверяем, наведен ли курсор на кнопку
-        gpu.setBackground(0x6272A4) -- Цвет при наведении
-    else
-        gpu.setBackground(0x282A36) -- Фоновый цвет
-    end
-    gpu.setForeground(0x282A36)
-    gpu.set(x+1, y+1, text)
-    gpu.setForeground(color)
-    gpu.set(x, y, text)
-    gpu.setBackground(bgColor) -- Возвращаем исходный фон
-end
-
--- Быстрый логгер: добавляет строку в массив (до 50 записей)
-function M.addLog(logs, text, lvl)
-    lvl = lvl or "INFO"
-    local now = os.date("!*t", os.time()+3*3600) -- МСК
-    local t = string.format("[%02d:%02d:%02d][%s] %s", now.hour, now.min, now.sec, lvl, text)
-    table.insert(logs, t)
-    while #logs > 50 do table.remove(logs, 1) end
-end
-
--- Рисует список логов (на экране)
-function M.drawLogs(x, y, logs, count, color)
-    count = count or 10
-    color = color or 0x8BE9FD
-    local logY = y
-    for i = math.max(1,#logs-count+1), #logs do
-        M.drawText(x, logY, logs[i], color)
-        logY = logY + 1
-    end
-end
-
--- Быстрый автоматический скролл по массиву
-function M.scrollArray(tbl, scroll, perPage)
-    local res = {}
-    perPage = perPage or 20
-    scroll = math.max(1, math.min(scroll, math.max(1, #tbl - perPage + 1)))
-    for i = scroll, math.min(scroll + perPage - 1, #tbl) do
-        table.insert(res, tbl[i])
-    end
-    return res
 end
 
 -- Получить все предметы из ME-интерфейса
@@ -175,14 +95,13 @@ local dataItems = {}
 local filteredItems = {}
 local currentPage = 1
 local itemsPerPage = 15
-local selectedItem = nil
+local selectedItem = nil -- Теперь хранит индекс в filteredItems или nil
 local currentScreen = "main"
 local searchActive = false
 local searchTerm = ""
 local inputBuffer = ""
 local logOffset = 0 -- Для скролла логов
-local buttonHover = nil -- Координаты кнопки, на которую наведен курсор
-local buttonHoverY = nil
+
 
 -- Загрузка/Сохранение данных
 local function loadData()
@@ -206,9 +125,9 @@ end
 
 -- Функции отрисовки
 local function clearScreen()
-    gpu.setBackground(0x282A36)
-    gpu.setForeground(0xF8F8F2)
-    gpu.fill(1, 1, WIDTH, HEIGHT, " ")
+    g.setBackground(0x282A36)
+    g.setForeground(0xF8F8F2)
+    g.fill(1, 1, WIDTH, HEIGHT, " ")
 end
 
 local function drawMainMenu()
@@ -216,6 +135,7 @@ local function drawMainMenu()
     M.drawText(math.floor((WIDTH - unicode.len("Главное меню")) / 2), 1, "Главное меню", 0x50FA7B)
 
     local buttonY = 3
+    -- Передаем координаты кнопок в M.drawText для обработки мерцания
     M.drawText(math.floor((WIDTH - unicode.len("1. Добавить/Изменить предмет")) / 2), buttonY, "1. Добавить/Изменить предмет", 0xFF79C6)
     M.drawText(math.floor((WIDTH - unicode.len("2. Запустить автокрафт")) / 2), buttonY + 2, "2. Запустить автокрафт", 0x8BE9FD)
     M.drawText(math.floor((WIDTH - unicode.len("3. Настройки")) / 2), buttonY + 4, "3. Настройки", 0xF1FA8C)
@@ -229,7 +149,6 @@ local function drawAddEditScreen()
     M.drawText(math.floor((WIDTH - unicode.len("Добавить/Изменить предмет")) / 2), 1, "Добавить/Изменить предмет", 0xFF79C6)
 
     local startY = 3
-    local itemIndex = 0
     local visibleItems = M.scrollArray(filteredItems, currentPage * itemsPerPage - itemsPerPage + 1, itemsPerPage)
     local maxPages = math.max(1, math.ceil(#filteredItems / itemsPerPage))
 
@@ -237,7 +156,8 @@ local function drawAddEditScreen()
     startY = startY + 2
 
     for i, item in ipairs(visibleItems) do
-        local isSelected = (selectedItem and item == filteredItems[selectedItem])
+        local globalIndex = (currentPage - 1) * itemsPerPage + i
+        local isSelected = (selectedItem == globalIndex)
         local prefix = isSelected and "> " or "  "
         local color = isSelected and 0xFFB86C or 0xF8F8F2
         M.drawText(2, startY + i - 1, prefix .. item.label .. " (" .. item.count .. ")", color)
@@ -267,15 +187,20 @@ local function drawAutoCraftScreen()
     M.drawText(math.floor((WIDTH - unicode.len("Автокрафт")) / 2), 1, "Автокрафт", 0x8BE9FD)
 
     local startY = 3
-    for i, item in ipairs(filteredItems) do
+    local visibleItems = M.scrollArray(dataItems, currentPage * itemsPerPage - itemsPerPage + 1, itemsPerPage)
+    local maxPages = math.max(1, math.ceil(#dataItems / itemsPerPage))
+
+    for i, item in ipairs(visibleItems) do
         local craftable = canCraft(item)
         local color = craftable and 0x50FA7B or 0xFF5555
         M.drawText(2, startY + i - 1, item.label .. " (" .. item.count .. ") - " .. (craftable and "Можно" or "Нельзя"), color)
     end
 
+    M.drawText(2, HEIGHT - 7, "Страница: " .. currentPage .. "/" .. maxPages, 0xBD93F9)
     M.drawLogs(1, HEIGHT - 5, M.scrollArray(logs, logOffset, 5), 5)
     M.drawText(2, HEIGHT - 1, "[F1] Назад", 0x50FA7B)
 end
+
 
 local function draw()
     if currentScreen == "main" then
@@ -292,29 +217,36 @@ end
 -- Обработка ввода для добавления/изменения
 local function handleAddEditInput(line)
     if not selectedItem then
-        local found = false
+        -- Поиск существующего элемента
+        local foundIndex = nil
         for i, item in ipairs(dataItems) do
             if unicode.lower(item.label) == unicode.lower(line) then
-                selectedItem = i
-                found = true
-                M.addLog(logs, "INFO: Выбран предмет: "..item.label, "INFO")
+                foundIndex = i
                 break
             end
         end
-        if not found then
+
+        if foundIndex then
+            selectedItem = foundIndex
+            inputBuffer = tostring(dataItems[selectedItem].count) -- Предлагаем текущее количество для редактирования
+            M.addLog(logs, "INFO: Выбран предмет: "..dataItems[selectedItem].label..". Введите новое количество:", "INFO")
+        else
             -- Если не нашли, это новый предмет, спрашиваем количество
-            M.addLog(logs, "INFO: Предмет не найден, введите количество для нового предмета '"..line.."'", "INFO")
+            M.addLog(logs, "INFO: Предмет не найден. Введите количество для нового предмета '"..line.."':", "INFO")
+            -- Временно храним информацию о новом предмете, пока не получим количество
+            selectedItem = {label = line, count = 0, isNew = true}
             inputBuffer = "" -- Очищаем буфер для ввода количества
-            selectedItem = {label = line, count = 0} -- Временно храним новый предмет
         end
     else
         -- Если selectedItem уже есть (либо был выбран, либо это новый, для которого вводим количество)
         local amount = tonumber(line)
         if amount and amount >= 0 then
-            if type(selectedItem) == "table" and selectedItem.label then -- Это новый предмет
+            if selectedItem.isNew then -- Это новый предмет
                 selectedItem.count = amount
-                table.insert(dataItems, selectedItem)
-                M.addLog(logs, "INFO: Добавлен новый предмет: "..selectedItem.label.." ("..selectedItem.count..")", "INFO")
+                -- Нужно найти правильное место для вставки нового предмета в dataItems,
+                -- чтобы сохранить сортировку. Для простоты пока вставляем в конец.
+                table.insert(dataItems, {label = selectedItem.label, count = amount, name = "new_item_" .. math.random(10000)}) -- Добавим временное имя
+                M.addLog(logs, "INFO: Добавлен новый предмет: "..selectedItem.label.." ("..amount..")", "INFO")
             else -- Это существующий предмет, меняем количество
                 dataItems[selectedItem].count = amount
                 M.addLog(logs, "INFO: Изменено количество для "..dataItems[selectedItem].label.." на "..amount, "INFO")
@@ -322,7 +254,7 @@ local function handleAddEditInput(line)
             saveData()
             reload()
             selectedItem = nil -- Сбрасываем выбранный предмет
-            currentScreen = "main" -- Возвращаемся в главное меню после всех операций
+            currentScreen = "main" -- Возвращаемся в главное меню
             M.addLog(logs, "INFO: Возврат в главное меню.", "INFO")
         else
             M.addLog(logs, "ERROR: Неверное количество. Введите число.", "ERROR")
@@ -337,7 +269,29 @@ local function autoCraftLoop()
         local _, _, _, mouseX, mouseY, button = event.pull("touch")
         local name, key, char, code = event.pull("key_down")
 
+        -- Сбрасываем состояние наведения курсора перед каждой отрисовкой
+        M.buttonHover = nil
+        M.buttonHoverY = nil
+
         if currentScreen == "main" then
+            local buttonY = 3
+            local buttons = {
+                {text = "1. Добавить/Изменить предмет", y = buttonY},
+                {text = "2. Запустить автокрафт", y = buttonY + 2},
+                {text = "3. Настройки", y = buttonY + 4},
+                {text = "4. Выход", y = buttonY + 6},
+            }
+            if mouseX and mouseY then
+                for _, btn in ipairs(buttons) do
+                    local btnX = math.floor((WIDTH - unicode.len(btn.text)) / 2)
+                    if mouseX >= btnX and mouseX < btnX + unicode.len(btn.text) and mouseY == btn.y then
+                        M.buttonHover = btnX
+                        M.buttonHoverY = btn.y
+                        break
+                    end
+                end
+            end
+
             if key == 2 or key == 49 then -- 1
                 currentScreen = "addEdit"
                 reload()
@@ -349,8 +303,31 @@ local function autoCraftLoop()
             elseif key == 5 or key == 52 then -- 4
                 M.addLog(logs, "INFO: Выход из программы.", "INFO")
                 break
+            elseif mouseX and mouseY and button == 1 then
+                if M.buttonHover == math.floor((WIDTH - unicode.len(buttons[1].text)) / 2) and M.buttonHoverY == buttons[1].y then
+                    currentScreen = "addEdit"
+                    reload()
+                elseif M.buttonHover == math.floor((WIDTH - unicode.len(buttons[2].text)) / 2) and M.buttonHoverY == buttons[2].y then
+                    currentScreen = "autoCraft"
+                    reload()
+                elseif M.buttonHover == math.floor((WIDTH - unicode.len(buttons[3].text)) / 2) and M.buttonHoverY == buttons[3].y then
+                    currentScreen = "settings"
+                elseif M.buttonHover == math.floor((WIDTH - unicode.len(buttons[4].text)) / 2) and M.buttonHoverY == buttons[4].y then
+                    M.addLog(logs, "INFO: Выход из программы.", "INFO")
+                    break
+                end
             end
         elseif currentScreen == "addEdit" then
+            local btnText = " [F1] Назад  [F2] Обновить  [F3] Поиск  [Enter] Изменить/Добавить  [Del] Удалить"
+            local btnX = 2
+            local btnY = HEIGHT - 1
+            if mouseX and mouseY then
+                if mouseX >= btnX and mouseX < btnX + unicode.len(btnText) and mouseY == btnY then
+                    M.buttonHover = btnX
+                    M.buttonHoverY = btnY
+                end
+            end
+
             if key == 59 then -- F1 (Назад)
                 currentScreen = "main"
                 inputBuffer = ""
@@ -381,13 +358,13 @@ local function autoCraftLoop()
                     handleAddEditInput(inputBuffer)
                     inputBuffer = ""
                     selectedItem = nil -- Сбрасываем выбранный элемент
-                    M.addLog(logs, "INFO: Возврат в главное меню.", "INFO")
+                    -- Возврат на главное меню будет осуществлен внутри handleAddEditInput
                 else
                     -- Если inputBuffer пуст, и это Enter, но не в поиске, то это "пропуск" или начало редактирования.
                     -- Если выбран элемент, то переходим к его редактированию (вывод текущего значения в буфер)
-                    if selectedItem and dataItems[selectedItem] then
-                        inputBuffer = tostring(dataItems[selectedItem].count)
-                        M.addLog(logs, "INFO: Введите новое количество для "..dataItems[selectedItem].label..":", "INFO")
+                    if selectedItem and filteredItems[selectedItem] then
+                        inputBuffer = tostring(filteredItems[selectedItem].count)
+                        M.addLog(logs, "INFO: Введите новое количество для "..filteredItems[selectedItem].label..":", "INFO")
                     else
                         M.addLog(logs, "INFO: Введите название нового предмета или выберите существующий.", "INFO")
                     end
@@ -397,18 +374,32 @@ local function autoCraftLoop()
                     inputBuffer = unicode.sub(inputBuffer, 1, unicode.len(inputBuffer) - 1)
                 end
             elseif key == 211 then -- Delete
-                if selectedItem then
-                    local itemLabel = dataItems[selectedItem].label
-                    table.remove(dataItems, selectedItem)
-                    saveData()
-                    reload()
-                    selectedItem = nil
-                    M.addLog(logs, "INFO: Предмет '"..itemLabel.."' удален.", "INFO")
+                if selectedItem and filteredItems[selectedItem] then
+                    local itemLabel = filteredItems[selectedItem].label
+                    -- Найти реальный индекс в dataItems, чтобы удалить правильно
+                    local realIndex = nil
+                    for i, v in ipairs(dataItems) do
+                        if v.label == itemLabel then
+                            realIndex = i
+                            break
+                        end
+                    end
+                    if realIndex then
+                        table.remove(dataItems, realIndex)
+                        saveData()
+                        reload()
+                        selectedItem = nil
+                        M.addLog(logs, "INFO: Предмет '"..itemLabel.."' удален.", "INFO")
+                        currentScreen = "main" -- Возвращаемся в главное меню
+                        M.addLog(logs, "INFO: Возврат в главное меню.", "INFO")
+                    else
+                        M.addLog(logs, "ERROR: Не удалось найти предмет для удаления.", "ERROR")
+                    end
                 else
                     M.addLog(logs, "WARN: Ничего не выбрано для удаления.", "WARN")
                 end
             elseif char and unicode.len(char) == 1 then
-                if searchActive or inputBuffer ~= "" or (not searchActive and not selectedItem) then -- Разрешаем ввод символов если активен поиск, или если уже что-то введено, или если ничего не выбрано (для нового предмета)
+                if searchActive or (not searchActive and not selectedItem) or (not searchActive and selectedItem and inputBuffer ~= "") then
                     inputBuffer = inputBuffer .. char
                 end
             elseif key == 200 then -- Up arrow
@@ -419,7 +410,7 @@ local function autoCraftLoop()
                     end
                 elseif #filteredItems > 0 then
                     selectedItem = #filteredItems
-                    currentPage = maxPages
+                    currentPage = math.max(1, math.ceil(#filteredItems / itemsPerPage))
                 end
             elseif key == 208 then -- Down arrow
                 if selectedItem then
@@ -442,28 +433,58 @@ local function autoCraftLoop()
                     currentPage = currentPage + 1
                     selectedItem = nil
                 end
+            elseif mouseX and mouseY and button == 1 then -- Обработка клика по элементу списка
+                local startY = 5 -- Начальная Y-координата списка предметов
+                local clickedItemIndex = mouseY - startY + 1
+                if clickedItemIndex >= 1 and clickedItemIndex <= itemsPerPage then
+                    local globalIndex = (currentPage - 1) * itemsPerPage + clickedItemIndex
+                    if globalIndex <= #filteredItems then
+                        selectedItem = globalIndex
+                        inputBuffer = tostring(filteredItems[selectedItem].count)
+                        M.addLog(logs, "INFO: Выбран предмет: "..filteredItems[selectedItem].label, "INFO")
+                    end
+                end
             end
         elseif currentScreen == "settings" then
+            local btnText = "[F1] Назад"
+            local btnX = 2
+            local btnY = HEIGHT - 1
+            if mouseX and mouseY then
+                if mouseX >= btnX and mouseX < btnX + unicode.len(btnText) and mouseY == btnY then
+                    M.buttonHover = btnX
+                    M.buttonHoverY = btnY
+                end
+            end
             if key == 59 then -- F1 (Назад)
                 currentScreen = "main"
                 M.addLog(logs, "INFO: Возврат в главное меню.", "INFO")
             end
         elseif currentScreen == "autoCraft" then
+            local btnText = "[F1] Назад"
+            local btnX = 2
+            local btnY = HEIGHT - 1
+            if mouseX and mouseY then
+                if mouseX >= btnX and mouseX < btnX + unicode.len(btnText) and mouseY == btnY then
+                    M.buttonHover = btnX
+                    M.buttonHoverY = btnY
+                end
+            end
             if key == 59 then -- F1 (Назад)
                 currentScreen = "main"
                 M.addLog(logs, "INFO: Возврат в главное меню.", "INFO")
             elseif mouseX and mouseY and button == 1 then
                 local startY = 3
-                local visibleItems = M.scrollArray(filteredItems, currentPage * itemsPerPage - itemsPerPage + 1, itemsPerPage)
-                for i, item in ipairs(visibleItems) do
-                    if mouseY == startY + i - 1 and mouseX >= 2 and mouseX < 2 + unicode.len(item.label) + 10 then -- Примерная область клика
-                        M.addLog(logs, "INFO: Попытка крафта: "..item.label, "INFO")
-                        if canCraft(item) then
-                            craftItem(item, 1) -- Крафтим по 1 штуке для примера
+                local clickedItemIndex = mouseY - startY + 1
+                local globalIndex = (currentPage - 1) * itemsPerPage + clickedItemIndex
+                if globalIndex >= 1 and globalIndex <= #dataItems then
+                    local itemToCraft = dataItems[globalIndex]
+                    if itemToCraft then
+                        M.addLog(logs, "INFO: Попытка крафта: "..itemToCraft.label, "INFO")
+                        if canCraft(itemToCraft) then
+                            craftItem(itemToCraft, 1) -- Крафтим по 1 штуке для примера
                         else
-                            M.addLog(logs, "WARN: Невозможно крафтить "..item.label, "WARN")
+                            M.addLog(logs, "WARN: Невозможно крафтить "..itemToCraft.label, "WARN")
                         end
-                        break
                     end
                 end
             end
@@ -476,57 +497,6 @@ local function autoCraftLoop()
             logOffset = math.max(logOffset - 1, 0)
         end
 
-        -- Обработка наведения мыши для мерцания кнопки
-        if mouseX and mouseY then
-            local currentButtonHoverX, currentButtonHoverY
-            if currentScreen == "main" then
-                local buttonY = 3
-                local buttons = {
-                    {text = "1. Добавить/Изменить предмет", y = buttonY},
-                    {text = "2. Запустить автокрафт", y = buttonY + 2},
-                    {text = "3. Настройки", y = buttonY + 4},
-                    {text = "4. Выход", y = buttonY + 6},
-                }
-                for _, btn in ipairs(buttons) do
-                    local btnX = math.floor((WIDTH - unicode.len(btn.text)) / 2)
-                    if mouseX >= btnX and mouseX < btnX + unicode.len(btn.text) and mouseY == btn.y then
-                        currentButtonHoverX = btnX
-                        currentButtonHoverY = btn.y
-                        break
-                    end
-                end
-            elseif currentScreen == "addEdit" then
-                local btnText = " [F1] Назад  [F2] Обновить  [F3] Поиск  [Enter] Изменить/Добавить  [Del] Удалить"
-                local btnX = 2
-                local btnY = HEIGHT - 1
-                if mouseX >= btnX and mouseX < btnX + unicode.len(btnText) and mouseY == btnY then
-                    currentButtonHoverX = btnX
-                    currentButtonHoverY = btnY
-                end
-            elseif currentScreen == "settings" then
-                local btnText = "[F1] Назад"
-                local btnX = 2
-                local btnY = HEIGHT - 1
-                if mouseX >= btnX and mouseX < btnX + unicode.len(btnText) and mouseY == btnY then
-                    currentButtonHoverX = btnX
-                    currentButtonHoverY = btnY
-                end
-            elseif currentScreen == "autoCraft" then
-                local btnText = "[F1] Назад"
-                local btnX = 2
-                local btnY = HEIGHT - 1
-                if mouseX >= btnX and mouseX < btnX + unicode.len(btnText) and mouseY == btnY then
-                    currentButtonHoverX = btnX
-                    currentButtonHoverY = btnY
-                end
-            end
-            M.buttonHover = currentButtonHoverX
-            M.buttonHoverY = currentButtonHoverY
-        else
-            M.buttonHover = nil
-            M.buttonHoverY = nil
-        end
-
         draw()
     end
 end
@@ -534,8 +504,8 @@ end
 -------------------- Старт --------------------
 checkComponents()
 bindGpu()
-WIDTH, HEIGHT = gpu.maxResolution()
-gpu.setResolution(WIDTH, HEIGHT)
+WIDTH, HEIGHT = g.maxResolution()
+g.setResolution(WIDTH, HEIGHT)
 M.addLog(logs, "INFO: Программа запущена", "INFO")
 local ok, err = pcall(reload)
 if not ok then
