@@ -307,7 +307,7 @@ local function drawSearchBar()
 end
 
 local function drawButtons()
-    local btnState = isCrafting .. "|" .. settings.sortCriteria .. "|" .. tostring(settings.sortAscending)
+    local btnState = tostring(isCrafting) .. "|" .. settings.sortCriteria .. "|" .. tostring(settings.sortAscending)
     if lastDrawnState.buttons == btnState then return end
     local btns = {
         {name = "Craft All", x = WIDTH - 75, action = "craftAll", hover = false},
