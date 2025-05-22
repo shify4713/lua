@@ -9,20 +9,42 @@ local computer = require("computer")
 -- Paths and library
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/lib-gemeni"
+local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/main/ultimateOC.lua"
 
 -- Check component availability
 local function checkComponents()
     local gpuAvailable = component.isAvailable("gpu")
     local meAvailable = component.isAvailable("me_interface")
+    local screenAvailable = component.isAvailable("screen")
     if not gpuAvailable then
         print("Error: GPU component is unavailable")
+        return false
+    end
+    if not screenAvailable then
+        print("Error: Screen component is unavailable")
         return false
     end
     if not meAvailable then
         print("Error: ME Interface component is unavailable")
         return false
     end
+    return true
+end
+
+-- Bind GPU to screen
+local function bindGpu()
+    local gpu = component.gpu
+    local screen = component.list("screen")()
+    if not screen then
+        print("Error: No screen found to bind GPU")
+        return false
+    end
+    local success, err = pcall(gpu.bind, screen)
+    if not success then
+        print("Error: Failed to bind GPU to screen: " .. tostring(err))
+        return false
+    end
+    print("GPU bound to screen: " .. screen)
     return true
 end
 
@@ -47,7 +69,7 @@ local function loadLibrary()
     return true
 end
 
--- Fallback library functions (excluding animatedButton since it's now fixed in the library)
+-- Fallback library functions
 if not uoc.drawText then
     function uoc.drawText(x, y, text, color, bold)
         local gpu = component.gpu
@@ -140,7 +162,7 @@ local COLORS = {
     bar_shadow = 0x181920,
     warning = 0xFFB86C,
 }
-local WIDTH, HEIGHT = 110, 40
+local WIDTH, HEIGHT = 80, 25 -- Reduced resolution for compatibility
 local craftStatus = "Waiting..."
 local nextCraftUpdate = 0
 local isCrafting = false
@@ -160,6 +182,20 @@ local lastDrawnState = {}
 -- Components
 local gpu = component.gpu
 local me = component.me_interface
+
+-- Set up resolution with fallback
+local function setupResolution()
+    local maxW, maxH = gpu.maxResolution()
+    WIDTH = math.min(WIDTH, maxW)
+    HEIGHT = math.min(HEIGHT, maxH)
+    local success, err = pcall(gpu.setResolution, WIDTH, HEIGHT)
+    if not success then
+        print("Error: Failed to set resolution " .. WIDTH .. "x" .. HEIGHT .. ": " .. tostring(err))
+        WIDTH, HEIGHT = 80, 25 -- Fallback to default
+        gpu.setResolution(WIDTH, HEIGHT)
+    end
+    print("Resolution set to: " .. WIDTH .. "x" .. HEIGHT)
+end
 
 -- Helper Functions
 local function getFilteredAndSortedItems()
@@ -194,7 +230,7 @@ local function getFilteredAndSortedItems()
 end
 
 local function getItemsPerPage()
-    return HEIGHT - 24
+    return HEIGHT - 14 -- Adjusted for smaller resolution
 end
 
 local function getMaxPages()
@@ -209,6 +245,7 @@ end
 
 -- Rendering Functions
 local function clear()
+    print("DEBUG: Clearing screen")
     gpu.setBackground(COLORS.bg)
     gpu.fill(1, 1, WIDTH, HEIGHT, " ")
     gpu.setForeground(COLORS.text)
@@ -223,10 +260,11 @@ end
 
 local function drawHeader()
     if lastDrawnState.header == craftStatus then return end
+    print("DEBUG: Drawing header")
     uoc.drawText(3, 3, "Ultimate AutoCraft", COLORS.ok, true)
     gpu.setBackground(COLORS.progress_fg)
-    gpu.fill(2, 4, WIDTH - 2, 1, " ")
-    shadowRect(2, 4, WIDTH - 2, 1)
+    gpu.fill(2, 4, WIDTH - 4, 1, " ")
+    shadowRect(2, 4, WIDTH - 4, 1)
     gpu.setBackground(COLORS.bg)
     uoc.drawText(WIDTH - 34, 3, "Status: " .. craftStatus,
         craftStatus:find("Error") and COLORS.error or COLORS.ok)
@@ -237,7 +275,8 @@ end
 
 local function drawLogs()
     if lastDrawnState.logs == logOffset then return end
-    uoc.drawLogs(3, HEIGHT - 9, logs, 4, COLORS.log, logOffset)
+    print("DEBUG: Drawing logs")
+    uoc.drawLogs(3, HEIGHT - 5, logs, 4, COLORS.log, logOffset)
     lastDrawnState.logs = logOffset
 end
 
@@ -245,6 +284,7 @@ local function drawItems()
     local filteredItems = getFilteredAndSortedItems()
     local stateKey = currentPage .. "|" .. (selectedItem or 0) .. "|" .. search
     if lastDrawnState.items == stateKey then return end
+    print("DEBUG: Drawing items")
 
     local x, y = 2, 8
     local totalWidth = WIDTH - 4
@@ -364,14 +404,15 @@ end
 local function drawSearchBar()
     local stateKey = search .. tostring(searchActive)
     if lastDrawnState.search == stateKey then return end
-    local x, y, w, h = 3, HEIGHT - 17, WIDTH - 6, 3
+    print("DEBUG: Drawing search bar")
+    local x, y, w, h = 3, HEIGHT - 9, WIDTH - 6, 3
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     gpu.setBackground(COLORS.search_bg)
     gpu.fill(x + 1, y + 1, w - 2, h - 2, " ")
     gpu.setForeground(COLORS.search_cross)
     gpu.set(x + w - 3, y + 1, search ~= "" and "×" or " ")
     gpu.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
-    local display = search == "" and "Search: type part of name..." or search
+    local display = search == "" and "Search: type name..." or search
     if searchActive then display = display .. "_" end
     if unicode.len(display) > w - 7 then
         display = unicode.sub(display, unicode.len(display) - (w - 8), -1)
@@ -385,6 +426,7 @@ end
 local function drawButtons()
     local btnState = tostring(isCrafting) .. "|" .. settings.sortCriteria .. "|" .. tostring(settings.sortAscending)
     if lastDrawnState.buttons == btnState then return end
+    print("DEBUG: Drawing buttons")
     local btns = {
         {name = "Craft All", x = WIDTH - 75, action = "craftAll", hover = false},
         {name = "Delete", x = WIDTH - 60, action = "delete", hover = false},
@@ -393,9 +435,9 @@ local function drawButtons()
         {name = "Add", x = WIDTH - 15, action = "add", hover = false},
     }
     for _, btn in ipairs(btns) do
-        uoc.animatedButton(btn.x, HEIGHT - 4, 12, 3, btn.name, btn.hover, COLORS.button, COLORS.buttonActive, COLORS.text)
+        uoc.animatedButton(btn.x, HEIGHT - 3, 12, 3, btn.name, btn.hover, COLORS.button, COLORS.buttonActive, COLORS.text)
     end
-    local arrowBtnW, arrowBtnH, arrowBtnY = 4, 3, HEIGHT - 4
+    local arrowBtnW, arrowBtnH, arrowBtnY = 4, 3, HEIGHT - 3
     local prevArrowBtnX = 2
     local nextArrowBtnX = prevArrowBtnX + arrowBtnW + 1
     local sortBtnX = nextArrowBtnX + arrowBtnW + 1
@@ -420,17 +462,26 @@ end
 
 local function draw()
     local ok, err = pcall(function()
+        print("DEBUG: Starting draw")
         clear()
+        -- Test render to confirm GPU works
+        gpu.setForeground(0xFFFFFF)
+        gpu.set(1, 1, "Rendering...")
         drawHeader()
         drawItems()
         drawSearchBar()
         drawLogs()
         drawButtons()
+        print("DEBUG: Draw completed")
     end)
     if not ok then
+        print("ERROR: Failed to draw UI: " .. tostring(err))
+        term.clear()
+        term.write("Error rendering UI: " .. tostring(err) .. "\n")
         uoc.addLog(logs, "ERROR: Failed to draw UI: " .. tostring(err))
         clear()
-        uoc.drawText(1, 1, "Error rendering UI: " .. tostring(err), COLORS.error)
+        gpu.setForeground(COLORS.error)
+        gpu.set(1, 1, "Error: " .. tostring(err))
     end
 end
 
@@ -732,7 +783,7 @@ local function updateButtonHover(x, y)
         {name = isCrafting and "Stop" or "AutoCraft", x = WIDTH - 30, action = "toggleCraft", hover = false},
         {name = "Add", x = WIDTH - 15, action = "add", hover = false},
     }
-    local arrowBtnW, arrowBtnH, arrowBtnY = 4, 3, HEIGHT - 4
+    local arrowBtnW, arrowBtnH, arrowBtnY = 4, 3, HEIGHT - 3
     local prevArrowBtnX = 2
     local nextArrowBtnX = prevArrowBtnX + arrowBtnW + 1
     local sortBtnX = nextArrowBtnX + arrowBtnW + 1
@@ -763,7 +814,7 @@ event.listen("touch", function(_, _, x, y)
         {name = "Add", x = WIDTH - 15, action = "add"},
     }
     for _, btn in ipairs(btns) do
-        if x >= btn.x and x <= btn.x + 12 - 1 and y >= HEIGHT - 4 and y <= HEIGHT - 1 then
+        if x >= btn.x and x <= btn.x + 12 - 1 and y >= HEIGHT - 3 and y <= HEIGHT - 1 then
             uoc.addLog(logs, "DEBUG: Button '" .. btn.name .. "' clicked")
             if btn.action == "delete" then removeItem()
             elseif btn.action == "edit" then editItem()
@@ -775,7 +826,7 @@ event.listen("touch", function(_, _, x, y)
             return
         end
     end
-    local arrowBtnW, arrowBtnH, arrowBtnY = 4, 3, HEIGHT - 4
+    local arrowBtnW, arrowBtnH, arrowBtnY = 4, 3, HEIGHT - 3
     local prevArrowBtnX = 2
     local nextArrowBtnX = prevArrowBtnX + arrowBtnW + 1
     local sortBtnX = nextArrowBtnX + arrowBtnW + 1
@@ -819,7 +870,7 @@ event.listen("touch", function(_, _, x, y)
         draw()
         return
     end
-    if y >= HEIGHT - 17 and y <= HEIGHT - 15 then
+    if y >= HEIGHT - 9 and y <= HEIGHT - 7 then
         searchActive = false
         if x >= WIDTH - 9 and x <= WIDTH - 7 and search ~= "" then
             search = ""
@@ -969,9 +1020,16 @@ end)
 
 -- Main
 if not checkComponents() then
+    print("ERROR: Required components missing. Exiting.")
     while true do os.sleep(1) end
 end
-gpu.setResolution(WIDTH, HEIGHT)
+
+if not bindGpu() then
+    print("ERROR: Failed to bind GPU. Exiting.")
+    while true do os.sleep(1) end
+end
+
+setupResolution()
 uoc.addLog(logs, "DEBUG: Program started")
 if not loadLibrary() then
     uoc.addLog(logs, "WARNING: Using fallback library functions")
