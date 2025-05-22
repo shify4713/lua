@@ -1,183 +1,66 @@
-local fs = require("filesystem")
-local unicode = require("unicode")
 local component = require("component")
-local serialization = require("serialization")
+local gpu = component.gpu
 
-local M = {}
+local ultimateOC = {}
 
--- Save a table to a file
-function M.savef(path, tbl)
-    if type(path) ~= "string" then
-        error("Invalid argument: path must be a string", 2)
-    end
-    if type(tbl) ~= "table" then
-        error("Invalid argument: tbl must be a table", 2)
-    end
-
-    local ok, ser = pcall(serialization.serialize, tbl)
-    if not ok then
-        error("Serialization error: " .. tostring(ser), 2)
-    end
-
-    local f, err = io.open(path, "w")
-    if not f then
-        error("Failed to open file for writing: " .. tostring(err), 2)
-    end
-
-    local success, writeErr = pcall(function() f:write(ser) end)
-    f:close()
-    if not success then
-        error("Failed to write to file: " .. tostring(writeErr), 2)
-    end
-end
-
--- Load a table from a file
-function M.loadf(path)
-    if type(path) ~= "string" then
-        error("Invalid argument: path must be a string", 2)
-    end
-
-    if not fs.exists(path) then
-        return {}
-    end
-
-    local f, err = io.open(path, "r")
-    if not f then
-        error("Failed to open file: " .. tostring(err), 2)
-    end
-
-    local data = f:read("*a")
-    f:close()
-
-    local ok, tbl = pcall(serialization.unserialize, data)
-    if not ok then
-        error("Deserialization error: " .. tostring(tbl), 2)
-    end
-
-    return tbl or {}
-end
-
--- Draw text with optional shadow
-function M.drawText(x, y, text, color, shadow)
-    if type(x) ~= "number" or type(y) ~= "number" or type(text) ~= "string" then
-        error("Invalid arguments: x, y must be numbers, text must be a string", 2)
-    end
-
-    local gpu = component.gpu
-    local originalBg = gpu.getBackground()
-    color = color or 0xFFFFFF
-
-    gpu.setForeground(color)
-    if shadow then
-        gpu.setBackground(0x282A36)
-        gpu.set(x + 1, y + 1, text)
-    end
-    gpu.setBackground(originalBg)
+function ultimateOC.drawText(x, y, text, color, bold)
+    gpu.setForeground(color or 0xFFFFFF)
     gpu.set(x, y, text)
 end
 
--- Add a log entry to the logs table
-function M.addLog(logs, text, lvl)
-    if type(logs) ~= "table" or type(text) ~= "string" then
-        error("Invalid arguments: logs must be a table, text must be a string", 2)
-    end
-
-    lvl = lvl or "INFO"
-    local t = string.format("[%s] %s", lvl, text)
-    table.insert(logs, t)
-    while #logs > 50 do
-        table.remove(logs, 1)
-    end
+function ultimateOC.progressBar(x, y, w, p)
+    gpu.fill(x, y, math.floor(w * p), 1, "█")
 end
 
--- Draw logs with optional offset and color
-function M.drawLogs(x, y, logs, count, color, logOffset)
-    if type(logs) ~= "table" then
-        error("Invalid argument: logs must be a table", 2)
-    end
-
-    count = math.max(1, count or 10)
-    color = color or 0x8BE9FD
-    logOffset = math.max(0, logOffset or 0)
-
-    local startIdx = math.max(1, #logs - count + 1 - logOffset)
-    local endIdx = math.min(#logs, startIdx + count - 1)
-    local logY = y
-
-    for i = startIdx, endIdx do
-        M.drawText(x, logY, logs[i], color)
-        logY = logY + 1
-    end
-
-    -- Clear remaining lines
-    for i = logY, y + count - 1 do
-        M.drawText(x, i, string.rep(" ", 100), color)
-    end
-end
-
--- Draw a rounded rectangle
-function M.roundRect(x, y, w, h, borderColor, bgColor)
-    if type(x) ~= "number" or type(y) ~= "number" or type(w) ~= "number" or type(h) ~= "number" then
-        error("Invalid arguments: x, y, w, h must be numbers", 2)
-    end
-
-    local gpu = component.gpu
-    gpu.setBackground(borderColor)
+function ultimateOC.roundRect(x, y, w, h, borderColor, bgColor)
+    gpu.setBackground(bgColor or 0x000000)
     gpu.fill(x, y, w, h, " ")
-    gpu.setBackground(bgColor)
-    gpu.fill(x + 1, y + 1, w - 2, h - 2, " ")
+    gpu.setForeground(borderColor or 0xFFFFFF)
+    gpu.set(x, y, "╔" .. string.rep("═", w-2) .. "╗")
+    gpu.set(x, y+h-1, "╚" .. string.rep("═", w-2) .. "╝")
+    for i = 1, h-2 do
+        gpu.set(x, y+i, "║")
+        gpu.set(x+w-1, y+i, "║")
+    end
 end
 
--- Draw a button with optional subtext
-function M.drawButton(x, y, w, h, text, buttonColor, textColor, subText, subTextColor)
-    if type(x) ~= "number" or type(y) ~= "number" or type(w) ~= "number" or type(h) ~= "number" or type(text) ~= "string" then
-        error("Invalid arguments: x, y, w, h must be numbers, text must be a string", 2)
-    end
-
-    local gpu = component.gpu
-    buttonColor = buttonColor or 0x00BFFF
-    textColor = textColor or 0xFFFFFF
-
-    gpu.setBackground(buttonColor)
+function ultimateOC.animatedButton(x, y, w, h, text, hover, bgColor, activeColor, textColor)
+    gpu.setBackground(hover and activeColor or bgColor)
     gpu.fill(x, y, w, h, " ")
-
     gpu.setForeground(textColor)
-    local textWidth = unicode.len(text)
-    local textX = x + math.floor((w - textWidth) / 2)
-    local textY = y + math.floor((h - (subText and 2 or 1)) / 2)
-    gpu.set(textX, textY, text)
+    local tx = x + math.floor((w - unicode.len(text)) / 2)
+    gpu.set(tx, y + math.floor(h/2), text)
+end
 
-    if subText then
-        subTextColor = subTextColor or textColor
-        gpu.setForeground(subTextColor)
-        local subTextWidth = unicode.len(subText)
-        local subTextX = x + math.floor((w - subTextWidth) / 2)
-        local subTextY = textY + 1
-        gpu.set(subTextX, subTextY, subText)
+function ultimateOC.drawLogs(x, y, logs, lines, color, offset)
+    gpu.setForeground(color or 0xFFFFFF)
+    for i = 1, lines do
+        local idx = #logs - offset - lines + i
+        if idx > 0 and idx <= #logs then
+            gpu.set(x, y + i - 1, logs[idx])
+        end
     end
 end
 
--- Draw an animated button with hover effect
-function M.animatedButton(x, y, w, h, text, hover, buttonColor, buttonActiveColor, textColor, subText, subTextColor)
-    hover = (type(hover) == "boolean") and hover or false
-    local finalButtonColor = hover and buttonActiveColor or buttonColor
-    M.drawButton(x, y, w, h, text, finalButtonColor, textColor, subText, subTextColor)
+function ultimateOC.addLog(logsTable, msg)
+    table.insert(logsTable, msg)
+    if #logsTable > 100 then table.remove(logsTable, 1) end
 end
 
--- Draw a progress bar
-function M.progressBar(x, y, w, progress)
-    if type(x) ~= "number" or type(y) ~= "number" or type(w) ~= "number" or type(progress) ~= "number" then
-        error("Invalid arguments: x, y, w, progress must be numbers", 2)
+function ultimateOC.loadf(path)
+    local file = io.open(path, "r")
+    if not file then return nil end
+    local content = file:read("*a")
+    file:close()
+    return load("return " .. content)()
+end
+
+function ultimateOC.savef(path, data)
+    local file = io.open(path, "w")
+    if file then
+        file:write(textutils.serialize(data))
+        file:close()
     end
-
-    local gpu = component.gpu
-    progress = math.max(0, math.min(1, progress))
-    local filledWidth = math.floor(w * progress)
-
-    gpu.setBackground(0x50FA7B)
-    gpu.fill(x, y, filledWidth, 1, " ")
-    gpu.setBackground(0x44475a)
-    gpu.fill(x + filledWidth, y, w - filledWidth, 1, " ")
 end
 
-return M
+return ultimateOC
