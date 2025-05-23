@@ -371,23 +371,11 @@ local function reload()
     for _, item in ipairs(dataItems) do
         local qty = 0
         local success, stackList = pcall(me.getItemsInNetwork, {name = item.id, damage = item.dmg})
-        if success and stackList and stackList.n and stackList.n > 0 then
-            for _, stack in ipairs(stackList) do
-                if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
+        if success and stackList then
+            for i = 1, stackList.n or 0 do
+                local stack = stackList[i]
+                if stack and stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
                     qty = qty + (stack.size or 0)
-                end
-            end
-        end
-        local success, craftingJobs = pcall(me.getCraftables)
-        if success and craftingJobs and craftingJobs.n then
-            for i = 1, craftingJobs.n do
-                local job = craftingJobs[i]
-                if job and job.isCanceled and job.isDone and job.size and job.label == item.name then
-                    qty = qty + job.size
-                    if lastRequestedItem and lastRequestedItem.name == item.name then
-                        lastRequestedItem = nil
-                        lastRequestTime = 0
-                    end
                 end
             end
         end
@@ -415,10 +403,10 @@ local function addItem()
     changeItem = true
     inputMode = "add"
     inputFields = {name = "", category = "", count = "0", craftSize = "1"}
-    local success, stack = pcall(me.getItemsInNetwork)
+    local success, stackList = pcall(me.getItemsInNetwork)
     local itemInSlot = nil
-    if success and stack and stack.n and stack.n > 0 then
-        itemInSlot = stack[1]
+    if success and stackList and stackList.n and stackList.n > 0 then
+        itemInSlot = stackList[1]
     end
     inputFields.name = promptForInput("Name:", "name", false, itemInSlot and (itemInSlot.label or itemInSlot.name) or "")
     if inputFields.name == nil then changeItem = false inputMode = nil inputFields = {} draw() return end
