@@ -8,7 +8,7 @@ local g = component.gpu
 local me = component.me_interface
 
 if not fs.exists("/lib/oc.lua") then
-    shell.execute("wget https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/g.lib-precraft /lib/oc.lua")
+    shell.execute("wget https://www.dropbox.com/s/cgfytt8g174a6vs/libPrecraft.lua?dl=1 /lib/oc.lua")
 end
 local oc = require("oc")
 
@@ -32,7 +32,15 @@ local STATUS_COLORS = {
 }
 --------------------Settings--------------------
 local inputFind = ""
-local guiPath, debugLog1, debugLog2 = {"main"}, {}, {}
+local guiPath = {"main"}
+local debugLog1 = {}
+local posSelect = nil
+local dataItems = nil
+local dataq = nil
+local etouch, escroll, ekeydown = nil, nil, nil
+local yTouch = nil
+local changeitem = false
+
 if debug then WIDTH, HEIGHT = 160, 50 end
 g.setResolution(WIDTH, HEIGHT)
 g.setForeground(CTEXT)
@@ -46,7 +54,7 @@ local function DrawHeader()
     g.setBackground(0x1E1E1E)
     g.fill(1, 1, WIDTH, 5, " ")
     oc.drawbutton(3, 2, 30, 3, CBUTTON, CDRAW, "PreCraft v2.0")
-    oc.right(WIDTH-2, 3, "Items: "..#dataItems)
+    oc.right(WIDTH-2, 3, "Items: "..(dataItems and #dataItems or 0))
     g.setBackground(0x000000)
 end
 
@@ -88,21 +96,22 @@ end
 local function ScrollContent()
     local cont = {}
     if inputFind ~= "" then
-        for _, data in pairs(dataItems) do
+        for _, data in pairs(dataItems or {}) do
             if unicode.lower(data.name):find(unicode.lower(inputFind)) then
                 table.insert(cont, data)
             end
         end
         return cont
     end
-    return dataItems
+    return dataItems or {}
 end
 
 local function eScroll(_,_,_,_,zs,nick)
     if ADM[nick] then
         for key in pairs(scrolls) do
             if scrolls[key].ScrollIn[guiPath[#guiPath]] then
-                local maxscroll = math.max(1, #ScrollContent() - 15)
+                local content = ScrollContent()
+                local maxscroll = math.max(1, #content - 15)
                 if zs == 1 and scroll > 1 then
                     scroll = scroll - 1
                 elseif zs == -1 and scroll < maxscroll then
@@ -137,14 +146,14 @@ end
 local function DrawItemPage()
     Clear()
     DrawHeader()
-    if posSelect and dataItems[posSelect] then
+    if posSelect and dataItems and dataItems[posSelect] then
         local item = dataItems[posSelect]
-        g.set(5, 8, "Item: "..item.name)
-        g.set(5, 10, "ID: "..tostring(item.id))
-        g.set(5, 12, "Damage: "..tostring(item.dmg))
-        g.set(5, 14, "Maintain: "..tostring(item.count))
-        g.set(5, 16, "Craft Size: "..tostring(item.craftSize))
-        g.set(5, 18, "CPU: "..tostring(item.cpu))
+        g.set(5, 8, "Item: "..(item.name or "Unknown"))
+        g.set(5, 10, "ID: "..tostring(item.id or "N/A"))
+        g.set(5, 12, "Damage: "..tostring(item.dmg or 0))
+        g.set(5, 14, "Maintain: "..tostring(item.count or 0))
+        g.set(5, 16, "Craft Size: "..tostring(item.craftSize or 0))
+        g.set(5, 18, "CPU: "..tostring(item.cpu or "N/A"))
         g.setForeground(item.craft and STATUS_COLORS.crafting or STATUS_COLORS.idle)
         g.set(5, 20, "Status: "..(item.craft and "Crafting" or "Idle"))
         g.setForeground(CTEXT)
@@ -155,7 +164,8 @@ end
 local function DrawScrolls()
     for key, scroll in pairs(scrolls) do
         if scroll.ScrollIn[guiPath[#guiPath]] then
-            oc.drawscroll(scroll.x, scroll.y, scroll.w, scroll.h, scroll, #ScrollContent(), 0x1E1E1E, 0x004575)
+            local content = ScrollContent()
+            oc.drawscroll(scroll.x, scroll.y, scroll.w, scroll.h, scroll, #content, 0x1E1E1E, 0x004575)
         end
     end
 end
@@ -193,6 +203,11 @@ local function AddLog(log)
 end
 
 local function Check()
+    if not dataq or type(dataq) ~= "table" then
+        AddLog("Error: Crafting queue not initialized")
+        return
+    end
+
     for i, item in ipairs(dataq) do
         if not go then break end
         if not item.craft or item.craft.isDone() or item.craft.isCanceled() then
@@ -230,6 +245,7 @@ local function Check()
 end
 
 local function AddItem()
+    changeitem = true
     if me.getStackInSlot(1) then
         g.fill(1, HEIGHT-2, WIDTH, 2, " ")
         g.set(5, HEIGHT-2, "Enter item name: ")
@@ -238,11 +254,11 @@ local function AddItem()
         g.fill(1, HEIGHT-2, WIDTH, 2, " ")
         g.set(5, HEIGHT-2, "Enter maintain count: ")
         term.setCursor(25, HEIGHT-2)
-        local count = tonumber(io.read())
+        local count = tonumber(io.read()) or 0
         g.fill(1, HEIGHT-2, WIDTH, 2, " ")
         g.set(5, HEIGHT-2, "Enter craft size: ")
         term.setCursor(25, HEIGHT-2)
-        local craftSize = tonumber(io.read())
+        local craftSize = tonumber(io.read()) or 0
         table.insert(dataItems, {
             name = name,
             id = me.getStackInSlot(1).id,
@@ -257,11 +273,12 @@ local function AddItem()
         g.set(5, HEIGHT-2, "No item in slot 1")
         os.sleep(2)
     end
+    changeitem = false
     DrawMainPage()
 end
 
 local function RemoveItem()
-    if posSelect and dataItems[posSelect] then
+    if posSelect and dataItems and dataItems[posSelect] then
         AddLog("Removed: "..dataItems[posSelect].name)
         table.remove(dataItems, posSelect)
         oc.savef("BD.txt", dataItems)
@@ -271,13 +288,13 @@ local function RemoveItem()
 end
 
 local function EditItem()
-    if posSelect and dataItems[posSelect] then
+    if posSelect and dataItems and dataItems[posSelect] then
         toGui("item")
     end
 end
 
 local function ChangeItem(action)
-    if posSelect and dataItems[posSelect] then
+    if posSelect and dataItems and dataItems[posSelect] then
         g.fill(1, HEIGHT-2, WIDTH, 2, " ")
         if action == "changeName" then
             g.set(5, HEIGHT-2, "Enter new name: ")
@@ -286,11 +303,11 @@ local function ChangeItem(action)
         elseif action == "changeCount" then
             g.set(5, HEIGHT-2, "Enter new count: ")
             term.setCursor(25, HEIGHT-2)
-            dataItems[posSelect].count = tonumber(io.read())
+            dataItems[posSelect].count = tonumber(io.read()) or 0
         elseif action == "changeCraftSize" then
             g.set(5, HEIGHT-2, "Enter new craft size: ")
             term.setCursor(25, HEIGHT-2)
-            dataItems[posSelect].craftSize = tonumber(io.read())
+            dataItems[posSelect].craftSize = tonumber(io.read()) or 0
         end
         oc.savef("BD.txt", dataItems)
         AddLog("Updated: "..dataItems[posSelect].name)
@@ -313,7 +330,7 @@ local function eButton(_,_,x,y,_,nick)
 end
 
 local function InputWrite(_,_,key1,key2,nick)
-    if ADM[nick] then
+    if ADM[nick] and not changeitem then
         for key in pairs(scrolls) do
             if scrolls[key].ScrollIn[guiPath[#guiPath]] then
                 local y = scrolls[key].iwY
@@ -344,15 +361,15 @@ end
 local buttons = {
     LOGO = {ButtonIn = {"main", "items", "item"}, visible = true, x = 3, y = 2, w = 30, h = 3, cbutton = CDRAW, ctext = CBUTTON, text = "PreCraft v2.0", action = function() end},
     Exit = {ButtonIn = {"main", "items", "item"}, visible = true, x = WIDTH-10, y = HEIGHT-3, w = 8, h = 3, cbutton = 0xFF0000, ctext = 0xFFFFFF, text = "Exit", action = function() 
-        event.cancel(etouch) 
-        event.cancel(escroll) 
-        event.cancel(ekeydown) 
+        if etouch then event.cancel(etouch) end
+        if escroll then event.cancel(escroll) end
+        if ekeydown then event.cancel(ekeydown) end
         precraft = false 
     end},
     Go = {ButtonIn = {"main"}, visible = true, x = 5, y = HEIGHT-5, w = 15, h = 3, cbutton = 0x00FF00, ctext = 0xFFFFFF, text = "Start", action = function() 
         go = true 
         toGui("items") 
-        dataq = dataItems 
+        dataq = dataItems or {}
     end},
     Stop = {ButtonIn = {"items"}, visible = true, x = 5, y = HEIGHT-5, w = 15, h = 3, cbutton = 0xFF0000, ctext = 0xFFFFFF, text = "Stop", action = function() 
         go = false 
@@ -385,17 +402,17 @@ local scrolls = {
 
 local function LoadSystem()
     Clear()
-    dataItems = oc.loadf("BD.txt")
+    dataItems = oc.loadf("BD.txt") or {}
+    dataq = dataItems
     initButtons()
     etouch = event.listen("touch", eButton)
     escroll = event.listen("scroll", eScroll)
     ekeydown = event.listen("key_down", InputWrite)
     toGui("main")
-    dataq = dataItems
     return true
 end
 
-function loop()
+local function loop()
     if LoadSystem() then
         while precraft do
             if go then
@@ -407,11 +424,13 @@ function loop()
     end
 end
 
-ok, err = pcall(loop)
+local ok, err = pcall(loop)
 
 if not ok then
-    event.cancel(etouch)
-    event.cancel(escroll)
-    event.cancel(ekeydown)
+    if etouch then event.cancel(etouch) end
+    if escroll then event.cancel(escroll) end
+    if ekeydown then event.cancel(ekeydown) end
+    g.set(1, 1, "Error: "..tostring(err))
+    os.sleep(5)
     computer.shutdown(true)
 end
