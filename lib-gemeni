@@ -5,10 +5,6 @@ local gpu = require("component").gpu
 
 local M = {}
 
--- Глобальные переменные для отслеживания наведения курсора на кнопку (добавьте их сюда)
-M.buttonHover = nil
-M.buttonHoverY = nil
-
 -- Безопасное сохранение таблицы (быстрее и надёжнее)
 function M.savef(path, tbl)
     local ok, ser = pcall(require("serialization").serialize, tbl)
@@ -30,33 +26,93 @@ function M.loadf(path)
     return tbl or {}
 end
 
--- Гибкий фильтр предметов по подстроке (поиск не зависит от регистра и ищет в любом месте)
+-- Гибкий фильтр предметов по подстроке (поиск не зависит от регистра)
 function M.filterItems(items, searchTerm)
     local filtered = {}
-    if not searchTerm or searchTerm == "" then return items end
     local lowerSearchTerm = unicode.lower(searchTerm)
     for _, item in ipairs(items) do
-        if item.label and unicode.lower(item.label):find(lowerSearchTerm, 1, true) then
+        local lowerName = unicode.lower(item.name)
+        if unicode.find(lowerName, lowerSearchTerm) then
             table.insert(filtered, item)
         end
     end
     return filtered
 end
 
--- Рисует текст с обводкой (для читабельности)
-function M.drawText(x, y, text, color)
-    local bgColor = gpu.getBackground()
-    -- Проверяем, наведен ли курсор на кнопку, используя глобальные M.buttonHover
-    if M.buttonHover == x and M.buttonHoverY == y then
-        gpu.setBackground(0x6272A4) -- Цвет при наведении
-    else
-        gpu.setBackground(0x282A36) -- Фоновый цвет по умолчанию
+-- Кэширование всех предметов из ME-интерфейса
+local allMeItemsCache = {}
+local lastCacheUpdate = 0
+local CACHE_TTL = 30 -- Время жизни кэша в секундах
+
+function M.getAllMeItems(me)
+    local now = computer.uptime()
+    if now - lastCacheUpdate > CACHE_TTL or #allMeItemsCache == 0 then
+        local items = {}
+        local pageSize = 50 -- Запрос по 50 предметов за раз, чтобы избежать слишком больших ответов
+        local page = 1
+        local totalItems = 0
+        repeat
+            local result = {me.getItemsInGrid(page, pageSize)}
+            local count = #result
+            for i = 1, count, 2 do
+                table.insert(items, result[i])
+            end
+            totalItems = totalItems + (count / 2)
+            page = page + 1
+        until count < pageSize * 2 -- Если элементов меньше, чем запросили, значит, это последняя страница
+
+        allMeItemsCache = items
+        lastCacheUpdate = now
     end
+    return allMeItemsCache
+end
+
+-- Рисует кнопку
+function M.drawButton(x, y, w, h, text, bgColor, textColor, isHovered)
+    if isHovered then
+        bgColor = 0x555555 -- Темнее при наведении
+    end
+    gpu.setBackground(bgColor)
+    gpu.fill(x, y, w, h, " ")
+    gpu.setForeground(textColor)
+    local textWidth = unicode.len(text)
+    local textX = x + math.floor((w - textWidth) / 2)
+    local textY = y + math.floor((h - 1) / 2)
+    gpu.set(textX, textY, text)
+end
+
+-- Рисует текстовое поле ввода
+function M.drawInputField(x, y, w, h, text, isActive, bgColor, textColor, cursorX)
+    gpu.setBackground(bgColor)
+    gpu.fill(x, y, w, h, " ")
+    gpu.setForeground(textColor)
+
+    local display_text = text
+    if unicode.len(text) > w then
+        display_text = unicode.sub(text, unicode.len(text) - w + 1, unicode.len(text))
+    end
+    gpu.set(x, y, display_text)
+
+    if isActive then
+        gpu.setBackground(0xFFFFFF) -- Цвет курсора
+        gpu.set(x + cursorX, y, unicode.sub(display_text, cursorX + 1, cursorX + 1) or " ")
+        gpu.setBackground(bgColor) -- Возвращаем цвет фона
+    end
+end
+
+
+-- Рисует текст с тенью (для лучшей читаемости)
+function M.drawText(x, y, text, color)
+    local gpu = require("component").gpu
+    if not gpu then return end
+    gpu.setBackground(0x282A36) -- Цвет фона для тени
+    local shadow_x = x + 1
+    local shadow_y = y + 1
+    local prev_color = gpu.getForeground()
     gpu.setForeground(0x282A36)
-    gpu.set(x+1, y+1, text)
-    gpu.setForeground(color)
+    gpu.set(shadow_x, shadow_y, text)
+    gpu.setForeground(prev_color) -- Восстанавливаем предыдущий цвет
     gpu.set(x, y, text)
-    gpu.setBackground(bgColor) -- Возвращаем исходный фон
 end
 
 -- Быстрый логгер: добавляет строку в массив (до 50 записей)
@@ -87,7 +143,12 @@ function M.scrollArray(tbl, scroll, perPage)
     for i = scroll, math.min(scroll + perPage - 1, #tbl) do
         table.insert(res, tbl[i])
     end
-    return res
+    return res, scroll
+end
+
+-- Проверяет, находится ли курсор над кнопкой
+function M.isMouseOver(mouseX, mouseY, x, y, w, h)
+    return mouseX >= x and mouseX < x + w and mouseY >= y and mouseY < y + h
 end
 
 return M
