@@ -14,29 +14,18 @@ local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
 local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/ultimateOC.lua"
 
--------------------- Логгирование --------------------
-local function addLog(logs, text, lvl)
-    lvl = lvl or "INFO"
-    local t = string.format("%-7s %s", "[" .. lvl .. "]", text)
-    table.insert(logs, t)
-    while #logs > 50 do table.remove(logs, 1) end
-end
-
 -- Проверка доступности компонентов
 local function checkComponents()
     if not component.isAvailable("gpu") then
-        print("Ошибка: GPU недоступен")
-        addLog(logs, "ERROR: GPU недоступен", "ERROR")
+        io.stderr:write("Ошибка: GPU недоступен\n")
         os.exit(1)
     end
     if not component.isAvailable("screen") then
-        print("Ошибка: Экран недоступен")
-        addLog(logs, "ERROR: Экран недоступен", "ERROR")
+        io.stderr:write("Ошибка: Экран недоступен\n")
         os.exit(1)
     end
     if not component.isAvailable("me_interface") then
-        print("Ошибка: ME-интерфейс недоступен")
-        addLog(logs, "ERROR: ME-интерфейс недоступен", "ERROR")
+        io.stderr:write("Ошибка: ME-интерфейс недоступен\n")
         os.exit(1)
     end
 end
@@ -45,35 +34,30 @@ end
 local function bindGpu()
     local screen = component.list("screen")()
     if not screen then
-        print("Ошибка: Не найден экран для привязки GPU")
-        addLog(logs, "ERROR: Не найден экран для привязки GPU", "ERROR")
+        io.stderr:write("Ошибка: Не найден экран для привязки GPU\n")
         os.exit(1)
     end
-    local success, err = pcall(g.bind, screen, true) -- Принудительная привязка
+    local success, err = pcall(g.bind, screen)
     if not success then
-        print("Ошибка: Не удалось привязать GPU к экрану: " .. tostring(err))
-        addLog(logs, "ERROR: Не удалось привязать GPU: " .. tostring(err), "ERROR")
+        io.stderr:write("Ошибка: Не удалось привязать GPU к экрану: " .. tostring(err) .. "\n")
         os.exit(1)
     end
-    print("GPU привязан к экрану: " .. screen)
-    addLog(logs, "INFO: GPU привязан к экрану: " .. screen, "INFO")
+    io.stdout:write("GPU привязан к экрану: " .. screen .. "\n")
     return true
 end
 
 -- Проверяем наличие библиотеки
 if not fs.exists(LIB_PATH) then
-    print("ultimateOC.lua не найден. Скачивание...")
+    io.stdout:write("ultimateOC.lua не найден. Скачивание...\n")
     local success, err = shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
     if not success then
-        print("Не удалось скачать ultimateOC.lua: " .. tostring(err))
-        addLog(logs, "ERROR: Не удалось скачать ultimateOC.lua: " .. tostring(err), "ERROR")
+        io.stderr:write("Не удалось скачать ultimateOC.lua: " .. tostring(err) .. "\n")
         os.exit(1)
     end
 end
 local ok, uoc = pcall(require, "ultimateOC")
 if not ok then
-    print("Не удалось загрузить ultimateOC.lua: " .. tostring(ok))
-    addLog(logs, "ERROR: Не удалось загрузить ultimateOC.lua: " .. tostring(ok), "ERROR")
+    io.stderr:write("Не удалось загрузить ultimateOC.lua: " .. tostring(uoc) .. "\n")
     uoc = {
         drawText = function(x, y, text, color)
             g.setForeground(color or 0xFFFFFF)
@@ -127,8 +111,7 @@ end
 -- Проверяем файл данных
 if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {items = {}, settings = {sortCriteria = "name", sortAscending = true}})
-    print("Создан новый файл BD.txt")
-    addLog(logs, "INFO: Создан новый файл BD.txt", "INFO")
+    io.stdout:write("Создан новый файл BD.txt\n")
 end
 
 -------------------- Настройки --------------------
@@ -173,9 +156,16 @@ local lastRequestedItem = nil
 local lastRequestTime = 0
 local buttonHover = nil
 local inputMode = nil -- "add" or "edit"
-local inputField = ""
-local inputLabel = ""
-local inputY = HEIGHT - 10
+local inputFields = {} -- Таблица для хранения значений полей ввода
+local inputFocus = nil -- Текущее поле ввода (ключ из fieldsConfig)
+
+-------------------- Логгирование --------------------
+local function addLog(logs, text, lvl)
+    lvl = lvl or "INFO"
+    local t = string.format("%-7s %s", "[" .. lvl .. "]", text)
+    table.insert(logs, t)
+    while #logs > 50 do table.remove(logs, 1) end
+end
 
 -------------------- Вспомогательные функции --------------------
 local function getFilteredAndSortedItems()
@@ -389,6 +379,7 @@ local function drawButtons()
         nextEnabled and COLORS.button or COLORS.border,
         nextEnabled and COLORS.buttonActive or COLORS.border,
         nextEnabled and COLORS.text or COLORS.search_hint)
+
     local sortBtnY = arrowBtnY + arrowBtnH + 2
     local sortBtnW = 12
     local sortText = "Сорт:"
@@ -414,263 +405,207 @@ local function drawButtons()
     uoc.animatedButton(btnX, sortBtnY, sortBtnW, arrowBtnH, displaySortText, sortHover, COLORS.button, COLORS.buttonActive, COLORS.text)
 end
 
-local function drawInput()
+local fieldsConfig = {
+    {label = "Название:", key = "name", x = 2, y = HEIGHT - 15, w = 40},
+    {label = "Категория:", key = "category", x = 2, y = HEIGHT - 13, w = 40},
+    {label = "Держать:", key = "count", x = 2, y = HEIGHT - 11, w = 20},
+    {label = "Крафт за раз:", key = "craftSize", x = 2, y = HEIGHT - 9, w = 20},
+}
+
+local function drawInputScreen()
     clear()
-    uoc.drawText(2, inputY - 2, (inputMode == "add") and "Добавление предмета" or "Изменение: " .. (dataItems[selectedItem] and dataItems[selectedItem].name or "<?>"), COLORS.ok)
-    uoc.drawText(2, inputY - 1, "Вставьте предмет в 1-й слот ME интерфейса (для добавления).", COLORS.ok)
-    uoc.roundRect(2, inputY, WIDTH - 20, 3, COLORS.input_border, COLORS.input_bg)
-    g.setBackground(COLORS.input_bg)
-    g.fill(3, inputY + 1, WIDTH - 22, 1, " ")
-    g.setForeground(COLORS.ok)
-    local display = inputField
-    if display == "" then
-        display = inputLabel
+    local title = (inputMode == "add") and "Добавление предмета" or "Изменение: " .. (dataItems[selectedItem].name or "<?>")
+    uoc.drawText(2, HEIGHT - 17, title, COLORS.ok)
+    uoc.drawText(2, HEIGHT - 16, "Вставьте предмет в 1-й слот ME интерфейса (для добавления).", COLORS.ok)
+    uoc.drawText(2, HEIGHT - 4, "Enter: сохранить, Esc: отменить", COLORS.text)
+
+    for _, field in ipairs(fieldsConfig) do
+        local isActiveField = (inputFocus == field.key)
+        uoc.roundRect(field.x, field.y, field.w, 3, COLORS.input_border, COLORS.input_bg)
+        g.setForeground(COLORS.text)
+        g.set(field.x + 1, field.y, field.label)
+        g.setBackground(COLORS.input_bg)
+        g.fill(field.x + 1, field.y + 1, field.w - 2, 1, " ")
+        g.setForeground(isActiveField and COLORS.ok or COLORS.input_text)
+        
+        local displayValue = inputFields[field.key] or ""
+        if isActiveField then
+            displayValue = displayValue .. "_"
+        elseif displayValue == "" then
+            displayValue = "Введите значение..."
+        end
+        
+        local maxlen = field.w - 4
+        if unicode.len(displayValue) > maxlen then
+            displayValue = unicode.sub(displayValue, unicode.len(displayValue) - maxlen + 1)
+        end
+        g.set(field.x + 2, field.y + 1, displayValue)
     end
-    display = display .. "_"
-    local maxlen = WIDTH - 24
-    if unicode.len(display) > maxlen then
-        display = unicode.sub(display, unicode.len(display) - maxlen + 1)
-    end
-    g.set(3, inputY + 1, display)
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
+    term.setCursorBlink(inputFocus and true or false)
+    if inputFocus then
+        local currentField = nil
+        for _, field in ipairs(fieldsConfig) do
+            if field.key == inputFocus then
+                currentField = field
+                break
+            end
+        end
+        term.setCursor(currentField.x + 2 + unicode.len(inputFields[inputFocus] or ""), currentField.y + 1)
+    end
 end
 
-local function draw()
-    if changeitem then
-        drawInput()
-    else
-        clear()
-        drawHeader()
-        drawItems()
-        drawSearchBar()
-        drawLogs()
-        drawButtons()
-    end
-    addLog(logs, "INFO: Отрисовка завершена", "INFO")
-end
+local function handleInput(eventType, _, key, char)
+    if not changeitem or not inputFocus then return end
 
--------------------- IO и действия --------------------
-local function reload()
-    local ok, res = pcall(uoc.loadf, DATA_FILE)
-    if not ok then
-        addLog(logs, "ERROR: Ошибка загрузки BD.txt: " .. tostring(res), "ERROR")
-        dataItems = {}
-        settings = {sortCriteria = "name", sortAscending = true}
-    else
-        res = res or {items = {}, settings = {sortCriteria = "name", sortAscending = true}}
-        dataItems = res.items or {}
-        settings = res.settings or {sortCriteria = "name", sortAscending = true}
-    end
-    clampPage()
-    for _, item in ipairs(dataItems) do
-        local qty = 0
-        local stackList = {}
-        local ok_get, res_get = pcall(me.getItemsInNetwork, {id = item.id, damage = item.dmg})
-        if ok_get then stackList = res_get or {} end
-        if stackList and stackList.n and stackList.n > 0 then
-            for _, stack in ipairs(stackList) do
-                if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
-                    qty = qty + (stack.size or stack.qty or 0)
+    local currentInput = inputFields[inputFocus] or ""
+    if eventType == "key_down" then
+        if key == 28 then -- Enter
+            inputFocus = nil
+            if inputMode == "add" then addItem() elseif inputMode == "edit" then editItem() end
+        elseif key == 1 then -- Esc
+            changeitem = false
+            inputMode = nil
+            inputFields = {}
+            inputFocus = nil
+            draw()
+        elseif key == 14 then -- Backspace
+            currentInput = unicode.sub(currentInput, 1, -2)
+        elseif key == 211 then -- Delete
+            currentInput = ""
+        elseif key == 200 then -- Up arrow (переключение на предыдущее поле)
+            local currentIndex = nil
+            for i, field in ipairs(fieldsConfig) do
+                if field.key == inputFocus then
+                    currentIndex = i
+                    break
                 end
             end
-        else
-            local ok_detail, d = pcall(me.getItemDetail, {id = item.id, dmg = item.dmg})
-            if ok_detail and d then
-                qty = qty + (d.qty or d.size or 0)
+            if currentIndex and currentIndex > 1 then
+                inputFocus = fieldsConfig[currentIndex - 1].key
+            end
+        elseif key == 208 then -- Down arrow (переключение на следующее поле)
+            local currentIndex = nil
+            for i, field in ipairs(fieldsConfig) do
+                if field.key == inputFocus then
+                    currentIndex = i
+                    break
+                end
+            end
+            if currentIndex and currentIndex < #fieldsConfig then
+                inputFocus = fieldsConfig[currentIndex + 1].key
             end
         end
-        item.current = qty
-    end
-    local craftingJobs_ok, craftingJobs = pcall(me.getCraftingJobs)
-    if craftingJobs_ok and craftingJobs and craftingJobs.n then
-        for _, job in ipairs(craftingJobs) do
-            if job.output and job.output.id and lastRequestedItem and
-               job.output.id == lastRequestedItem.id and
-               (lastRequestedItem.dmg == nil or job.output.damage == lastRequestedItem.dmg) then
-                lastRequestedItem = nil
-                lastRequestTime = 0
+    elseif eventType == "char" then
+        if unicode.len(char) > 0 and not char:find("[\x00-\x1F\x7F]") then
+            local maxlen = 0
+            for _, field in ipairs(fieldsConfig) do
+                if field.key == inputFocus then
+                    maxlen = field.w - 4
+                    break
+                end
+            end
+            if unicode.len(currentInput) < maxlen then
+                currentInput = currentInput .. char
             end
         end
     end
-    if lastRequestedItem and computer.uptime() - lastRequestTime > 30 then
-        addLog(logs, "WARN: Таймаут ожидания для '" .. (lastRequestedItem.id or "<??>") .. "'. Сброс lastRequestedItem.", "WARN")
-        lastRequestedItem = nil
-        lastRequestTime = 0
+    inputFields[inputFocus] = currentInput
+    drawInputScreen()
+end
+
+local function startInput(mode)
+    changeitem = true
+    inputMode = mode
+    inputFields = {}
+    local defaultValues = {name = "", category = "Без категории", count = "0", craftSize = "1"}
+    if mode == "edit" and selectedItem and dataItems[selectedItem] then
+        local item = dataItems[selectedItem]
+        defaultValues = {
+            name = item.name or "",
+            category = item.category or "Без категории",
+            count = tostring(item.count or 0),
+            craftSize = tostring(item.craftSize or 1)
+        }
     end
-    addLog(logs, "INFO: Данные перезагружены", "INFO")
-end
-
-local function save()
-    local ok, err = pcall(uoc.savef, DATA_FILE, {items = dataItems, settings = settings})
-    if not ok then
-        addLog(logs, "ERROR: Ошибка сохранения: " .. tostring(err), "ERROR")
-    else
-        addLog(logs, "INFO: Данные сохранены", "INFO")
+    for key, value in pairs(defaultValues) do
+        inputFields[key] = value
     end
-end
-
-local function resetSelection()
-    search = ""
-    currentPage = 1
-    selectedItem = nil
-    searchActive = false
-    addLog(logs, "INFO: Сброс выбора", "INFO")
-end
-
-local function cancelInput()
-    changeitem = false
-    inputMode = nil
-    inputField = ""
-    inputLabel = ""
-    term.clear()
-    draw()
-    addLog(logs, "INFO: Ввод отменен", "INFO")
+    inputFocus = "name" -- Начальное фокусируемое поле
+    drawInputScreen()
+    event.listen("key_down", handleInput)
+    event.listen("char", handleInput)
 end
 
 local function addItem()
-    changeitem = true
-    inputMode = "add"
     local stack = nil
     local ok_stack, res_stack = pcall(me.getStackInSlot, 1)
     if ok_stack then stack = res_stack end
-    local newItem = {name = stack and (stack.label or stack.id) or "", category = "Без категории", count = 0, craftSize = 1}
-    
-    local function promptField(field, label, isNumeric)
-        inputField = isNumeric and tostring(newItem[field]) or newItem[field]
-        inputLabel = label
-        draw()
-        term.setCursor(3 + unicode.len(inputField), inputY + 1)
-        while true do
-            local ev, _, char, key = event.pull(0.5, "key_down", "char")
-            if ev == nil then
-                addLog(logs, "INFO: Ожидание ввода для " .. label, "INFO")
-            elseif ev == "key_down" then
-                addLog(logs, "INFO: Нажата клавиша: " .. tostring(key), "INFO")
-                if key == 28 then -- Enter
-                    if inputField == "" and not isNumeric then
-                        return newItem[field]
-                    elseif isNumeric then
-                        local num = tonumber(inputField)
-                        if num then
-                            return num
-                        else
-                            addLog(logs, "WARN: Неверное числовое значение для '" .. label .. "'. Используется " .. tostring(newItem[field]), "WARN")
-                            return newItem[field]
-                        end
-                    end
-                    return inputField
-                elseif key == 14 then -- Backspace
-                    inputField = unicode.sub(inputField, 1, -2)
-                elseif key == 211 then -- Delete
-                    inputField = ""
-                elseif key == 29 then -- Ctrl
-                    cancelInput()
-                    return nil
-                end
-            elseif ev == "char" and char and unicode.len(char) > 0 and not char:find("[\x00-\x1F\x7F]") then
-                addLog(logs, "INFO: Введен символ: " .. char, "INFO")
-                if unicode.len(inputField) < WIDTH - 24 then
-                    inputField = inputField .. char
-                end
-            end
-            draw()
-            term.setCursor(3 + unicode.len(inputField), inputY + 1)
-        end
-    end
 
-    if not stack then
+    if stack then
+        inputFields.name = inputFields.name ~= "" and inputFields.name or (stack.label or stack.id)
+        inputFields.category = inputFields.category ~= "" and inputFields.category or "Без категории"
+        inputFields.count = tonumber(inputFields.count) or 0
+        inputFields.craftSize = tonumber(inputFields.craftSize) or 1
+
+        table.insert(dataItems, {
+            name = inputFields.name,
+            category = inputFields.category,
+            id = stack.id,
+            dmg = stack.dmg,
+            count = inputFields.count,
+            craftSize = inputFields.craftSize
+        })
+        save()
+        addLog(logs, "INFO: Добавлен предмет: " .. inputFields.name .. " (Категория: " .. inputFields.category .. ")", "INFO")
+        currentPage = getMaxPages()
+        selectedItem = nil
+    else
         addLog(logs, "ERROR: Нет предмета в слоте 1!", "ERROR")
-        cancelInput()
-        return
     end
-
-    addLog(logs, "INFO: Начало добавления предмета", "INFO")
-    newItem.name = promptField("name", "Введите название предмета:", false)
-    if not newItem.name then return end
-    newItem.category = promptField("category", "Введите категорию:", false)
-    if not newItem.category then return end
-    newItem.count = promptField("count", "Введите количество поддержания:", true)
-    if not newItem.count then return end
-    newItem.craftSize = promptField("craftSize", "Введите размер крафта:", true)
-    if not newItem.craftSize then return end
-
-    newItem.id = stack.id
-    newItem.dmg = stack.dmg
-    table.insert(dataItems, newItem)
-    save()
-    addLog(logs, "INFO: Добавлен предмет: " .. newItem.name .. " (Категория: " .. newItem.category .. ")", "INFO")
-    currentPage = getMaxPages()
-    selectedItem = nil
-    cancelInput()
+    changeitem = false
+    inputMode = nil
+    inputFields = {}
+    inputFocus = nil
+    event.cancel(event.listeners("key_down")[1])
+    event.cancel(event.listeners("char")[1])
+    draw()
 end
 
 local function editItem()
     if not selectedItem or not dataItems[selectedItem] then
         addLog(logs, "ERROR: Не выбран предмет!", "ERROR")
-        cancelInput()
+        changeitem = false
+        inputMode = nil
+        inputFields = {}
+        inputFocus = nil
+        event.cancel(event.listeners("key_down")[1])
+        event.cancel(event.listeners("char")[1])
+        draw()
         return
     end
-    changeitem = true
-    inputMode = "edit"
     local item = dataItems[selectedItem]
+    inputFields.name = inputFields.name ~= "" and inputFields.name or item.name
+    inputFields.category = inputFields.category ~= "" and inputFields.category or item.category
+    inputFields.count = tonumber(inputFields.count) or item.count or 0
+    inputFields.craftSize = tonumber(inputFields.craftSize) or item.craftSize or 1
+
+    item.name = inputFields.name
+    item.category = inputFields.category
+    item.count = inputFields.count
+    item.craftSize = inputFields.craftSize
     
-    local function promptField(field, label, isNumeric)
-        inputField = isNumeric and tostring(item[field]) or item[field]
-        inputLabel = label
-        draw()
-        term.setCursor(3 + unicode.len(inputField), inputY + 1)
-        while true do
-            local ev, _, char, key = event.pull(0.5, "key_down", "char")
-            if ev == nil then
-                addLog(logs, "INFO: Ожидание ввода для " .. label, "INFO")
-            elseif ev == "key_down" then
-                addLog(logs, "INFO: Нажата клавиша: " .. tostring(key), "INFO")
-                if key == 28 then -- Enter
-                    if inputField == "" and not isNumeric then
-                        return item[field]
-                    elseif isNumeric then
-                        local num = tonumber(inputField)
-                        if num then
-                            return num
-                        else
-                            addLog(logs, "WARN: Неверное числовое значение для '" .. label .. "'. Используется " .. tostring(item[field]), "WARN")
-                            return item[field]
-                        end
-                    end
-                    return inputField
-                elseif key == 14 then -- Backspace
-                    inputField = unicode.sub(inputField, 1, -2)
-                elseif key == 211 then -- Delete
-                    inputField = ""
-                elseif key == 29 then -- Ctrl
-                    cancelInput()
-                    return nil
-                end
-            elseif ev == "char" and char and unicode.len(char) > 0 and not char:find("[\x00-\x1F\x7F]") then
-                addLog(logs, "INFO: Введен символ: " .. char, "INFO")
-                if unicode.len(inputField) < WIDTH - 24 then
-                    inputField = inputField .. char
-                end
-            end
-            draw()
-            term.setCursor(3 + unicode.len(inputField), inputY + 1)
-        end
-    end
-
-    addLog(logs, "INFO: Начало редактирования предмета: " .. item.name, "INFO")
-    item.name = promptField("name", "Введите название предмета:", false)
-    if not item.name then return end
-    item.category = promptField("category", "Введите категорию:", false)
-    if not item.category then return end
-    item.count = promptField("count", "Введите количество поддержания:", true)
-    if not item.count then return end
-    item.craftSize = promptField("craftSize", "Введите размер крафта:", true)
-    if not item.craftSize then return end
-
     save()
     addLog(logs, "INFO: Изменено: " .. item.name .. " (Категория: " .. (item.category or "Без категории") .. ")", "INFO")
-    cancelInput()
+
+    changeitem = false
+    inputMode = nil
+    inputFields = {}
+    inputFocus = nil
+    event.cancel(event.listeners("key_down")[1])
+    event.cancel(event.listeners("char")[1])
+    draw()
 end
 
 local function removeItem()
@@ -799,12 +734,7 @@ local function autoCraftLoop()
                 end
             end
         end
-        local ev = {event.pull(0.5)}
-        if ev[1] == nil then
-            if not changeitem then
-                draw() -- Перерисовка для поддержания активности
-            end
-        end
+        os.sleep(0.5)
     end
 end
 
@@ -844,8 +774,17 @@ local function updateButtonHover(x, y)
 end
 
 event.listen("touch", function(_, _, x, y, _, _)
-    addLog(logs, "INFO: Событие touch: x=" .. x .. ", y=" .. y, "INFO")
-    if changeitem then return end
+    if changeitem then
+        -- Проверяем клик по полям ввода
+        for _, field in ipairs(fieldsConfig) do
+            if x >= field.x and x <= field.x + field.w - 1 and y >= field.y and y <= field.y + 2 then
+                inputFocus = field.key
+                drawInputScreen()
+                return
+            end
+        end
+        return
+    end
     local btnWidth = 12
     local btnHeight = 3
     local btnX = WIDTH - btnWidth - 5
@@ -859,11 +798,10 @@ event.listen("touch", function(_, _, x, y, _, _)
     for i, btn in ipairs(btns) do
         local btnY = 10 + (i - 1) * (btnHeight + btnPadding)
         if x >= btnX and x <= btnX + btnWidth - 1 and y >= btnY and y <= btnY + btnHeight - 1 then
-            addLog(logs, "INFO: Нажата кнопка: " .. btn.action, "INFO")
             if btn.action == "delete" then removeItem()
-            elseif btn.action == "edit" then editItem()
+            elseif btn.action == "edit" then startInput("edit")
             elseif btn.action == "toggleCraft" then if isCrafting then stopCraft() else doCraft() end
-            elseif btn.action == "add" then addItem()
+            elseif btn.action == "add" then startInput("add")
             end
             buttonHover = nil
             draw()
@@ -881,7 +819,6 @@ event.listen("touch", function(_, _, x, y, _, _)
         if currentPage > 1 then
             currentPage = currentPage - 1
             selectedItem = nil
-            addLog(logs, "INFO: Переход на предыдущую страницу: " .. currentPage, "INFO")
             buttonHover = nil
             draw()
         end
@@ -891,7 +828,6 @@ event.listen("touch", function(_, _, x, y, _, _)
         if currentPage < maxPages then
             currentPage = currentPage + 1
             selectedItem = nil
-            addLog(logs, "INFO: Переход на следующую страницу: " .. currentPage, "INFO")
             buttonHover = nil
             draw()
         end
@@ -918,26 +854,24 @@ event.listen("touch", function(_, _, x, y, _, _)
         settings.sortCriteria = criteriaList[currentCriteriaIndex]
         currentPage = 1
         selectedItem = nil
-        addLog(logs, "INFO: Изменена сортировка: " .. settings.sortCriteria .. ", ascending: " .. tostring(settings.sortAscending), "INFO")
         buttonHover = nil
         save()
         draw()
         return
     end
     if y >= HEIGHT - 10 and y <= HEIGHT - 8 then
+        searchActive = false
         if x >= 2 + (WIDTH - 20) - 3 and x <= 2 + (WIDTH - 20) - 1 and search ~= "" then
             search = ""
             currentPage = 1
             selectedItem = nil
             buttonHover = nil
-            addLog(logs, "INFO: Очищено поле поиска", "INFO")
             draw()
             return
         end
         if x >= 2 + 1 and x <= 2 + (WIDTH - 20) - 4 then
             searchActive = true
             buttonHover = nil
-            addLog(logs, "INFO: Активировано поле поиска", "INFO")
             draw()
             return
         end
@@ -956,7 +890,6 @@ event.listen("touch", function(_, _, x, y, _, _)
             for k, v in ipairs(dataItems) do
                 if v == filteredAndSortedItems[actualIndexInFiltered] then
                     selectedItem = k
-                    addLog(logs, "INFO: Выбран предмет: " .. (v.name or "<??>"), "INFO")
                     break
                 end
             end
@@ -974,34 +907,38 @@ event.listen("mouse_move", function(_, _, x, y)
     local newHover = updateButtonHover(x, y)
     if newHover ~= buttonHover then
         buttonHover = newHover
-        addLog(logs, "INFO: Наведение на: " .. (newHover or "ничего"), "INFO")
         draw()
     end
 end)
 
-event.listen("key_down", function(_, _, _, code, _)
-    addLog(logs, "INFO: Событие key_down: code=" .. code, "INFO")
-    if changeitem then return end
+event.listen("key_down", function(_, _, key, _, _)
+    if changeitem and inputFocus then
+        handleInput("key_down", _, key, nil)
+        return
+    end
     local filteredAndSortedItems = getFilteredAndSortedItems()
     local perPage = getItemsPerPage()
     local maxPages = getMaxPages()
     if searchActive then
-        if code == 14 then -- Backspace
+        if key == 14 then -- Backspace
             search = unicode.sub(search, 1, -2)
-            addLog(logs, "INFO: Backspace в поиске", "INFO")
-        elseif code == 211 then -- Delete
+        elseif key == 211 then -- Delete
             search = ""
-            addLog(logs, "INFO: Очищено поле поиска", "INFO")
-        elseif code == 28 then -- Enter
+        elseif key == 28 then -- Enter
             searchActive = false
-            addLog(logs, "INFO: Деактивировано поле поиска", "INFO")
+        else
+            local char = unicode.char(key)
+            if unicode.len(char) > 0 and not char:find("[\x00-\x1F\x7F]") then
+                if unicode.len(search) < WIDTH - 25 then
+                    search = search .. char
+                end
+            end
         end
         currentPage = 1
         selectedItem = nil
         buttonHover = nil
-        draw()
     else
-        if code == 200 then -- Up
+        if key == 200 then -- Up arrow
             local currentSelectedItemInFiltered = nil
             local startIndex = (currentPage - 1) * perPage + 1
             local visibleItems = {}
@@ -1035,8 +972,7 @@ event.listen("key_down", function(_, _, _, code, _)
                     end
                 end
             end
-            addLog(logs, "INFO: Нажата стрелка вверх, выбран предмет: " .. (selectedItem and dataItems[selectedItem].name or "ничего"), "INFO")
-        elseif code == 208 then -- Down
+        elseif key == 208 then -- Down arrow
             local currentSelectedItemInFiltered = nil
             local startIndex = (currentPage - 1) * perPage + 1
             local visibleItems = {}
@@ -1070,41 +1006,29 @@ event.listen("key_down", function(_, _, _, code, _)
                     end
                 end
             end
-            addLog(logs, "INFO: Нажата стрелка вниз, выбран предмет: " .. (selectedItem and dataItems[selectedItem].name or "ничего"), "INFO")
-        elseif code == 203 then -- Left
+        elseif key == 203 then -- Left arrow
             if currentPage > 1 then
                 currentPage = currentPage - 1
                 selectedItem = nil
-                addLog(logs, "INFO: Нажата стрелка влево, страница: " .. currentPage, "INFO")
             end
-        elseif code == 205 then -- Right
+        elseif key == 205 then -- Right arrow
             if currentPage < maxPages then
                 currentPage = currentPage + 1
                 selectedItem = nil
-                addLog(logs, "INFO: Нажата стрелка вправо, страница: " .. currentPage, "INFO")
             end
-        elseif code == 200 and arg.shift then -- Shift + Up
+        elseif key == 200 and arg.shift then -- Shift + Up
             logOffset = math.min(logOffset + 1, #logs - 5)
-            addLog(logs, "INFO: Прокрутка логов вверх", "INFO")
-        elseif code == 208 and arg.shift then -- Shift + Down
+        elseif key == 208 and arg.shift then -- Shift + Down
             logOffset = math.max(logOffset - 1, 0)
-            addLog(logs, "INFO: Прокрутка логов вниз", "INFO")
         end
-        draw()
     end
+    buttonHover = nil
+    draw()
 end)
 
 event.listen("char", function(_, _, char)
-    if changeitem or not searchActive then return end
-    if unicode.len(char) > 0 and not char:find("[\x00-\x1F\x7F]") then
-        if unicode.len(search) < WIDTH - 25 then
-            search = search .. char
-            currentPage = 1
-            selectedItem = nil
-            buttonHover = nil
-            addLog(logs, "INFO: Введен символ в поиске: " .. char, "INFO")
-            draw()
-        end
+    if changeitem and inputFocus then
+        handleInput("char", _, nil, char)
     end
 end)
 
@@ -1113,8 +1037,6 @@ checkComponents()
 bindGpu()
 WIDTH, HEIGHT = g.getResolution()
 g.setResolution(WIDTH, HEIGHT)
-term.clear()
-term.setCursor(1, 1)
 addLog(logs, "INFO: Программа запущена", "INFO")
 local ok, err = pcall(reload)
 if not ok then
