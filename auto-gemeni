@@ -1,4 +1,3 @@
-```lua
 local component = require("component")
 local fs = require("filesystem")
 local shell = require("shell")
@@ -6,8 +5,7 @@ local event = require("event")
 local unicode = require("unicode")
 local term = require("term")
 local computer = require("computer")
-local serialization = require("serialization")
-local g = component.gpu
+local gpu = component.gpu
 local me = component.me_interface
 
 -- Configuration
@@ -23,7 +21,7 @@ local COLORS = {
     search_cross = 0xFF5555, search_hint = 0x888888, input_bg = 0x282B36,
     input_border = 0x00BFFF, input_text = 0xF8F8F2
 }
-local WIDTH, HEIGHT = g.getResolution()
+local WIDTH, HEIGHT = gpu.getResolution()
 local debug = true
 local craftStatus = "Waiting..."
 local nextCraftUpdate = 0
@@ -34,7 +32,7 @@ local settings = {sortCriteria = "name", sortAscending = true}
 local search = ""
 local selectedItem = nil
 local currentPage = 1
-local changeitem = false
+local changeItem = false
 local searchActive = false
 local logOffset = 0
 local lastRequestedItem = nil
@@ -42,21 +40,7 @@ local lastRequestTime = 0
 local buttonHover = nil
 local inputMode = nil
 local inputFields = {}
-local eventHandlers = {} -- Store event handler IDs
-
--- Component Checks
-local function checkComponents()
-    if not component.isAvailable("gpu") then error("GPU not available") end
-    if not component.isAvailable("screen") then error("Screen not available") end
-    if not component.isAvailable("me_interface") then error("ME Interface not available") end
-end
-
--- Bind GPU
-local function bindGpu()
-    local screen = component.list("screen")()
-    if not screen then error("No screen found for GPU binding") end
-    g.bind(screen)
-end
+local eventHandlers = {touch = nil, scroll = nil, key_down = nil}
 
 -- Load Library
 local function loadLibrary()
@@ -67,14 +51,20 @@ local function loadLibrary()
     end
     return require("oc")
 end
-
 local oc = loadLibrary()
 
 -- Initialize Data File
 local function initDataFile()
     if not fs.exists(DATA_FILE) then
-        oc.savef(DATA_FILE, {items = {}, settings = {sortCriteria = "name", sortAscending = true}})
-        io.stdout:write("Created new BD.txt\n")
+        local data = {items = {}, settings = {sortCriteria = "name", sortAscending = true}}
+        local file = io.open(DATA_FILE, "w")
+        if file then
+            file:write(require("serialization").serialize(data))
+            file:close()
+            io.stdout:write("Created new BD.txt\n")
+        else
+            error("Failed to create BD.txt")
+        end
     end
 end
 
@@ -122,26 +112,26 @@ end
 
 -- GUI Rendering
 local function clear()
-    g.setBackground(COLORS.bg)
-    g.fill(1, 1, WIDTH, HEIGHT, " ")
-    g.setForeground(COLORS.text)
+    gpu.setBackground(COLORS.bg)
+    gpu.fill(1, 1, WIDTH, HEIGHT, " ")
+    gpu.setForeground(COLORS.text)
 end
 
 local function drawHeader()
     oc.text(2, 2, "&ePreCraft Enhanced")
-    g.setBackground(COLORS.progress_fg)
-    g.fill(1, 3, WIDTH, 1, " ")
-    g.setBackground(COLORS.bg)
+    gpu.setBackground(COLORS.progress_fg)
+    gpu.fill(1, 3, WIDTH, 1, " ")
+    gpu.setBackground(COLORS.bg)
     oc.text(2, 4, "Status: " .. craftStatus, (craftStatus:find("Error") and COLORS.error) or COLORS.ok)
     oc.progressBar = oc.progressBar or function(x, y, w, progress)
-        g.setBackground(COLORS.progress_bg)
-        g.fill(x, y, w, 1, " ")
-        g.setBackground(COLORS.progress_fg)
-        g.fill(x, y, math.floor(w * progress), 1, " ")
+        gpu.setBackground(COLORS.progress_bg)
+        gpu.fill(x, y, w, 1, " ")
+        gpu.setBackground(COLORS.progress_fg)
+        gpu.fill(x, y, math.floor(w * progress), 1, " ")
     end
     oc.progressBar(2, 5, WIDTH - 20, isCrafting and 0.9 or 0)
     oc.text(2, 6, "Page: " .. currentPage .. "/" .. getMaxPages())
-    oc.right(WIDTH - 2, 6, "Total Crafts: " .. #dataItems)
+    oc.right(WIDTH - 2, 6, "Total Crafting: " .. #dataItems)
 end
 
 local function drawItems()
@@ -155,93 +145,93 @@ local function drawItems()
         target = math.floor(totalWidth * 0.15),
         craftSize = totalWidth - math.floor(totalWidth * 0.35) - math.floor(totalWidth * 0.15) * 3
     }
-    g.setForeground(COLORS.select_active)
-    g.set(x, y, "┌" .. string.rep("─", colWidths.name) .. "┬" .. string.rep("─", colWidths.category) .. "┬" .. string.rep("─", colWidths.current) .. "┬" .. string.rep("─", colWidths.target) .. "┬" .. string.rep("─", colWidths.craftSize) .. "┐")
-    g.set(x, y + 1, "│")
-    g.setForeground(COLORS.ok)
-    g.set(x + 1, y + 1, string.format("%-" .. colWidths.name .. "s", "Name"))
-    g.setForeground(COLORS.select_active)
-    g.set(x + colWidths.name + 1, y + 1, "│")
-    g.setForeground(COLORS.ok)
-    g.set(x + colWidths.name + 2, y + 1, string.format("%-" .. colWidths.category .. "s", "Category"))
-    g.setForeground(COLORS.select_active)
-    g.set(x + colWidths.name + colWidths.category + 2, y + 1, "│")
-    g.setForeground(COLORS.ok)
-    g.set(x + colWidths.name + colWidths.category + 3, y + 1, string.format("%-" .. colWidths.current .. "s", "Current"))
-    g.setForeground(COLORS.select_active)
-    g.set(x + colWidths.name + colWidths.category + colWidths.current + 3, y + 1, "│")
-    g.setForeground(COLORS.ok)
-    g.set(x + colWidths.name + colWidths.category + colWidths.current + 4, y + 1, string.format("%-" .. colWidths.target .. "s", "Target"))
-    g.setForeground(COLORS.select_active)
-    g.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.target + 4, y + 1, "│")
-    g.setForeground(COLORS.ok)
-    g.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.target + 5, y + 1, string.format("%-" .. colWidths.craftSize .. "s", "Craft Size"))
-    g.setForeground(COLORS.select_active)
-    g.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.target + colWidths.craftSize + 5, y + 1, "│")
-    g.set(x, y + 2, "├" .. string.rep("─", colWidths.name) .. "┼" .. string.rep("─", colWidths.category) .. "┼" .. string.rep("─", colWidths.current) .. "┼" .. string.rep("─", colWidths.target) .. "┼" .. string.rep("─", colWidths.craftSize) .. "┤")
+    gpu.setForeground(COLORS.select_active)
+    gpu.set(x, y, "┌" .. string.rep("─", colWidths.name) .. "┬" .. string.rep("─", colWidths.category) .. "┬" .. string.rep("─", colWidths.current) .. "┬" .. string.rep("─", colWidths.target) .. "┬" .. string.rep("─", colWidths.craftSize) .. "┐")
+    gpu.set(x, y + 1, "│")
+    gpu.setForeground(COLORS.ok)
+    gpu.set(x + 1, y + 1, string.format("%-" .. colWidths.name .. "s", "Name"))
+    gpu.setForeground(COLORS.select_active)
+    gpu.set(x + colWidths.name + 1, y + 1, "│")
+    gpu.setForeground(COLORS.ok)
+    gpu.set(x + colWidths.name + 2, y + 1, string.format("%-" .. colWidths.category .. "s", "Category"))
+    gpu.setForeground(COLORS.select_active)
+    gpu.set(x + colWidths.name + colWidths.category + 2, y + 1, "│")
+    gpu.setForeground(COLORS.ok)
+    gpu.set(x + colWidths.name + colWidths.category + 3, y + 1, string.format("%-" .. colWidths.current .. "s", "Current"))
+    gpu.setForeground(COLORS.select_active)
+    gpu.set(x + colWidths.name + colWidths.category + colWidths.current + 3, y + 1, "│")
+    gpu.setForeground(COLORS.ok)
+    gpu.set(x + colWidths.name + colWidths.category + colWidths.current + 4, y + 1, string.format("%-" .. colWidths.target .. "s", "Target"))
+    gpu.setForeground(COLORS.select_active)
+    gpu.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.target + 4, y + 1, "│")
+    gpu.setForeground(COLORS.ok)
+    gpu.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.target + 5, y + 1, string.format("%-" .. colWidths.craftSize .. "s", "Craft Size"))
+    gpu.setForeground(COLORS.select_active)
+    gpu.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.target + colWidths.craftSize + 5, y + 1, "│")
+    gpu.set(x, y + 2, "├" .. string.rep("─", colWidths.name) .. "┼" .. string.rep("─", colWidths.category) .. "┼" .. string.rep("─", colWidths.current) .. "┼" .. string.rep("─", colWidths.target) .. "┼" .. string.rep("─", colWidths.craftSize) .. "┤")
     local perPage = getItemsPerPage()
     local startIndex = (currentPage - 1) * perPage + 1
     for i = startIndex, math.min(#filteredItems, startIndex + perPage - 1) do
         local item = filteredItems[i]
         local isSelected = (selectedItem and dataItems[selectedItem] == item)
         local row = y + 2 + (i - startIndex)
-        g.setBackground(isSelected and COLORS.select_active or COLORS.bg)
-        g.fill(x, row, totalWidth + 2, 1, " ")
-        g.setForeground(tonumber(item.current or 0) < tonumber(item.count or 0) and COLORS.error or COLORS.text)
-        g.set(x, row, "│")
+        gpu.setBackground(isSelected and COLORS.select_active or COLORS.bg)
+        gpu.fill(x, row, totalWidth + 2, 1, " ")
+        gpu.setForeground(tonumber(item.current or 0) < tonumber(item.count or 0) and COLORS.error or COLORS.text)
+        gpu.set(x, row, "│")
         local nameStr = tostring(item.name or "<??>")
         if unicode.len(nameStr) > colWidths.name then nameStr = unicode.sub(nameStr, 1, colWidths.name - 1) .. "…" end
-        g.set(x + 1, row, string.format("%-" .. colWidths.name .. "s", nameStr))
-        g.set(x + colWidths.name + 1, row, "│")
+        gpu.set(x + 1, row, string.format("%-" .. colWidths.name .. "s", nameStr))
+        gpu.set(x + colWidths.name + 1, row, "│")
         local categoryStr = tostring(item.category or "No Category")
         if unicode.len(categoryStr) > colWidths.category then categoryStr = unicode.sub(categoryStr, 1, colWidths.category - 1) .. "…" end
-        g.set(x + colWidths.name + 2, row, string.format("%-" .. colWidths.category .. "s", categoryStr))
-        g.set(x + colWidths.name + colWidths.category + 2, row, "│")
+        gpu.set(x + colWidths.name + 2, row, string.format("%-" .. colWidths.category .. "s", categoryStr))
+        gpu.set(x + colWidths.name + colWidths.category + 2, row, "│")
         local currentStr = tostring(item.current or 0)
         if unicode.len(currentStr) > colWidths.current then currentStr = unicode.sub(currentStr, 1, colWidths.current - 1) .. "…" end
-        g.set(x + colWidths.name + colWidths.category + 3, row, string.format("%-" .. colWidths.current .. "s", currentStr))
-        g.set(x + colWidths.name + colWidths.category + colWidths.current + 3, row, "│")
+        gpu.set(x + colWidths.name + colWidths.category + 3, row, string.format("%-" .. colWidths.current .. "s", currentStr))
+        gpu.set(x + colWidths.name + colWidths.category + colWidths.current + 3, row, "│")
         local targetStr = tostring(item.count or 0)
         if unicode.len(targetStr) > colWidths.target then targetStr = unicode.sub(targetStr, 1, colWidths.target - 1) .. "…" end
-        g.set(x + colWidths.name + colWidths.category + colWidths.current + 4, row, string.format("%-" .. colWidths.target .. "s", targetStr))
-        g.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.target + 4, row, "│")
+        gpu.set(x + colWidths.name + colWidths.category + colWidths.current + 4, row, string.format("%-" .. colWidths.target .. "s", targetStr))
+        gpu.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.target + 4, row, "│")
         local craftSizeStr = tostring(item.craftSize or 0)
         if unicode.len(craftSizeStr) > colWidths.craftSize then craftSizeStr = unicode.sub(craftSizeStr, 1, colWidths.craftSize - 1) .. "…" end
-        g.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.target + 5, row, string.format("%-" .. colWidths.craftSize .. "s", craftSizeStr))
-        g.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.target + colWidths.craftSize + 5, row, "│")
+        gpu.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.target + 5, row, string.format("%-" .. colWidths.craftSize .. "s", craftSizeStr))
+        gpu.set(x + colWidths.name + colWidths.category + colWidths.current + colWidths.target + colWidths.craftSize + 5, row, "│")
     end
-    g.setForeground(COLORS.select_active)
-    g.set(x, y + perPage + 2, "└" .. string.rep("─", colWidths.name) .. "┴" .. string.rep("─", colWidths.category) .. "┴" .. string.rep("─", colWidths.current) .. "┴" .. string.rep("─", colWidths.target) .. "┴" .. string.rep("─", colWidths.craftSize) .. "┘")
-    g.setBackground(COLORS.bg)
-    g.setForeground(COLORS.text)
+    gpu.setForeground(COLORS.select_active)
+    gpu.set(x, y + perPage + 2, "└" .. string.rep("─", colWidths.name) .. "┴" .. string.rep("─", colWidths.category) .. "┴" .. string.rep("─", colWidths.current) .. "┴" .. string.rep("─", colWidths.target) .. "┴" .. string.rep("─", colWidths.craftSize) .. "┘")
+    gpu.setBackground(COLORS.bg)
+    gpu.setForeground(COLORS.text)
 end
 
 local function drawSearchBar()
     local x, y, w, h = 2, HEIGHT - 10, WIDTH - 20, 3
-    g.setBackground(COLORS.search_bg)
-    g.fill(x, y, w, h, " ")
-    g.setForeground(COLORS.search_border)
-    g.set(x, y, "┌" .. string.rep("─", w - 2) .. "┐")
-    g.set(x, y + h - 1, "└" .. string.rep("─", w - 2) .. "┘")
-    for i = 1, h - 2 do g.set(x, y + i, "│") g.set(x + w - 1, y + i, "│") end
-    g.setForeground(COLORS.search_cross)
-    g.set(x + w - 3, y + 1, search ~= "" and "×" or " ")
-    g.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
+    gpu.setBackground(COLORS.search_bg)
+    gpu.fill(x, y, w, h, " ")
+    gpu.setForeground(COLORS.search_border)
+    gpu.set(x, y, "┌" .. string.rep("─", w - 2) .. "┐")
+    gpu.set(x, y + h - 1, "└" .. string.rep("─", w - 2) .. "┘")
+    for i = 1, h - 2 do gpu.set(x, y + i, "│") gpu.set(x + w - 1, y + i, "│") end
+    gpu.setForeground(COLORS.search_cross)
+    gpu.set(x + w - 3, y + 1, search ~= "" and "×" or " ")
+    gpu.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
     local display = search == "" and "Search: enter item name..." or search .. (searchActive and "_" or "")
     if unicode.len(display) > w - 7 then display = unicode.sub(display, unicode.len(display) - (w - 7) + 1) end
-    g.set(x + 2, y + 1, display)
-    g.setBackground(COLORS.bg)
-    g.setForeground(COLORS.text)
+    gpu.set(x + 2, y + 1, display)
+    gpu.setBackground(COLORS.bg)
+    gpu.setForeground(COLORS.text)
 end
 
 local function drawLogs()
     local logLines, x, y = 5, 2, HEIGHT - logLines
-    g.setForeground(COLORS.log)
+    gpu.setForeground(COLORS.log)
     for i = 1, logLines do
         local logIndex = #logs - logLines + i - logOffset
-        if logIndex > 0 then g.set(x, y + i - 1, logs[logIndex] or "") end
+        if logIndex > 0 then gpu.set(x, y + i - 1, logs[logIndex] or "") end
     end
-    g.setForeground(COLORS.text)
+    gpu.setForeground(COLORS.text)
 end
 
 local function drawButtons()
@@ -276,7 +266,7 @@ local function drawButtons()
 end
 
 local function draw()
-    if changeitem then return end
+    if changeItem then return end
     clear()
     drawHeader()
     drawItems()
@@ -306,48 +296,48 @@ local function promptForInput(label, keyName, isNumeric, defaultValue)
         oc.text(2, baseY + 12, "Enter: save/skip, Ctrl+C: cancel", COLORS.text)
         for _, field in ipairs(fieldsConfig) do
             local isActiveField = (field.key == keyName)
-            g.setBackground(COLORS.input_bg)
-            g.fill(field.x, field.y, field.w, 3, " ")
-            g.setForeground(COLORS.input_border)
-            g.set(field.x, field.y, "┌" .. string.rep("─", field.w - 2) .. "┐")
-            g.set(field.x, field.y + 2, "└" .. string.rep("─", field.w - 2) .. "┘")
-            g.set(field.x, field.y + 1, "│")
-            g.set(field.x + field.w - 1, field.y + 1, "│")
-            g.setForeground(COLORS.text)
-            g.set(field.x + 1, field.y, field.label)
-            g.setBackground(COLORS.input_bg)
-            g.fill(field.x + 1, field.y + 1, field.w - 2, 1, " ")
-            g.setForeground(isActiveField and COLORS.ok or COLORS.input_text)
+            gpu.setBackground(COLORS.input_bg)
+            gpu.fill(field.x, field.y, field.w, 3, " ")
+            gpu.setForeground(COLORS.input_border)
+            gpu.set(field.x, field.y, "┌" .. string.rep("─", field.w - 2) .. "┐")
+            gpu.set(field.x, field.y + 2, "└" .. string.rep("─", field.w - 2) .. "┘")
+            gpu.set(field.x, field.y + 1, "│")
+            gpu.set(field.x + field.w - 1, field.y + 1, "│")
+            gpu.setForeground(COLORS.text)
+            gpu.set(field.x + 1, field.y, field.label)
+            gpu.setBackground(COLORS.input_bg)
+            gpu.fill(field.x + 1, field.y + 1, field.w - 2, 1, " ")
+            gpu.setForeground(isActiveField and COLORS.ok or COLORS.input_text)
             local displayValue = isActiveField and activeInput .. "_" or inputFields[field.key] or ""
             if displayValue == "" then displayValue = "Enter value..." end
             if unicode.len(displayValue) > field.w - 4 then
                 displayValue = unicode.sub(displayValue, unicode.len(displayValue) - (field.w - 4) + 1)
             end
-            g.set(field.x + 2, field.y + 1, displayValue)
+            gpu.set(field.x + 2, field.y + 1, displayValue)
         end
-        g.setBackground(COLORS.bg)
-        g.setForeground(COLORS.text)
+        gpu.setBackground(COLORS.bg)
+        gpu.setForeground(COLORS.text)
     end
     redrawInputScreen(currentInput)
     term.setCursor(currentFieldConfig.x + 2 + unicode.len(currentInput), currentFieldConfig.y + 1)
-    term.showCursor(true)
+    term.setCursorBlink(true)
     local result = nil
     while true do
-        local eventType, _, char, key = event.pullMultiple("key_down", "interrupted")
-        if eventType == "interrupted" then
-            term.showCursor(false)
+        local ev, _, char, code = event.pullMultiple("key_down", "interrupted")
+        if ev == "interrupted" then
+            term.setCursorBlink(false)
             return nil
-        elseif eventType == "key_down" then
-            if key == 28 then -- Enter
+        elseif ev == "key_down" then
+            if code == 28 then -- Enter
                 result = currentInput
                 break
-            elseif key == 14 then -- Backspace
+            elseif code == 14 and #currentInput > 0 then -- Backspace
                 currentInput = unicode.sub(currentInput, 1, -2)
-            elseif key == 211 then -- Delete
+            elseif code == 211 then -- Delete
                 currentInput = ""
-            elseif char and char > 0 then
+            elseif char > 0 then
                 local charStr = unicode.char(char)
-                if unicode.len(charStr) > 0 and not charStr:find("[\x00-\x1F\x7F]") and unicode.len(currentInput) < currentFieldConfig.w - 4 then
+                if unicode.len(charStr) > 0 and not charStr:match("[\x00-\x1F\x7F]") and unicode.len(currentInput) < currentFieldConfig.w - 4 then
                     currentInput = currentInput .. charStr
                 end
             end
@@ -355,13 +345,13 @@ local function promptForInput(label, keyName, isNumeric, defaultValue)
             term.setCursor(currentFieldConfig.x + 2 + unicode.len(currentInput), currentFieldConfig.y + 1)
         end
     end
-    term.showCursor(false)
+    term.setCursorBlink(false)
     if result == "" then result = defaultValue end
     if isNumeric then
         local numResult = tonumber(result)
         if not numResult then
             addLog("WARN: Invalid number for '" .. label .. "'. Using default: " .. tostring(defaultValue), "WARN")
-            return tonumber(defaultValue)
+            return defaultValue
         end
         return numResult
     end
@@ -370,30 +360,31 @@ end
 
 -- Data Management
 local function reload()
-    local data = oc.loadf(DATA_FILE) or {items = {}, settings = {sortCriteria = "name", sortAscending = true}}
+    local file = io.open(DATA_FILE, "r")
+    if not file then error("Failed to open BD.txt") end
+    local content = file:read("*all")
+    file:close()
+    local data = require("serialization").unserialize(content) or {items = {}, settings = {sortCriteria = "name", sortAscending = true}}
     dataItems = data.items or {}
     settings = data.settings or {sortCriteria = "name", sortAscending = true}
     clampPage()
     for _, item in ipairs(dataItems) do
         local qty = 0
-        local stackList = (pcall(me.getItemsInNetwork, {id = item.id, damage = item.dmg})) and me.getItemsInNetwork({id = item.id, damage = item.dmg}) or {}
-        if stackList.n and stackList.n > 0 then
+        local success, stackList = pcall(me.getItemsInNetwork, {name = item.id, damage = item.dmg})
+        if success and stackList and stackList.n and stackList.n > 0 then
             for _, stack in ipairs(stackList) do
                 if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
-                    qty = qty + (stack.size or stack.qty or 0)
+                    qty = qty + (stack.size or 0)
                 end
             end
-        else
-            local _, detail = pcall(me.getItemDetail, {id = item.id, dmg = item.dmg})
-            if detail then qty = qty + (detail.qty or detail.size or 0) end
         end
-        local _, craftingJobs = pcall(me.getCraftingJobs)
-        if craftingJobs and craftingJobs.n then
-            for _, job in ipairs(craftingJobs) do
-                if job.output and job.output.id == item.id and (item.dmg == nil or job.output.damage == item.dmg) then
-                    qty = qty + (job.output.size or job.output.qty or 0)
-                    if lastRequestedItem and lastRequestedItem.id == item.id and
-                       (lastRequestedItem.dmg == nil or lastRequestedItem.dmg == item.dmg) then
+        local success, craftingJobs = pcall(me.getCraftables)
+        if success and craftingJobs and craftingJobs.n then
+            for i = 1, craftingJobs.n do
+                local job = craftingJobs[i]
+                if job and job.isCanceled and job.isDone and job.size and job.label == item.name then
+                    qty = qty + job.size
+                    if lastRequestedItem and lastRequestedItem.name == item.name then
                         lastRequestedItem = nil
                         lastRequestTime = 0
                     end
@@ -403,45 +394,60 @@ local function reload()
         item.current = qty
     end
     if lastRequestedItem and computer.uptime() - lastRequestTime > 30 then
-        addLog("WARN: Timeout for '" .. (lastRequestedItem.id or "<??>") .. "'. Resetting.", "WARN")
+        addLog("WARN: Timeout for '" .. (lastRequestedItem.name or "<?>") .. "'. Resetting.", "WARN")
         lastRequestedItem = nil
         lastRequestTime = 0
     end
 end
 
 local function save()
-    local success, err = pcall(oc.savef, DATA_FILE, {items = dataItems, settings = settings})
-    if not success then addLog("ERROR: Failed to save: " .. tostring(err), "ERROR") end
+    local data = {items = dataItems, settings = settings}
+    local file = io.open(DATA_FILE, "w")
+    if file then
+        file:write(require("serialization").serialize(data))
+        file:close()
+    else
+        addLog("ERROR: Failed to save to BD.txt", "ERROR")
+    end
 end
 
 local function addItem()
-    changeitem = true
+    changeItem = true
     inputMode = "add"
     inputFields = {name = "", category = "", count = "0", craftSize = "1"}
-    local stack = pcall(me.getStackInSlot, 1) and me.getStackInSlot(1) or nil
-    inputFields.name = promptForInput("Name:", "name", false, stack and (stack.label or stack.id) or "")
-    if inputFields.name == nil then changeitem = false inputMode = nil inputFields = {} draw() return end
-    if inputFields.name == "" then inputFields.name = stack and (stack.label or stack.id) or "" end
+    local success, stack = pcall(me.getItemsInNetwork)
+    local itemInSlot = nil
+    if success and stack and stack.n and stack.n > 0 then
+        itemInSlot = stack[1]
+    end
+    inputFields.name = promptForInput("Name:", "name", false, itemInSlot and (itemInSlot.label or itemInSlot.name) or "")
+    if inputFields.name == nil then changeItem = false inputMode = nil inputFields = {} draw() return end
+    if inputFields.name == "" then inputFields.name = itemInSlot and (itemInSlot.label or itemInSlot.name) or "" end
     inputFields.category = promptForInput("Category:", "category", false, "No Category")
-    if inputFields.category == nil then changeitem = false inputMode = nil inputFields = {} draw() return end
+    if inputFields.category == nil then changeItem = false inputMode = nil inputFields = {} draw() return end
     if inputFields.category == "" then inputFields.category = "No Category" end
     inputFields.count = promptForInput("Target:", "count", true, "0")
-    if inputFields.count == nil then changeitem = false inputMode = nil inputFields = {} draw() return end
+    if inputFields.count == nil then changeItem = false inputMode = nil inputFields = {} draw() return end
     inputFields.craftSize = promptForInput("Craft Size:", "craftSize", true, "1")
-    if inputFields.craftSize == nil then changeitem = false inputMode = nil inputFields = {} draw() return end
-    if stack then
+    if inputFields.craftSize == nil then changeItem = false inputMode = nil inputFields = {} draw() return end
+    if itemInSlot then
         table.insert(dataItems, {
-            name = inputFields.name, category = inputFields.category, id = stack.id, dmg = stack.dmg,
-            count = inputFields.count, craftSize = inputFields.craftSize, current = 0
+            name = inputFields.name,
+            category = inputFields.category,
+            id = itemInSlot.name,
+            dmg = itemInSlot.damage,
+            count = inputFields.count,
+            craftSize = inputFields.craftSize,
+            current = 0
         })
         save()
         addLog("INFO: Added item: " .. inputFields.name .. " (Category: " .. inputFields.category .. ")", "INFO")
         currentPage = getMaxPages()
         selectedItem = nil
     else
-        addLog("ERROR: No item in slot 1!", "ERROR")
+        addLog("ERROR: No item detected in ME network!", "ERROR")
     end
-    changeitem = false
+    changeItem = false
     inputMode = nil
     inputFields = {}
     draw()
@@ -453,21 +459,21 @@ local function editItem()
         return
     end
     local item = dataItems[selectedItem]
-    changeitem = true
+    changeItem = true
     inputMode = "edit"
     inputFields = {name = item.name, category = item.category, count = tostring(item.count), craftSize = tostring(item.craftSize)}
     inputFields.name = promptForInput("Name:", "name", false, item.name)
-    if inputFields.name == nil then changeitem = false inputMode = nil inputFields = {} draw() return end
+    if inputFields.name == nil then changeItem = false inputMode = nil inputFields = {} draw() return end
     inputFields.category = promptForInput("Category:", "category", false, item.category)
-    if inputFields.category == nil then changeitem = false inputMode = nil inputFields = {} draw() return end
+    if inputFields.category == nil then changeItem = false inputMode = nil inputFields = {} draw() return end
     inputFields.count = promptForInput("Target:", "count", true, tostring(item.count))
-    if inputFields.count == nil then changeitem = false inputMode = nil inputFields = {} draw() return end
+    if inputFields.count == nil then changeItem = false inputMode = nil inputFields = {} draw() return end
     inputFields.craftSize = promptForInput("Craft Size:", "craftSize", true, tostring(item.craftSize))
-    if inputFields.craftSize == nil then changeitem = false inputMode = nil inputFields = {} draw() return end
+    if inputFields.craftSize == nil then changeItem = false inputMode = nil inputFields = {} draw() return end
     item.name, item.category, item.count, item.craftSize = inputFields.name, inputFields.category, inputFields.count, inputFields.craftSize
     save()
     addLog("INFO: Edited: " .. item.name .. " (Category: " .. (item.category or "No Category") .. ")", "INFO")
-    changeitem = false
+    changeItem = false
     inputMode = nil
     inputFields = {}
     draw()
@@ -489,55 +495,29 @@ end
 local function tryCraftItem(item)
     local count, current = tonumber(item.count) or 0, tonumber(item.current) or 0
     if current >= count then return false end
-    if lastRequestedItem and lastRequestedItem.id == item.id and (lastRequestedItem.dmg == nil or lastRequestedItem.dmg == item.dmg) then
+    if lastRequestedItem and lastRequestedItem.name == item.name then
         addLog("INFO: Item '" .. (item.name or "<??>") .. "' recently requested. Waiting.", "INFO")
         craftStatus = "Waiting: " .. (item.name or "<??>")
         return false
     end
-    local success, cpus = pcall(me.getCpus)
-    if not success then
-        addLog("ERROR: Failed to get CPUs: " .. tostring(cpus), "ERROR")
-        craftStatus = "Error: ME CPU"
+    local success, craftables = pcall(me.getCraftables, {name = item.id, damage = item.dmg})
+    if not success or not craftables or craftables.n == 0 then
+        addLog("ERROR: No craftable recipe for " .. (item.name or "<??>") .. ": " .. tostring(craftables), "ERROR")
+        craftStatus = "Error: No recipe"
         return false
     end
-    local freeCpu = nil
-    for _, cpu in ipairs(cpus or {}) do
-        if not cpu.busy then freeCpu = cpu.name break end
-    end
-    if freeCpu then
-        local success, craftables = pcall(me.getCraftables, {name = item.id, damage = item.dmg})
-        if not success or not craftables or craftables.n == 0 then
-            addLog("ERROR: No recipe for " .. (item.name or "<??>"), "ERROR")
-            craftStatus = "Error: No recipe"
-            return false
-        end
-        local recipeOutput = (craftables[1].output and craftables[1].output.size) or 1
-        if recipeOutput == 0 then recipeOutput = 1 end
-        local quantityToRequest = math.max(1, tonumber(item.craftSize) or 1)
-        local estimatedOutput = math.ceil(quantityToRequest / recipeOutput) * recipeOutput
-        if current + estimatedOutput >= count then
-            addLog("INFO: Item '" .. (item.name or "<??>") .. "' will reach target (" .. estimatedOutput .. "x).", "INFO")
-            craftStatus = "Sufficient: " .. (item.name or "<??>")
-            return false
-        end
-        local success, req = pcall(function() return craftables[1].request(quantityToRequest, false, freeCpu) end)
-        if success and req then
-            local actualAmount = req.size or req.qty or quantityToRequest
-            craftStatus = "Crafting: " .. (item.name or "<??>")
-            addLog("INFO: Requested craft " .. quantityToRequest .. "x " .. (item.name or "<??>") .. " on CPU " .. tostring(freeCpu), "INFO")
-            lastRequestedItem = {id = item.id, dmg = item.dmg, expectedOutput = actualAmount}
-            lastRequestTime = computer.uptime()
-            return true
-        else
-            craftStatus = "Error: Craft rejected"
-            addLog("ERROR: Failed to craft " .. (item.name or "<??>") .. ": " .. tostring(req), "ERROR")
-            return false
-        end
-    else
-        craftStatus = "Error: No free CPUs"
-        addLog("ERROR: No free CPUs", "ERROR")
+    local craftable = craftables[1]
+    local success, request = pcall(craftable.request, craftable, item.craftSize)
+    if not success or not request then
+        addLog("ERROR: Failed to request craft for " .. (item.name or "<??>") .. ": " .. tostring(request), "ERROR")
+        craftStatus = "Error: Craft failed"
         return false
     end
+    craftStatus = "Crafting: " .. (item.name or "<??>")
+    addLog("INFO: Crafting " .. item.craftSize .. "x " .. (item.name or "<??>"), "INFO")
+    lastRequestedItem = {name = item.name}
+    lastRequestTime = computer.uptime()
+    return true
 end
 
 local function autoCraftLoop()
@@ -558,7 +538,7 @@ local function autoCraftLoop()
                 save()
                 nextCraftUpdate = computer.uptime() + 30
             end
-            if not changeitem then draw() end
+            if not changeItem then draw() end
         end
         os.sleep(0.5)
     end
@@ -595,7 +575,7 @@ end
 
 local function onTouch(_, _, x, y, _, nick)
     if nick ~= AUTHORIZED_USER then return end
-    if changeitem then return end
+    if changeItem then return end
     local btnWidth, btnHeight, btnX, btnPadding = 12, 3, WIDTH - 12 - 5, 2
     local btns = {
         {name = "Remove", action = "delete"},
@@ -695,29 +675,29 @@ local function onTouch(_, _, x, y, _, nick)
     draw()
 end
 
-local function onScroll(_, _, _, _, zs, nick)
-    if nick ~= AUTHORIZED_USER or changeitem then return end
-    if zs == 1 and currentPage > 1 then
+local function onScroll(_, _, _, _, direction, nick)
+    if nick ~= AUTHORIZED_USER or changeItem then return end
+    if direction == 1 and currentPage > 1 then
         currentPage = currentPage - 1
         selectedItem = nil
-    elseif zs == -1 and currentPage < getMaxPages() then
+    elseif direction == -1 and currentPage < getMaxPages() then
         currentPage = currentPage + 1
         selectedItem = nil
     end
     draw()
 end
 
-local function onKeyDown(_, _, char, key, nick)
-    if nick ~= AUTHORIZED_USER or changeitem then return end
+local function onKeyDown(_, _, char, code, nick)
+    if nick ~= AUTHORIZED_USER or changeItem then return end
     local filteredItems = getFilteredAndSortedItems()
     local perPage = getItemsPerPage()
     if searchActive then
-        if key == 14 then search = unicode.sub(search, 1, -2)
-        elseif key == 211 then search = ""
-        elseif key == 28 then searchActive = false
-        elseif char and char > 0 then
+        if code == 14 then search = unicode.sub(search, 1, -2)
+        elseif code == 211 then search = ""
+        elseif code == 28 then searchActive = false
+        elseif char > 0 then
             local charStr = unicode.char(char)
-            if unicode.len(charStr) > 0 and not charStr:find("[\x00-\x1F\x7F]") and unicode.len(search) < WIDTH - 25 then
+            if unicode.len(charStr) > 0 and not charStr:match("[\x00-\x1F\x7F]") and unicode.len(search) < WIDTH - 25 then
                 search = search .. charStr
             end
         end
@@ -725,7 +705,7 @@ local function onKeyDown(_, _, char, key, nick)
         selectedItem = nil
         buttonHover = nil
     else
-        if key == 200 then -- Up
+        if code == 200 then -- Up
             local startIndex = (currentPage - 1) * perPage + 1
             local visibleItems = {}
             for i = startIndex, math.min(#filteredItems, startIndex + perPage - 1) do
@@ -748,7 +728,7 @@ local function onKeyDown(_, _, char, key, nick)
                     if v == visibleItems[#visibleItems] then selectedItem = k break end
                 end
             end
-        elseif key == 208 then -- Down
+        elseif code == 208 then -- Down
             local startIndex = (currentPage - 1) * perPage + 1
             local visibleItems = {}
             for i = startIndex, math.min(#filteredItems, startIndex + perPage - 1) do
@@ -771,14 +751,10 @@ local function onKeyDown(_, _, char, key, nick)
                     if v == visibleItems[1] then selectedItem = k break end
                 end
             end
-        elseif key == 203 then -- Left
+        elseif code == 203 then -- Left
             if currentPage > 1 then currentPage = currentPage - 1 selectedItem = nil end
-        elseif key == 205 then -- Right
+        elseif code == 205 then -- Right
             if currentPage < getMaxPages() then currentPage = currentPage + 1 selectedItem = nil end
-        elseif key == 200 and arg.shift then -- Shift + Up
-            logOffset = math.min(logOffset + 1, #logs - 5)
-        elseif key == 208 and arg.shift then -- Shift + Down
-            logOffset = math.max(logOffset - 1, 0)
         end
     end
     draw()
@@ -786,16 +762,20 @@ end
 
 -- Initialization and Main Loop
 local function init()
-    checkComponents()
-    bindGpu()
-    if debug then g.setResolution(160, 50) WIDTH, HEIGHT = 160, 50 end
+    if debug then gpu.setResolution(160, 50) WIDTH, HEIGHT = 160, 50 end
     initDataFile()
     addLog("INFO: Program started", "INFO")
     reload()
-    -- Register event handlers and store their IDs
     eventHandlers.touch = event.listen("touch", onTouch)
     eventHandlers.scroll = event.listen("scroll", onScroll)
     eventHandlers.key_down = event.listen("key_down", onKeyDown)
+    for eventName, handler in pairs(eventHandlers) do
+        if not handler then
+            addLog("ERROR: Failed to register " .. eventName .. " handler", "ERROR")
+        else
+            addLog("INFO: Registered " .. eventName .. " handler", "INFO")
+        end
+    end
     draw()
 end
 
@@ -806,14 +786,13 @@ local function main()
     end)
     if not success then
         addLog("ERROR: Fatal error: " .. tostring(err), "ERROR")
-        -- Cancel only registered event handlers
         for _, handler in pairs(eventHandlers) do
             if handler then event.cancel(handler) end
         end
         draw()
+        os.sleep(2)
         computer.shutdown(true)
     end
 end
 
 main()
-```
