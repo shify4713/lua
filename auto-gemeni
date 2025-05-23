@@ -18,14 +18,17 @@ local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main
 local function checkComponents()
     if not component.isAvailable("gpu") then
         io.stderr:write("Ошибка: GPU недоступен\n")
+        addLog(logs, "ERROR: GPU недоступен", "ERROR")
         os.exit(1)
     end
     if not component.isAvailable("screen") then
         io.stderr:write("Ошибка: Экран недоступен\n")
+        addLog(logs, "ERROR: Экран недоступен", "ERROR")
         os.exit(1)
     end
     if not component.isAvailable("me_interface") then
         io.stderr:write("Ошибка: ME-интерфейс недоступен\n")
+        addLog(logs, "ERROR: ME-интерфейс недоступен", "ERROR")
         os.exit(1)
     end
 end
@@ -35,14 +38,17 @@ local function bindGpu()
     local screen = component.list("screen")()
     if not screen then
         io.stderr:write("Ошибка: Не найден экран для привязки GPU\n")
+        addLog(logs, "ERROR: Не найден экран для привязки GPU", "ERROR")
         os.exit(1)
     end
-    local success, err = pcall(g.bind, screen)
+    local success, err = pcall(g.bind, screen, true) -- Принудительная привязка
     if not success then
         io.stderr:write("Ошибка: Не удалось привязать GPU к экрану: " .. tostring(err) .. "\n")
+        addLog(logs, "ERROR: Не удалось привязать GPU: " .. tostring(err), "ERROR")
         os.exit(1)
     end
     io.stdout:write("GPU привязан к экрану: " .. screen .. "\n")
+    addLog(logs, "INFO: GPU привязан к экрану: " .. screen, "INFO")
     return true
 end
 
@@ -51,13 +57,16 @@ if not fs.exists(LIB_PATH) then
     io.stdout:write("ultimateOC.lua не найден. Скачивание...\n")
     local success, err = shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
     if not success then
+ Bridgeman
         io.stderr:write("Не удалось скачать ultimateOC.lua: " .. tostring(err) .. "\n")
+        addLog(logs, "ERROR: Не удалось скачать ultimateOC.lua: " .. tostring(err), "ERROR")
         os.exit(1)
     end
 end
 local ok, uoc = pcall(require, "ultimateOC")
 if not ok then
     io.stderr:write("Не удалось загрузить ultimateOC.lua: " .. tostring(uoc) .. "\n")
+    addLog(logs, "ERROR: Не удалось загрузить ultimateOC.lua: " .. tostring(uoc), "ERROR")
     uoc = {
         drawText = function(x, y, text, color)
             g.setForeground(color or 0xFFFFFF)
@@ -112,6 +121,7 @@ end
 if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {items = {}, settings = {sortCriteria = "name", sortAscending = true}})
     io.stdout:write("Создан новый файл BD.txt\n")
+    addLog(logs, "INFO: Создан новый файл BD.txt", "INFO")
 end
 
 -------------------- Настройки --------------------
@@ -159,6 +169,7 @@ local inputMode = nil -- "add" or "edit"
 local inputField = ""
 local inputLabel = ""
 local inputY = HEIGHT - 10
+local focus = true -- Флаг активности окна
 
 -------------------- Логгирование --------------------
 local function addLog(logs, text, lvl)
@@ -438,6 +449,7 @@ local function draw()
         drawLogs()
         drawButtons()
     end
+    addLog(logs, "INFO: Отрисовка завершена", "INFO")
 end
 
 -------------------- IO и действия --------------------
@@ -470,33 +482,33 @@ local function reload()
                 qty = qty + (d.qty or d.size or 0)
             end
         end
-        local craftingJobs_ok, craftingJobs = pcall(me.getCraftingJobs)
-        if craftingJobs_ok and craftingJobs and craftingJobs.n then
-            for _, job in ipairs(craftingJobs) do
-                if job.output and job.output.id == item.id and
-                   (item.dmg == nil or job.output.damage == item.dmg) then
-                    qty = qty + (job.output.size or job.output.qty or 0)
-                    if lastRequestedItem and lastRequestedItem.id == item.id and
-                       (lastRequestedItem.dmg == nil or lastRequestedItem.dmg == item.dmg) then
-                        lastRequestedItem = nil
-                        lastRequestTime = 0
-                    end
-                end
+        item.current = qty
+    end
+    local craftingJobs_ok, craftingJobs = pcall(me.getCraftingJobs)
+    if craftingJobs_ok and craftingJobs and craftingJobs.n then
+        for _, job in ipairs(craftingJobs) do
+            if job.output and job.output.id and lastRequestedItem and
+               job.output.id == lastRequestedItem.id and
+               (lastRequestedItem.dmg == nil or job.output.damage == lastRequestedItem.dmg) then
+                lastRequestedItem = nil
+                lastRequestTime = 0
             end
         end
-        item.current = qty
     end
     if lastRequestedItem and computer.uptime() - lastRequestTime > 30 then
         addLog(logs, "WARN: Таймаут ожидания для '" .. (lastRequestedItem.id or "<??>") .. "'. Сброс lastRequestedItem.", "WARN")
         lastRequestedItem = nil
         lastRequestTime = 0
     end
+    addLog(logs, "INFO: Данные перезагружены", "INFO")
 end
 
 local function save()
     local ok, err = pcall(uoc.savef, DATA_FILE, {items = dataItems, settings = settings})
     if not ok then
         addLog(logs, "ERROR: Ошибка сохранения: " .. tostring(err), "ERROR")
+    else
+        addLog(logs, "INFO: Данные сохранены", "INFO")
     end
 end
 
@@ -504,6 +516,8 @@ local function resetSelection()
     search = ""
     currentPage = 1
     selectedItem = nil
+    searchActive = false
+    addLog(logs, "INFO: Сброс выбора", "INFO")
 end
 
 local function cancelInput()
@@ -511,7 +525,10 @@ local function cancelInput()
     inputMode = nil
     inputField = ""
     inputLabel = ""
+    term.showCursor(false)
+    term.clear()
     draw()
+    addLog(logs, "INFO: Ввод отменен", "INFO")
 end
 
 local function addItem()
@@ -529,8 +546,14 @@ local function addItem()
         term.setCursor(3 + unicode.len(inputField), inputY + 1)
         term.showCursor(true)
         while true do
-            local ev, _, char, key = event.pull(1, "key_down", "char")
-            if ev == "key_down" then
+            local ev, _, char, key = event.pull(0.5, "key_down", "char")
+            if ev == nil then
+                if not focus then
+                    addLog(logs, "WARN: Окно не в фокусе", "WARN")
+                    term.setCursorBlink(true)
+                end
+            elseif ev == "key_down" then
+                addLog(logs, "INFO: Нажата клавиша: " .. tostring(key), "INFO")
                 if key == 28 then -- Enter
                     term.showCursor(false)
                     if inputField == "" and not isNumeric then
@@ -555,6 +578,7 @@ local function addItem()
                     return nil
                 end
             elseif ev == "char" and char and unicode.len(char) > 0 and not char:find("[\x00-\x1F\x7F]") then
+                addLog(logs, "INFO: Введен символ: " .. char, "INFO")
                 if unicode.len(inputField) < WIDTH - 24 then
                     inputField = inputField .. char
                 end
@@ -570,6 +594,7 @@ local function addItem()
         return
     end
 
+    addLog(logs, "INFO: Начало добавления предмета", "INFO")
     newItem.name = promptField("name", "Введите название предмета:", false)
     if not newItem.name then return end
     newItem.category = promptField("category", "Введите категорию:", false)
@@ -592,6 +617,7 @@ end
 local function editItem()
     if not selectedItem or not dataItems[selectedItem] then
         addLog(logs, "ERROR: Не выбран предмет!", "ERROR")
+        cancelInput()
         return
     end
     changeitem = true
@@ -605,8 +631,14 @@ local function editItem()
         term.setCursor(3 + unicode.len(inputField), inputY + 1)
         term.showCursor(true)
         while true do
-            local ev, _, char, key = event.pull(1, "key_down", "char")
-            if ev == "key_down" then
+            local ev, _, char, key = event.pull(0.5, "key_down", "char")
+            if ev == nil then
+                if not focus then
+                    addLog(logs, "WARN: Окно не в фокусе", "WARN")
+                    term.setCursorBlink(true)
+                end
+            elseif ev == "key_down" then
+                addLog(logs, "INFO: Нажата клавиша: " .. tostring(key), "INFO")
                 if key == 28 then -- Enter
                     term.showCursor(false)
                     if inputField == "" and not isNumeric then
@@ -631,6 +663,7 @@ local function editItem()
                     return nil
                 end
             elseif ev == "char" and char and unicode.len(char) > 0 and not char:find("[\x00-\x1F\x7F]") then
+                addLog(logs, "INFO: Введен символ: " .. char, "INFO")
                 if unicode.len(inputField) < WIDTH - 24 then
                     inputField = inputField .. char
                 end
@@ -640,6 +673,7 @@ local function editItem()
         end
     end
 
+    addLog(logs, "INFO: Начало редактирования предмета: " .. item.name, "INFO")
     item.name = promptField("name", "Введите название предмета:", false)
     if not item.name then return end
     item.category = promptField("category", "Введите категорию:", false)
@@ -780,7 +814,12 @@ local function autoCraftLoop()
                 end
             end
         end
-        os.sleep(0.5)
+        local ev = {event.pull(0.5)}
+        if ev[1] == nil then
+            if not changeitem then
+                draw() -- Перерисовка для поддержания активности
+            end
+        end
     end
 end
 
@@ -820,6 +859,14 @@ local function updateButtonHover(x, y)
 end
 
 event.listen("touch", function(_, _, x, y, _, _)
+    if not focus then
+        focus = true
+        addLog(logs, "INFO: Окно получило фокус", "INFO")
+        term.setCursorBlink(true)
+        draw()
+        return
+    end
+    addLog(logs, "INFO: Событие touch: x=" .. x .. ", y=" .. y, "INFO")
     if changeitem then return end
     local btnWidth = 12
     local btnHeight = 3
@@ -834,6 +881,7 @@ event.listen("touch", function(_, _, x, y, _, _)
     for i, btn in ipairs(btns) do
         local btnY = 10 + (i - 1) * (btnHeight + btnPadding)
         if x >= btnX and x <= btnX + btnWidth - 1 and y >= btnY and y <= btnY + btnHeight - 1 then
+            addLog(logs, "INFO: Нажата кнопка: " .. btn.action, "INFO")
             if btn.action == "delete" then removeItem()
             elseif btn.action == "edit" then editItem()
             elseif btn.action == "toggleCraft" then if isCrafting then stopCraft() else doCraft() end
@@ -855,6 +903,7 @@ event.listen("touch", function(_, _, x, y, _, _)
         if currentPage > 1 then
             currentPage = currentPage - 1
             selectedItem = nil
+            addLog(logs, "INFO: Переход на предыдущую страницу: " .. currentPage, "INFO")
             buttonHover = nil
             draw()
         end
@@ -864,6 +913,7 @@ event.listen("touch", function(_, _, x, y, _, _)
         if currentPage < maxPages then
             currentPage = currentPage + 1
             selectedItem = nil
+            addLog(logs, "INFO: Переход на следующую страницу: " .. currentPage, "INFO")
             buttonHover = nil
             draw()
         end
@@ -890,24 +940,26 @@ event.listen("touch", function(_, _, x, y, _, _)
         settings.sortCriteria = criteriaList[currentCriteriaIndex]
         currentPage = 1
         selectedItem = nil
+        addLog(logs, "INFO: Изменена сортировка: " .. settings.sortCriteria .. ", ascending: " .. tostring(settings.sortAscending), "INFO")
         buttonHover = nil
         save()
         draw()
         return
     end
     if y >= HEIGHT - 10 and y <= HEIGHT - 8 then
-        searchActive = false
         if x >= 2 + (WIDTH - 20) - 3 and x <= 2 + (WIDTH - 20) - 1 and search ~= "" then
             search = ""
             currentPage = 1
             selectedItem = nil
             buttonHover = nil
+            addLog(logs, "INFO: Очищено поле поиска", "INFO")
             draw()
             return
         end
         if x >= 2 + 1 and x <= 2 + (WIDTH - 20) - 4 then
             searchActive = true
             buttonHover = nil
+            addLog(logs, "INFO: Активировано поле поиска", "INFO")
             draw()
             return
         end
@@ -926,6 +978,7 @@ event.listen("touch", function(_, _, x, y, _, _)
             for k, v in ipairs(dataItems) do
                 if v == filteredAndSortedItems[actualIndexInFiltered] then
                     selectedItem = k
+                    addLog(logs, "INFO: Выбран предмет: " .. (v.name or "<??>"), "INFO")
                     break
                 end
             end
@@ -943,11 +996,20 @@ event.listen("mouse_move", function(_, _, x, y)
     local newHover = updateButtonHover(x, y)
     if newHover ~= buttonHover then
         buttonHover = newHover
+        addLog(logs, "INFO: Наведение на: " .. (newHover or "ничего"), "INFO")
         draw()
     end
 end)
 
 event.listen("key_down", function(_, _, _, code, _)
+    addLog(logs, "INFO: Событие key_down: code=" .. code, "INFO")
+    if not focus then
+        focus = true
+        addLog(logs, "INFO: Окно получило фокус через key_down", "INFO")
+        term.setCursorBlink(true)
+        draw()
+        return
+    end
     if changeitem then return end
     local filteredAndSortedItems = getFilteredAndSortedItems()
     local perPage = getItemsPerPage()
@@ -955,10 +1017,13 @@ event.listen("key_down", function(_, _, _, code, _)
     if searchActive then
         if code == 14 then -- Backspace
             search = unicode.sub(search, 1, -2)
+            addLog(logs, "INFO: Backspace в поиске", "INFO")
         elseif code == 211 then -- Delete
             search = ""
+            addLog(logs, "INFO: Очищено поле поиска", "INFO")
         elseif code == 28 then -- Enter
             searchActive = false
+            addLog(logs, "INFO: Деактивировано поле поиска", "INFO")
         end
         currentPage = 1
         selectedItem = nil
@@ -999,6 +1064,7 @@ event.listen("key_down", function(_, _, _, code, _)
                     end
                 end
             end
+            addLog(logs, "INFO: Нажата стрелка вверх, выбран предмет: " .. (selectedItem and dataItems[selectedItem].name or "ничего"), "INFO")
         elseif code == 208 then -- Down
             local currentSelectedItemInFiltered = nil
             local startIndex = (currentPage - 1) * perPage + 1
@@ -1033,20 +1099,25 @@ event.listen("key_down", function(_, _, _, code, _)
                     end
                 end
             end
+            addLog(logs, "INFO: Нажата стрелка вниз, выбран предмет: " .. (selectedItem and dataItems[selectedItem].name or "ничего"), "INFO")
         elseif code == 203 then -- Left
             if currentPage > 1 then
                 currentPage = currentPage - 1
                 selectedItem = nil
+                addLog(logs, "INFO: Нажата стрелка влево, страница: " .. currentPage, "INFO")
             end
         elseif code == 205 then -- Right
             if currentPage < maxPages then
                 currentPage = currentPage + 1
                 selectedItem = nil
+                addLog(logs, "INFO: Нажата стрелка вправо, страница: " .. currentPage, "INFO")
             end
         elseif code == 200 and arg.shift then -- Shift + Up
             logOffset = math.min(logOffset + 1, #logs - 5)
+            addLog(logs, "INFO: Прокрутка логов вверх", "INFO")
         elseif code == 208 and arg.shift then -- Shift + Down
             logOffset = math.max(logOffset - 1, 0)
+            addLog(logs, "INFO: Прокрутка логов вниз", "INFO")
         end
         draw()
     end
@@ -1060,8 +1131,19 @@ event.listen("char", function(_, _, char)
             currentPage = 1
             selectedItem = nil
             buttonHover = nil
+            addLog(logs, "INFO: Введен символ в поиске: " .. char, "INFO")
             draw()
         end
+    end
+end)
+
+-- Проверка фокуса окна
+event.listen("focus", function(_, _, state)
+    focus = state
+    addLog(logs, "INFO: Фокус окна: " .. (state and "активно" or "неактивно"), "INFO")
+    term.setCursorBlink(state)
+    if state then
+        draw()
     end
 end)
 
@@ -1070,6 +1152,7 @@ checkComponents()
 bindGpu()
 WIDTH, HEIGHT = g.getResolution()
 g.setResolution(WIDTH, HEIGHT)
+term.setCursorBlink(true)
 addLog(logs, "INFO: Программа запущена", "INFO")
 local ok, err = pcall(reload)
 if not ok then
