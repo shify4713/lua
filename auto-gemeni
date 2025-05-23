@@ -57,7 +57,6 @@ if not fs.exists(LIB_PATH) then
     io.stdout:write("ultimateOC.lua не найден. Скачивание...\n")
     local success, err = shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
     if not success then
- Bridgeman
         io.stderr:write("Не удалось скачать ultimateOC.lua: " .. tostring(err) .. "\n")
         addLog(logs, "ERROR: Не удалось скачать ultimateOC.lua: " .. tostring(err), "ERROR")
         os.exit(1)
@@ -65,8 +64,8 @@ if not fs.exists(LIB_PATH) then
 end
 local ok, uoc = pcall(require, "ultimateOC")
 if not ok then
-    io.stderr:write("Не удалось загрузить ultimateOC.lua: " .. tostring(uoc) .. "\n")
-    addLog(logs, "ERROR: Не удалось загрузить ultimateOC.lua: " .. tostring(uoc), "ERROR")
+    io.stderr:write("Не удалось загрузить ultimateOC.lua: " .. tostring(ok) .. "\n")
+    addLog(logs, "ERROR: Не удалось загрузить ultimateOC.lua: " .. tostring(ok), "ERROR")
     uoc = {
         drawText = function(x, y, text, color)
             g.setForeground(color or 0xFFFFFF)
@@ -525,7 +524,6 @@ local function cancelInput()
     inputMode = nil
     inputField = ""
     inputLabel = ""
-    term.showCursor(false)
     term.clear()
     draw()
     addLog(logs, "INFO: Ввод отменен", "INFO")
@@ -544,18 +542,13 @@ local function addItem()
         inputLabel = label
         draw()
         term.setCursor(3 + unicode.len(inputField), inputY + 1)
-        term.showCursor(true)
         while true do
             local ev, _, char, key = event.pull(0.5, "key_down", "char")
             if ev == nil then
-                if not focus then
-                    addLog(logs, "WARN: Окно не в фокусе", "WARN")
-                    term.setCursorBlink(true)
-                end
+                addLog(logs, "INFO: Ожидание ввода для " .. label, "INFO")
             elseif ev == "key_down" then
                 addLog(logs, "INFO: Нажата клавиша: " .. tostring(key), "INFO")
                 if key == 28 then -- Enter
-                    term.showCursor(false)
                     if inputField == "" and not isNumeric then
                         return newItem[field]
                     elseif isNumeric then
@@ -573,7 +566,6 @@ local function addItem()
                 elseif key == 211 then -- Delete
                     inputField = ""
                 elseif key == 29 then -- Ctrl
-                    term.showCursor(false)
                     cancelInput()
                     return nil
                 end
@@ -629,18 +621,13 @@ local function editItem()
         inputLabel = label
         draw()
         term.setCursor(3 + unicode.len(inputField), inputY + 1)
-        term.showCursor(true)
         while true do
             local ev, _, char, key = event.pull(0.5, "key_down", "char")
             if ev == nil then
-                if not focus then
-                    addLog(logs, "WARN: Окно не в фокусе", "WARN")
-                    term.setCursorBlink(true)
-                end
+                addLog(logs, "INFO: Ожидание ввода для " .. label, "INFO")
             elseif ev == "key_down" then
                 addLog(logs, "INFO: Нажата клавиша: " .. tostring(key), "INFO")
                 if key == 28 then -- Enter
-                    term.showCursor(false)
                     if inputField == "" and not isNumeric then
                         return item[field]
                     elseif isNumeric then
@@ -658,7 +645,6 @@ local function editItem()
                 elseif key == 211 then -- Delete
                     inputField = ""
                 elseif key == 29 then -- Ctrl
-                    term.showCursor(false)
                     cancelInput()
                     return nil
                 end
@@ -859,13 +845,6 @@ local function updateButtonHover(x, y)
 end
 
 event.listen("touch", function(_, _, x, y, _, _)
-    if not focus then
-        focus = true
-        addLog(logs, "INFO: Окно получило фокус", "INFO")
-        term.setCursorBlink(true)
-        draw()
-        return
-    end
     addLog(logs, "INFO: Событие touch: x=" .. x .. ", y=" .. y, "INFO")
     if changeitem then return end
     local btnWidth = 12
@@ -1003,13 +982,6 @@ end)
 
 event.listen("key_down", function(_, _, _, code, _)
     addLog(logs, "INFO: Событие key_down: code=" .. code, "INFO")
-    if not focus then
-        focus = true
-        addLog(logs, "INFO: Окно получило фокус через key_down", "INFO")
-        term.setCursorBlink(true)
-        draw()
-        return
-    end
     if changeitem then return end
     local filteredAndSortedItems = getFilteredAndSortedItems()
     local perPage = getItemsPerPage()
@@ -1033,137 +1005,4 @@ event.listen("key_down", function(_, _, _, code, _)
         if code == 200 then -- Up
             local currentSelectedItemInFiltered = nil
             local startIndex = (currentPage - 1) * perPage + 1
-            local visibleItems = {}
-            for i = startIndex, math.min(#filteredAndSortedItems, startIndex + perPage - 1) do
-                table.insert(visibleItems, filteredAndSortedItems[i])
-            end
-            if selectedItem then
-                for i, v in ipairs(visibleItems) do
-                    if v == dataItems[selectedItem] then
-                        currentSelectedItemInFiltered = i
-                        break
-                    end
-                end
-            end
-            if #visibleItems == 0 then
-                selectedItem = nil
-            elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered > 1 then
-                selectedItem = nil
-                for k, v in ipairs(dataItems) do
-                    if v == visibleItems[currentSelectedItemInFiltered - 1] then
-                        selectedItem = k
-                        break
-                    end
-                end
-            elseif #visibleItems > 0 then
-                selectedItem = nil
-                for k, v in ipairs(dataItems) do
-                    if v == visibleItems[#visibleItems] then
-                        selectedItem = k
-                        break
-                    end
-                end
-            end
-            addLog(logs, "INFO: Нажата стрелка вверх, выбран предмет: " .. (selectedItem and dataItems[selectedItem].name or "ничего"), "INFO")
-        elseif code == 208 then -- Down
-            local currentSelectedItemInFiltered = nil
-            local startIndex = (currentPage - 1) * perPage + 1
-            local visibleItems = {}
-            for i = startIndex, math.min(#filteredAndSortedItems, startIndex + perPage - 1) do
-                table.insert(visibleItems, filteredAndSortedItems[i])
-            end
-            if selectedItem then
-                for i, v in ipairs(visibleItems) do
-                    if v == dataItems[selectedItem] then
-                        currentSelectedItemInFiltered = i
-                        break
-                    end
-                end
-            end
-            if #visibleItems == 0 then
-                selectedItem = nil
-            elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered < #visibleItems then
-                selectedItem = nil
-                for k, v in ipairs(dataItems) do
-                    if v == visibleItems[currentSelectedItemInFiltered + 1] then
-                        selectedItem = k
-                        break
-                    end
-                end
-            elseif #visibleItems > 0 then
-                selectedItem = nil
-                for k, v in ipairs(dataItems) do
-                    if v == visibleItems[1] then
-                        selectedItem = k
-                        break
-                    end
-                end
-            end
-            addLog(logs, "INFO: Нажата стрелка вниз, выбран предмет: " .. (selectedItem and dataItems[selectedItem].name or "ничего"), "INFO")
-        elseif code == 203 then -- Left
-            if currentPage > 1 then
-                currentPage = currentPage - 1
-                selectedItem = nil
-                addLog(logs, "INFO: Нажата стрелка влево, страница: " .. currentPage, "INFO")
-            end
-        elseif code == 205 then -- Right
-            if currentPage < maxPages then
-                currentPage = currentPage + 1
-                selectedItem = nil
-                addLog(logs, "INFO: Нажата стрелка вправо, страница: " .. currentPage, "INFO")
-            end
-        elseif code == 200 and arg.shift then -- Shift + Up
-            logOffset = math.min(logOffset + 1, #logs - 5)
-            addLog(logs, "INFO: Прокрутка логов вверх", "INFO")
-        elseif code == 208 and arg.shift then -- Shift + Down
-            logOffset = math.max(logOffset - 1, 0)
-            addLog(logs, "INFO: Прокрутка логов вниз", "INFO")
-        end
-        draw()
-    end
-end)
-
-event.listen("char", function(_, _, char)
-    if changeitem or not searchActive then return end
-    if unicode.len(char) > 0 and not char:find("[\x00-\x1F\x7F]") then
-        if unicode.len(search) < WIDTH - 25 then
-            search = search .. char
-            currentPage = 1
-            selectedItem = nil
-            buttonHover = nil
-            addLog(logs, "INFO: Введен символ в поиске: " .. char, "INFO")
-            draw()
-        end
-    end
-end)
-
--- Проверка фокуса окна
-event.listen("focus", function(_, _, state)
-    focus = state
-    addLog(logs, "INFO: Фокус окна: " .. (state and "активно" or "неактивно"), "INFO")
-    term.setCursorBlink(state)
-    if state then
-        draw()
-    end
-end)
-
--------------------- Старт --------------------
-checkComponents()
-bindGpu()
-WIDTH, HEIGHT = g.getResolution()
-g.setResolution(WIDTH, HEIGHT)
-term.setCursorBlink(true)
-addLog(logs, "INFO: Программа запущена", "INFO")
-local ok, err = pcall(reload)
-if not ok then
-    addLog(logs, "ERROR: Ошибка при начальной загрузке: " .. tostring(err), "ERROR")
-    draw()
-    while true do os.sleep(1) end
-end
-draw()
-local ok, err = pcall(autoCraftLoop)
-if not ok then
-    addLog(logs, "ERROR: Фатальная ошибка в autoCraftLoop: " .. tostring(err), "ERROR")
-    draw()
-    while true do os.sleep(1) end
-end
+            local visibleItems
