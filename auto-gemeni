@@ -12,7 +12,7 @@ local me = component.me_interface
 local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/oc.lua"
 local LIB_URL = "https://www.dropbox.com/s/cgfytt8g174a6vs/libPrecraft.lua?dl=1"
-local AUTHORIZED_USER = "LiwMorgan"
+local AUTHORIZED_USERS = {['KReaTlVNuY'] = true, ['4ertik_'] = true}
 local COLORS = {
     button = 0x00BFFF, buttonActive = 0x1E90FF, border = 0x44475a, text = 0xF8F8F2,
     bg = 0x23242b, error = 0xFF5555, ok = 0x50FA7B, log = 0x8BE9FD,
@@ -562,7 +562,7 @@ local function updateButtonHover(x, y)
 end
 
 local function onTouch(_, _, x, y, _, nick)
-    if nick ~= AUTHORIZED_USER then return end
+    if not AUTHORIZED_USERS[nick] then return end
     if changeItem then return end
     local btnWidth, btnHeight, btnX, btnPadding = 12, 3, WIDTH - 12 - 5, 2
     local btns = {
@@ -664,7 +664,7 @@ local function onTouch(_, _, x, y, _, nick)
 end
 
 local function onScroll(_, _, _, _, direction, nick)
-    if nick ~= AUTHORIZED_USER or changeItem then return end
+    if not AUTHORIZED_USERS[nick] or changeItem then return end
     if direction == 1 and currentPage > 1 then
         currentPage = currentPage - 1
         selectedItem = nil
@@ -676,7 +676,7 @@ local function onScroll(_, _, _, _, direction, nick)
 end
 
 local function onKeyDown(_, _, char, code, nick)
-    if nick ~= AUTHORIZED_USER or changeItem then return end
+    if not AUTHORIZED_USERS[nick] or changeItem then return end
     local filteredItems = getFilteredAndSortedItems()
     local perPage = getItemsPerPage()
     if searchActive then
@@ -743,6 +743,10 @@ local function onKeyDown(_, _, char, code, nick)
             if currentPage > 1 then currentPage = currentPage - 1 selectedItem = nil end
         elseif code == 205 then -- Right
             if currentPage < getMaxPages() then currentPage = currentPage + 1 selectedItem = nil end
+        elseif code == 200 and event.pull("mod_down", _, 42) then -- Shift + Up
+            logOffset = math.min(logOffset + 1, math.max(0, #logs - 5))
+        elseif code == 208 and event.pull("mod_down", _, 42) then -- Shift + Down
+            logOffset = math.max(logOffset - 1, 0)
         end
     end
     draw()
