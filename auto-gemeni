@@ -135,9 +135,7 @@ local COLORS = {
     search_hint = 0x888888,
     bar_shadow = 0x181920,
     warning = 0xFFB86C,
-    input_bg = 0x282B36,
-    input_border = 0x00BFFF,
-    input_text = 0xF8F8F2,
+    input_bg = 0x000000, -- Для ввода
 }
 local WIDTH, HEIGHT = g.getResolution()
 local craftStatus = "Ожидание..."
@@ -484,55 +482,26 @@ local function cancelInput()
     draw()
 end
 
-local function promptForInput(label, defaultValue, isNumeric, x, y, maxLen)
+local function simplePrompt(label, defaultValue, isNumeric, x, y)
     g.setBackground(COLORS.input_bg)
     g.fill(1, y, WIDTH, 1, " ")
     uoc.drawText(x, y, label, COLORS.ok)
     term.setCursor(x + unicode.len(label) + 1, y)
     term.showCursor(true)
-    local input = tostring(defaultValue or "")
-    local function redraw()
-        g.setBackground(COLORS.input_bg)
-        g.fill(x + unicode.len(label) + 1, y, WIDTH - x - unicode.len(label) - 1, 1, " ")
-        local display = input
-        if unicode.len(display) > maxLen then
-            display = unicode.sub(display, unicode.len(display) - maxLen + 1)
-        end
-        uoc.drawText(x + unicode.len(label) + 1, y, display .. "_", COLORS.input_text)
-        term.setCursor(x + unicode.len(label) + 1 + unicode.len(display), y)
+    local input = io.read()
+    term.showCursor(false)
+    if input == nil or input == "" then
+        input = defaultValue or ""
     end
-    redraw()
-    while true do
-        local eventType, _, char, key = event.pullMultiple("key_down", "char", "interrupted")
-        if eventType == "interrupted" then
-            term.showCursor(false)
-            return nil
-        elseif eventType == "key_down" then
-            if key == 28 then -- Enter
-                term.showCursor(false)
-                if isNumeric then
-                    local num = tonumber(input)
-                    if not num or num < 0 then
-                        addLog(logs, "WARN: Неверное числовое значение для '" .. label .. "'. Используется 0.", "WARN")
-                        return 0
-                    end
-                    return num
-                end
-                return input ~= "" and input or defaultValue or ""
-            elseif key == 14 then -- Backspace
-                input = unicode.sub(input, 1, -2)
-                redraw()
-            elseif key == 211 then -- Delete
-                input = ""
-                redraw()
-            end
-        elseif eventType == "char" then
-            if unicode.len(input) < maxLen and not char:find("[\x00-\x1F\x7F]") then
-                input = input .. char
-                redraw()
-            end
+    if isNumeric then
+        local num = tonumber(input)
+        if not num or num < 0 then
+            addLog(logs, "WARN: Неверное числовое значение для '" .. label .. "'. Используется 0.", "WARN")
+            return 0
         end
+        return num
     end
+    return input
 end
 
 local function addItem()
@@ -551,26 +520,10 @@ local function addItem()
         return
     end
     local defaultName = stack.label or stack.id or "Item"
-    local name = promptForInput("Название:", defaultName, false, 2, HEIGHT - 11, 40)
-    if not name then
-        cancelInput()
-        return
-    end
-    local category = promptForInput("Категория:", "Без категории", false, 2, HEIGHT - 11, 40)
-    if not category then
-        cancelInput()
-        return
-    end
-    local count = promptForInput("Держать:", 0, true, 2, HEIGHT - 11, 20)
-    if count == nil then
-        cancelInput()
-        return
-    end
-    local craftSize = promptForInput("Крафт за раз:", 1, true, 2, HEIGHT - 11, 20)
-    if craftSize == nil then
-        cancelInput()
-        return
-    end
+    local name = simplePrompt("Название:", defaultName, false, 2, HEIGHT - 11)
+    local category = simplePrompt("Категория:", "Без категории", false, 2, HEIGHT - 9)
+    local count = simplePrompt("Держать:", 0, true, 2, HEIGHT - 7)
+    local craftSize = simplePrompt("Крафт за раз:", 1, true, 2, HEIGHT - 5)
     table.insert(dataItems, {
         name = name,
         category = category,
@@ -597,26 +550,10 @@ local function editItem()
     local item = dataItems[selectedItem]
     clear()
     uoc.drawText(2, HEIGHT - 15, "Изменение: " .. (item.name or "<??>"), COLORS.ok)
-    local name = promptForInput("Название:", item.name or "", false, 2, HEIGHT - 11, 40)
-    if not name then
-        cancelInput()
-        return
-    end
-    local category = promptForInput("Категория:", item.category or "Без категории", false, 2, HEIGHT - 11, 40)
-    if not category then
-        cancelInput()
-        return
-    end
-    local count = promptForInput("Держать:", item.count or 0, true, 2, HEIGHT - 11, 20)
-    if count == nil then
-        cancelInput()
-        return
-    end
-    local craftSize = promptForInput("Крафт за раз:", item.craftSize or 1, true, 2, HEIGHT - 11, 20)
-    if craftSize == nil then
-        cancelInput()
-        return
-    end
+    local name = simplePrompt("Название:", item.name or "", false, 2, HEIGHT - 11)
+    local category = simplePrompt("Категория:", item.category or "Без категории", false, 2, HEIGHT - 9)
+    local count = simplePrompt("Держать:", item.count or 0, true, 2, HEIGHT - 7)
+    local craftSize = simplePrompt("Крафт за раз:", item.craftSize or 1, true, 2, HEIGHT - 5)
     item.name = name
     item.category = category
     item.count = count
