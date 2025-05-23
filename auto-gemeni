@@ -474,22 +474,28 @@ local function addItem()
     local ok_stack, res_stack = pcall(me.getStackInSlot, 1)
     if ok_stack then stack = res_stack end
     if stack then
-        g.set(2, HEIGHT - 10, "Введите название предмета:")
+        addLog("main", "INFO: Обнаружен предмет в слоте 1: " .. (stack.label or stack.id), "INFO")
+        term.setCursor(2, HEIGHT - 10)
+        g.set(2, HEIGHT - 10, "Введите название предмета: ")
         term.setCursor(30, HEIGHT - 10)
-        local name = tostring(io.read()) or (stack.label or stack.id)
+        local name = term.read({pwchar = ""}) or (stack.label or stack.id)
+        name = tostring(name):gsub("\n", "") -- Удаляем символы новой строки
         g.fill(2, HEIGHT - 10, WIDTH, 1, " ")
-        g.set(2, HEIGHT - 10, "Введите категорию:")
+        g.set(2, HEIGHT - 10, "Введите категорию: ")
         term.setCursor(30, HEIGHT - 10)
-        local category = tostring(io.read()) or "Без категории"
+        local category = term.read({pwchar = ""}) or "Без категории"
+        category = tostring(category):gsub("\n", "")
         g.fill(2, HEIGHT - 10, WIDTH, 1, " ")
-        g.set(2, HEIGHT - 10, "Введите кол-во поддержания:")
+        g.set(2, HEIGHT - 10, "Введите кол-во поддержания: ")
         term.setCursor(30, HEIGHT - 10)
-        local count = tonumber(io.read()) or 0
+        local count = tonumber(term.read({pwchar = ""})) or 0
         g.fill(2, HEIGHT - 10, WIDTH, 1, " ")
-        g.set(2, HEIGHT - 10, "Введите макс. объём крафта:")
+        g.set(2, HEIGHT - 10, "Введите макс. объём крафта: ")
         term.setCursor(30, HEIGHT - 10)
-        local craftSize = tonumber(io.read()) or 1
+        local craftSize = tonumber(term.read({pwchar = ""})) or 1
         g.fill(2, HEIGHT - 10, WIDTH, 1, " ")
+        if name == "" then name = stack.label or stack.id end
+        if category == "" then category = "Без категории" end
         table.insert(dataItems, {
             name = name,
             category = category,
@@ -504,6 +510,7 @@ local function addItem()
         currentPage = getMaxPages()
         posSelect = nil
     else
+        addLog("main", "ERROR: Предмет не найден в 1-м слоте интерфейса", "ERROR")
         g.set(2, HEIGHT - 10, "Предмет не установлен в 1-й слот интерфейса")
         os.sleep(2)
         g.fill(2, HEIGHT - 10, WIDTH, 1, " ")
@@ -523,21 +530,23 @@ local function changeItem(action)
     clear()
     local item = dataItems[posSelect]
     if action == "changeName" then
-        g.set(2, HEIGHT - 10, "Введите название предмета:")
+        g.set(2, HEIGHT - 10, "Введите название предмета: ")
         term.setCursor(30, HEIGHT - 10)
-        item.name = tostring(io.read()) or item.name
+        local name = term.read({pwchar = ""}) or item.name
+        item.name = tostring(name):gsub("\n", "")
     elseif action == "changeCategory" then
-        g.set(2, HEIGHT - 10, "Введите категорию:")
+        g.set(2, HEIGHT - 10, "Введите категорию: ")
         term.setCursor(30, HEIGHT - 10)
-        item.category = tostring(io.read()) or item.category
+        local category = term.read({pwchar = ""}) or item.category
+        item.category = tostring(category):gsub("\n", "")
     elseif action == "changeCount" then
-        g.set(2, HEIGHT - 10, "Введите кол-во поддержания:")
+        g.set(2, HEIGHT - 10, "Введите кол-во поддержания: ")
         term.setCursor(30, HEIGHT - 10)
-        item.count = tonumber(io.read()) or item.count
+        item.count = tonumber(term.read({pwchar = ""})) or item.count
     elseif action == "changeCraftSize" then
-        g.set(2, HEIGHT - 10, "Введите макс. объём крафта:")
+        g.set(2, HEIGHT - 10, "Введите макс. объём крафта: ")
         term.setCursor(30, HEIGHT - 10)
-        item.craftSize = tonumber(io.read()) or item.craftSize
+        item.craftSize = tonumber(term.read({pwchar = ""})) or item.craftSize
     end
     g.fill(2, HEIGHT - 10, WIDTH, 1, " ")
     save()
@@ -689,6 +698,7 @@ end
 
 event.listen("touch", function(_, _, x, y, _, nick)
     if changeitem or not ADM[nick] then return end
+    addLog("main", "INFO: Клик по координатам: x=" .. x .. ", y=" .. y, "INFO")
     -- Handle button clicks
     for button, btn in pairs(buttons) do
         for _, gui in ipairs(btn.ButtonIn) do
@@ -696,7 +706,7 @@ event.listen("touch", function(_, _, x, y, _, nick)
                 local endX = btn.x + btn.w - 1
                 local endY = btn.y + btn.h - 1
                 if x >= btn.x and x <= endX and y >= btn.y and y <= endY then
-                    addLog("main", "INFO: Клик на кнопку: " .. btn.text, "INFO")
+                    addLog("main", "INFO: Клик на кнопку: " .. btn.text .. " (x=" .. btn.x .. ", y=" .. btn.y .. ")", "INFO")
                     btn.action()
                     buttonHover = nil
                     draw()
