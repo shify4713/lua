@@ -8,7 +8,7 @@ local g = component.gpu
 local me = component.me_interface
 
 if not fs.exists("/lib/oc.lua") then
-    shell.execute("wget https://www.dropbox.com/s/cgfytt8g174a6vs/libPrecraft.lua?dl=1 /lib/oc.lua")
+    shell.execute("wget https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/g.lib-precraft /lib/oc.lua")
 end
 local oc = require("oc")
 
