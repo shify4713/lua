@@ -3,8 +3,6 @@ local fs = require("filesystem")
 local shell = require("shell")
 local event = require("event")
 local unicode = require("unicode")
-local term = require("term")
-local computer = require("computer")
 local g = component.gpu
 local me = component.me_interface
 local serialization = require("serialization")
@@ -138,6 +136,7 @@ local COLORS = {
     input_bg = 0x282B36,
     input_border = 0x00BFFF,
     input_text = 0xF8F8F2,
+    cursor = 0xFFFFFF,
 }
 local WIDTH, HEIGHT = g.getResolution()
 local craftStatus = "Ожидание..."
@@ -335,12 +334,6 @@ local function drawSearchBar()
         display = unicode.sub(display, unicode.len(display) - maxlen + 1)
     end
     g.set(x + 2, y + 1, display)
-    if searchActive then
-        term.setCursor(x + 2 + unicode.len(search), y + 1)
-        term.showCursor(true)
-    else
-        term.showCursor(false)
-    end
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
 end
@@ -452,12 +445,6 @@ local function promptForInput(label, keyName, isNumeric, defaultValue)
         end
         g.setBackground(COLORS.bg)
         g.setForeground(COLORS.text)
-        if keyName then
-            term.setCursor(currentFieldConfig.x + 2 + unicode.len(activeInput), currentFieldConfig.y + 1)
-            term.showCursor(true)
-        else
-            term.showCursor(false)
-        end
     end
     redrawInputScreen(currentInput)
     local maxLength = currentFieldConfig.w - 4
@@ -481,16 +468,13 @@ local function promptForInput(label, keyName, isNumeric, defaultValue)
                     local numResult = tonumber(currentInput)
                     if numResult == nil then
                         addLog(logs, "WARN: Введено нечисловое значение для '" .. label .. "'. Использовано: " .. tostring(defaultValue), "WARN")
-                        term.showCursor(false)
                         return tonumber(defaultValue) or 0
                     end
-                    term.showCursor(false)
                     return numResult
                 end
                 if currentInput == "" then
                     currentInput = defaultValue or ""
                 end
-                term.showCursor(false)
                 return currentInput
             elseif key == 14 then -- Backspace
                 currentInput = unicode.sub(currentInput, 1, -2)
@@ -499,7 +483,6 @@ local function promptForInput(label, keyName, isNumeric, defaultValue)
                 currentInput = ""
                 addLog(logs, "INFO: Поле очищено", "INFO")
             elseif key == 1 then -- Escape
-                term.showCursor(false)
                 return nil
             end
         end
@@ -588,7 +571,6 @@ local function cancelInput()
     changeitem = false
     inputMode = nil
     inputFields = {}
-    term.showCursor(false)
     draw()
 end
 
@@ -970,11 +952,9 @@ event.listen("key_down", function(_, _, _, key, _)
                 addLog(logs, "INFO: Поле поиска очищено", "INFO")
             elseif key == 28 then -- Enter
                 searchActive = false
-                term.showCursor(false)
             elseif key == 1 then -- Escape
                 search = ""
                 searchActive = false
-                term.showCursor(false)
             end
             currentPage = 1
             selectedItem = nil
