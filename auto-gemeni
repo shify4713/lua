@@ -14,20 +14,28 @@ local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
 local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/ultimateOC.lua"
 
+-------------------- Логгирование --------------------
+local function addLog(logs, text, lvl)
+    lvl = lvl or "INFO"
+    local t = string.format("%-7s %s", "[" .. lvl .. "]", text)
+    table.insert(logs, t)
+    while #logs > 50 do table.remove(logs, 1) end
+end
+
 -- Проверка доступности компонентов
 local function checkComponents()
     if not component.isAvailable("gpu") then
-        io.stderr:write("Ошибка: GPU недоступен\n")
+        print("Ошибка: GPU недоступен")
         addLog(logs, "ERROR: GPU недоступен", "ERROR")
         os.exit(1)
     end
     if not component.isAvailable("screen") then
-        io.stderr:write("Ошибка: Экран недоступен\n")
+        print("Ошибка: Экран недоступен")
         addLog(logs, "ERROR: Экран недоступен", "ERROR")
         os.exit(1)
     end
     if not component.isAvailable("me_interface") then
-        io.stderr:write("Ошибка: ME-интерфейс недоступен\n")
+        print("Ошибка: ME-интерфейс недоступен")
         addLog(logs, "ERROR: ME-интерфейс недоступен", "ERROR")
         os.exit(1)
     end
@@ -37,34 +45,34 @@ end
 local function bindGpu()
     local screen = component.list("screen")()
     if not screen then
-        io.stderr:write("Ошибка: Не найден экран для привязки GPU\n")
+        print("Ошибка: Не найден экран для привязки GPU")
         addLog(logs, "ERROR: Не найден экран для привязки GPU", "ERROR")
         os.exit(1)
     end
     local success, err = pcall(g.bind, screen, true) -- Принудительная привязка
     if not success then
-        io.stderr:write("Ошибка: Не удалось привязать GPU к экрану: " .. tostring(err) .. "\n")
+        print("Ошибка: Не удалось привязать GPU к экрану: " .. tostring(err))
         addLog(logs, "ERROR: Не удалось привязать GPU: " .. tostring(err), "ERROR")
         os.exit(1)
     end
-    io.stdout:write("GPU привязан к экрану: " .. screen .. "\n")
+    print("GPU привязан к экрану: " .. screen)
     addLog(logs, "INFO: GPU привязан к экрану: " .. screen, "INFO")
     return true
 end
 
 -- Проверяем наличие библиотеки
 if not fs.exists(LIB_PATH) then
-    io.stdout:write("ultimateOC.lua не найден. Скачивание...\n")
+    print("ultimateOC.lua не найден. Скачивание...")
     local success, err = shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
     if not success then
-        io.stderr:write("Не удалось скачать ultimateOC.lua: " .. tostring(err) .. "\n")
+        print("Не удалось скачать ultimateOC.lua: " .. tostring(err))
         addLog(logs, "ERROR: Не удалось скачать ultimateOC.lua: " .. tostring(err), "ERROR")
         os.exit(1)
     end
 end
 local ok, uoc = pcall(require, "ultimateOC")
 if not ok then
-    io.stderr:write("Не удалось загрузить ultimateOC.lua: " .. tostring(ok) .. "\n")
+    print("Не удалось загрузить ultimateOC.lua: " .. tostring(ok))
     addLog(logs, "ERROR: Не удалось загрузить ultimateOC.lua: " .. tostring(ok), "ERROR")
     uoc = {
         drawText = function(x, y, text, color)
@@ -119,7 +127,7 @@ end
 -- Проверяем файл данных
 if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {items = {}, settings = {sortCriteria = "name", sortAscending = true}})
-    io.stdout:write("Создан новый файл BD.txt\n")
+    print("Создан новый файл BD.txt")
     addLog(logs, "INFO: Создан новый файл BD.txt", "INFO")
 end
 
@@ -168,15 +176,6 @@ local inputMode = nil -- "add" or "edit"
 local inputField = ""
 local inputLabel = ""
 local inputY = HEIGHT - 10
-local focus = true -- Флаг активности окна
-
--------------------- Логгирование --------------------
-local function addLog(logs, text, lvl)
-    lvl = lvl or "INFO"
-    local t = string.format("%-7s %s", "[" .. lvl .. "]", text)
-    table.insert(logs, t)
-    while #logs > 50 do table.remove(logs, 1) end
-end
 
 -------------------- Вспомогательные функции --------------------
 local function getFilteredAndSortedItems()
