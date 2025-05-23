@@ -196,11 +196,11 @@ local function getFilteredAndSortedItems()
         return settings.sortAscending and valA < valB or valA > valB
     end)
     return filtered
-end
+}
 
 local function getItemsPerPage()
     return HEIGHT - 20
-end
+}
 
 local function getMaxPages()
     local filteredItems = getFilteredAndSortedItems()
@@ -218,7 +218,7 @@ local function clear()
     g.setBackground(COLORS.bg)
     g.fill(1, 1, WIDTH, HEIGHT, " ")
     g.setForeground(COLORS.text)
-end
+}
 
 local function drawHeader()
     uoc.drawText(2, 2, "Ultimate AutoCraft", COLORS.ok)
@@ -352,7 +352,6 @@ local function drawButtons()
     local btnX = WIDTH - btnWidth - 5
     local btnPadding = 2
     local btns = {
-        -- {name = "Крафт всех", action = "craftAll"}, -- Убрана кнопка "Крафт всех"
         {name = "Удалить", action = "delete"},
         {name = "Изменить", action = "edit"},
         {name = isCrafting and "Остановить" or "Автокрафт", action = "toggleCraft"},
@@ -411,10 +410,9 @@ local function drawButtons()
     uoc.animatedButton(btnX, sortBtnY, sortBtnW, arrowBtnH, displaySortText, sortHover, COLORS.button, COLORS.buttonActive, COLORS.text)
 end
 
--- Вспомогательная функция для отрисовки поля ввода и чтения значения через term.read()
--- Теперь она принимает default_value и не требует x, y, w
-local function promptForInput(label, keyName, isNumeric, default_value)
-    local currentInput = inputFields[keyName] or default_value or ""
+-- Вспомогательная функция для отрисовки поля ввода и чтения значения
+local function promptForInput(label, keyName, isNumeric, defaultValue)
+    local currentInput = inputFields[keyName] or defaultValue or ""
     local baseY = HEIGHT - 15
 
     local fieldsConfig = {
@@ -432,64 +430,8 @@ local function promptForInput(label, keyName, isNumeric, default_value)
         end
     end
 
-    if not currentFieldConfig then
-        addLog(logs, "ERROR: Неверная конфигурация поля для ввода: " .. keyName, "ERROR")
-        return nil
-    end
-
     -- Отрисовываем весь экран с текущими значениями полей
-    clear()
-    uoc.drawText(2, baseY, (inputMode == "add") and "Добавление предмета" or "Изменение: " .. (dataItems[selectedItem].name or "<?>"), COLORS.ok)
-    uoc.drawText(2, baseY + 1, "Вставьте предмет в 1-й слот ME интерфейса (для добавления).", COLORS.ok)
-    uoc.drawText(2, baseY + 12, "Enter: сохранить/пропустить", COLORS.text)
-
-    for i, field in ipairs(fieldsConfig) do
-        local isActiveField = (field.key == keyName)
-        uoc.roundRect(field.x, field.y, field.w, 3, COLORS.input_border, COLORS.input_bg)
-        g.setForeground(COLORS.text)
-        g.set(field.x + 1, field.y, field.label)
-        g.setBackground(COLORS.input_bg)
-        g.fill(field.x + 1, field.y + 1, field.w - 2, 1, " ")
-        g.setForeground(isActiveField and COLORS.ok or COLORS.input_text)
-        
-        local displayValue = inputFields[field.key] or ""
-        if isActiveField then
-            displayValue = currentInput .. "_" -- Показываем текущий ввод + курсор
-        elseif displayValue == "" then
-            displayValue = "Введите значение..."
-        end
-        
-        local maxlen = field.w - 4
-        if unicode.len(displayValue) > maxlen then
-            displayValue = unicode.sub(displayValue, unicode.len(displayValue) - maxlen + 1)
-        end
-        g.set(field.x + 2, field.y + 1, displayValue)
-    end
-    g.setBackground(COLORS.bg)
-    g.setForeground(COLORS.text)
-
-    term.setCursor(currentFieldConfig.x + 2 + unicode.len(currentInput), currentFieldConfig.y + 1)
-    term.showCursor(true)
-
-    local result = nil
-    while true do
-        local eventType, _, _, key, char = event.pull("key_down", "char")
-        if eventType == "key_down" then
-            if key == 28 then -- Enter
-                result = currentInput -- Пропускаем, если текущий ввод пуст, или используем его
-                break
-            elseif key == 14 then -- Backspace
-                currentInput = unicode.sub(currentInput, 1, -2)
-            elseif key == 211 then -- Delete
-                currentInput = ""
-            end
-        elseif eventType == "char" then
-            if unicode.len(currentInput) < currentFieldConfig.w - 4 then -- Ограничение длины ввода
-                currentInput = currentInput .. char
-            end
-        end
-        
-        -- Перерисовываем только активное поле после каждого ввода
+    local function redrawInputScreen(activeInput)
         clear()
         uoc.drawText(2, baseY, (inputMode == "add") and "Добавление предмета" or "Изменение: " .. (dataItems[selectedItem].name or "<?>"), COLORS.ok)
         uoc.drawText(2, baseY + 1, "Вставьте предмет в 1-й слот ME интерфейса (для добавления).", COLORS.ok)
@@ -506,7 +448,7 @@ local function promptForInput(label, keyName, isNumeric, default_value)
             
             local displayValue = inputFields[field.key] or ""
             if isActiveFieldInner then
-                displayValue = currentInput .. "_"
+                displayValue = activeInput .. "_"
             elseif displayValue == "" then
                 displayValue = "Введите значение..."
             end
@@ -519,15 +461,50 @@ local function promptForInput(label, keyName, isNumeric, default_value)
         end
         g.setBackground(COLORS.bg)
         g.setForeground(COLORS.text)
+    end
+
+    redrawInputScreen(currentInput)
+    term.setCursor(currentFieldConfig.x + 2 + unicode.len(currentInput), currentFieldConfig.y + 1)
+    term.showCursor(true)
+
+    local result = nil
+    while true do
+        local eventType, _, _, key, char = event.pull("key_down", "char")
+        if eventType == "key_down" then
+            if key == 28 then -- Enter
+                result = currentInput
+                break
+            elseif key == 14 then -- Backspace
+                currentInput = unicode.sub(currentInput, 1, -2)
+            elseif key == 211 then -- Delete (очистить все)
+                currentInput = ""
+            end
+        elseif eventType == "char" then
+            -- Проверяем, что вводимый символ не является управляющим
+            -- и что длина строки не превышает максимальную для поля
+            if unicode.len(char) > 0 and not char:find("[\x00-\x1F\x7F]") then
+                if unicode.len(currentInput) < currentFieldConfig.w - 4 then
+                    currentInput = currentInput .. char
+                end
+            end
+        end
+        
+        -- Перерисовываем экран после каждого ввода/удаления символа
+        redrawInputScreen(currentInput)
         term.setCursor(currentFieldConfig.x + 2 + unicode.len(currentInput), currentFieldConfig.y + 1)
     end
     term.showCursor(false)
 
+    -- Если ввод пустой (нажали Enter на пустом поле), используем значение по умолчанию
+    if result == "" then
+        result = defaultValue
+    end
+
     if isNumeric then
         local numResult = tonumber(result)
         if numResult == nil then
-            addLog(logs, "WARN: Введено нечисловое значение для поля '" .. label .. "'. Используется значение по умолчанию.", "WARN")
-            return tonumber(default_value) -- Возвращаем default_value как число
+            addLog(logs, "WARN: Введено нечисловое значение для поля '" .. label .. "'. Используется значение по умолчанию: " .. tostring(defaultValue), "WARN")
+            return tonumber(defaultValue) -- Возвращаем default_value как число
         end
         return numResult
     end
@@ -613,7 +590,7 @@ local function resetSelection()
     search = ""
     currentPage = 1
     selectedItem = nil
-end
+}
 
 local function cancelInput()
     changeitem = false
@@ -638,12 +615,14 @@ local function addItem()
 
     -- Запрос ввода для каждого поля
     inputFields.name = promptForInput("Название:", "name", false, originalName)
-    if inputFields.name == nil then cancelInput(); return end
-    if inputFields.name == "" then inputFields.name = originalName end -- Если Enter без ввода, используем originalName
+    if inputFields.name == nil then cancelInput(); return end -- Пользователь отменил (Ctrl+C)
+    -- Если пользователь нажал Enter на пустом поле, promptForInput уже вернет defaultValue
+    -- Если defaultValue тоже пустое (как для category или name), то используем оригинальное имя
+    if inputFields.name == "" then inputFields.name = originalName end
 
     inputFields.category = promptForInput("Категория:", "category", false, "Без категории")
     if inputFields.category == nil then cancelInput(); return end
-    if inputFields.category == "" then inputFields.category = "Без категории" end -- Если Enter без ввода
+    if inputFields.category == "" then inputFields.category = "Без категории" end
 
     inputFields.count = promptForInput("Держать:", "count", true, "0")
     if inputFields.count == nil then cancelInput(); return end
@@ -658,8 +637,8 @@ local function addItem()
             category = inputFields.category,
             id = stack.id,
             dmg = stack.dmg,
-            count = inputFields.count,
-            craftSize = inputFields.craftSize
+            count = inputFields.count, -- Уже число, так как promptForInput конвертирует
+            craftSize = inputFields.craftSize -- Уже число
         })
         save()
         addLog(logs, "INFO: Добавлен предмет: " .. (inputFields.name) .. " (Категория: " .. (inputFields.category) .. ")", "INFO")
@@ -693,12 +672,10 @@ local function editItem()
     -- Запрос ввода для каждого поля
     inputFields.name = promptForInput("Название:", "name", false, item.name)
     if inputFields.name == nil then cancelInput(); return end
-    if inputFields.name == "" then inputFields.name = item.name or "" end -- Если Enter без ввода, оставляем старое значение
-
+    
     inputFields.category = promptForInput("Категория:", "category", false, item.category)
     if inputFields.category == nil then cancelInput(); return end
-    if inputFields.category == "" then inputFields.category = item.category or "Без категории" end
-
+    
     inputFields.count = promptForInput("Держать:", "count", true, tostring(item.count or 0))
     if inputFields.count == nil then cancelInput(); return end
     
@@ -708,8 +685,8 @@ local function editItem()
     -- После сбора всех данных, примените изменения
     item.name = inputFields.name
     item.category = inputFields.category
-    item.count = inputFields.count
-    item.craftSize = inputFields.craftSize
+    item.count = inputFields.count -- Уже число
+    item.craftSize = inputFields.craftSize -- Уже число
     
     save()
     addLog(logs, "INFO: Изменено: " .. item.name .. " (Категория: " .. (item.category or "Без категории") .. ")", "INFO")
@@ -747,27 +724,6 @@ local function stopCraft()
     addLog(logs, "WARN: Остановлен автокрафт", "WARN")
     draw()
 end
-
--- Функция craftAll теперь не нужна, так как ее действие "Автокрафт"
--- управляется кнопкой "Автокрафт/Остановить".
--- Если бы "Крафт всех" означало разовый прогон всех необходимых крафтов,
--- ее можно было бы оставить, но с текущей логикой она дублирует "Автокрафт".
--- local function craftAll()
---     isCrafting = true
---     craftStatus = "Крафт всех..."
---     addLog(logs, "INFO: Запущен крафт всех предметов", "INFO")
---     local craftMade = false
---     for i, item in ipairs(dataItems) do
---         if tryCraftItem(item) then
---             craftMade = true
---         end
---     end
---     if not craftMade then
---         craftStatus = "Все предметы в норме"
---         addLog(logs, "INFO: Нет предметов для крафта", "INFO")
---     end
---     draw()
--- end
 
 local function tryCraftItem(itemToCraft)
     local count = tonumber(itemToCraft.count) or 0
@@ -879,7 +835,6 @@ local function updateButtonHover(x, y)
     local btnX = WIDTH - btnWidth - 5
     local btnPadding = 2
     local btns = {
-        -- {name = "Крафт всех", action = "craftAll"}, -- Убрана кнопка "Крафт всех"
         {name = "Удалить", action = "delete"},
         {name = "Изменить", action = "edit"},
         {name = isCrafting and "Остановить" or "Автокрафт", action = "toggleCraft"},
@@ -915,7 +870,6 @@ event.listen("touch", function(_, _, x, y, _, _)
     local btnX = WIDTH - btnWidth - 5
     local btnPadding = 2
     local btns = {
-        -- {name = "Крафт всех", action = "craftAll"}, -- Убрана кнопка "Крафт всех"
         {name = "Удалить", action = "delete"},
         {name = "Изменить", action = "edit"},
         {name = isCrafting and "Остановить" or "Автокрафт", action = "toggleCraft"},
@@ -928,7 +882,6 @@ event.listen("touch", function(_, _, x, y, _, _)
             elseif btn.action == "edit" then editItem()
             elseif btn.action == "toggleCraft" then if isCrafting then stopCraft() else doCraft() end
             elseif btn.action == "add" then addItem()
-            -- elseif btn.action == "craftAll" then craftAll() -- Убрана кнопка "Крафт всех"
             end
             buttonHover = nil
             draw()
