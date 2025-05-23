@@ -158,7 +158,6 @@ local buttonHover = nil
 local inputMode = nil -- "add" or "edit"
 local inputFields = {}
 local currentField = 1
-local inputActive = false
 local totalInputFields = 4 -- Define the total number of input fields
 
 -------------------- Логгирование --------------------
@@ -413,98 +412,35 @@ local function drawButtons()
 end
 
 -- Вспомогательная функция для отрисовки поля ввода и чтения значения через term.read()
+-- Эта функция теперь НЕ отвечает за весь экран, а только за отрисовку и чтение ОДНОГО поля.
 local function promptForInput(label, initialValue, x, y, w, isNumeric)
     local currentInput = initialValue or ""
-    local inputReceived = false
 
-    while not inputReceived do
-        clear()
-        local baseY = HEIGHT - 15
-        local title = (inputMode == "add") and "Добавление предмета" or "Изменение: " .. (dataItems[selectedItem].name or "<?>")
-        uoc.drawText(2, baseY, title, COLORS.ok)
-        uoc.drawText(2, baseY + 1, "Вставьте предмет в 1-й слот ME интерфейса (для добавления).", COLORS.ok)
-
-        local fieldsToDraw = {
-            {label = "Название:", value = inputFields.name or "", x = 2, y = baseY + 3, w = 40, key = "name"},
-            {label = "Категория:", value = inputFields.category or "", x = 2, y = baseY + 5, w = 40, key = "category"},
-            {label = "Держать:", value = inputFields.count or "", x = 2, y = baseY + 7, w = 20, key = "count"},
-            {label = "Крафт за раз:", value = inputFields.craftSize or "", x = 2, y = baseY + 9, w = 20, key = "craftSize"},
-        }
-
-        for i, field in ipairs(fieldsToDraw) do
-            local isActive = (field.label == label) -- Determine if this is the currently active field
-            uoc.roundRect(field.x, field.y, field.w, 3, COLORS.input_border, COLORS.input_bg)
-            g.setForeground(COLORS.text)
-            g.set(field.x + 1, field.y, field.label)
-            g.setBackground(COLORS.input_bg)
-            g.fill(field.x + 1, field.y + 1, field.w - 2, 1, " ")
-            g.setForeground(isActive and COLORS.ok or COLORS.input_text)
-            local display = (field.label == label) and currentInput or field.value -- Show current input for active field
-            
-            if display == "" and not isActive then
-                display = "Введите значение..."
-            end
-            if isActive then
-                display = display .. "_"
-            end
-            local maxlen = field.w - 4
-            if unicode.len(display) > maxlen then
-                display = unicode.sub(display, unicode.len(display) - maxlen + 1)
-            end
-            g.set(field.x + 2, field.y + 1, display)
-        end
-        g.setBackground(COLORS.bg)
-        g.setForeground(COLORS.text)
-        uoc.drawText(2, baseY + 12, "Enter: сохранить/пропустить", COLORS.text)
-
-        -- Position cursor for the active input field
-        term.setCursor(x + 2, y + 1)
-        term.showCursor(true)
-
-        -- Read input for the current field
-        local result = term.read()
-        term.showCursor(false)
-
-        if result == nil then -- User pressed Ctrl+C or similar
-            return nil
-        end
-
-        currentInput = result
-        if isNumeric then
-            currentInput = tonumber(currentInput) or initialValue
-        end
-        inputReceived = true
-    end
-    return currentInput
-end
-
-
-local function drawInputScreen()
-    -- This function is now mainly for the static background and text when in input mode
-    -- Actual input prompts are handled by promptForInput in addItem/editItem
-    clear()
     local baseY = HEIGHT - 15
-    local title = (inputMode == "add") and "Добавление предмета" or "Изменение: " .. (dataItems[selectedItem].name or "<?>")
-    uoc.drawText(2, baseY, title, COLORS.ok)
-    uoc.drawText(2, baseY + 1, "Вставьте предмет в 1-й слот ME интерфейса (для добавления).", COLORS.ok)
-    uoc.drawText(2, baseY + 12, "Enter: сохранить/пропустить", COLORS.text)
-    
-    local fields = {
+
+    -- Отображаем текущее состояние полей ввода, включая активное поле
+    local fieldsToDraw = {
         {label = "Название:", value = inputFields.name or "", x = 2, y = baseY + 3, w = 40, key = "name"},
         {label = "Категория:", value = inputFields.category or "", x = 2, y = baseY + 5, w = 40, key = "category"},
         {label = "Держать:", value = inputFields.count or "", x = 2, y = baseY + 7, w = 20, key = "count"},
         {label = "Крафт за раз:", value = inputFields.craftSize or "", x = 2, y = baseY + 9, w = 20, key = "craftSize"},
     }
 
-    for i, field in ipairs(fields) do
-        local isActive = (i == currentField)
+    clear() -- Очищаем весь экран перед отрисовкой полей
+    uoc.drawText(2, baseY, (inputMode == "add") and "Добавление предмета" or "Изменение: " .. (dataItems[selectedItem].name or "<?>"), COLORS.ok)
+    uoc.drawText(2, baseY + 1, "Вставьте предмет в 1-й слот ME интерфейса (для добавления).", COLORS.ok)
+    uoc.drawText(2, baseY + 12, "Enter: сохранить/пропустить", COLORS.text) -- Обновленный текст
+
+    for i, field in ipairs(fieldsToDraw) do
+        local isActive = (field.label == label) -- Определяем, является ли это текущим активным полем
         uoc.roundRect(field.x, field.y, field.w, 3, COLORS.input_border, COLORS.input_bg)
         g.setForeground(COLORS.text)
         g.set(field.x + 1, field.y, field.label)
         g.setBackground(COLORS.input_bg)
         g.fill(field.x + 1, field.y + 1, field.w - 2, 1, " ")
         g.setForeground(isActive and COLORS.ok or COLORS.input_text)
-        local display = field.value
+        local display = (field.label == label) and currentInput or field.value -- Показываем текущий ввод для активного поля
+        
         if display == "" and not isActive then
             display = "Введите значение..."
         end
@@ -517,11 +453,77 @@ local function drawInputScreen()
         end
         g.set(field.x + 2, field.y + 1, display)
     end
+    g.setBackground(COLORS.bg)
+    g.setForeground(COLORS.text)
+
+    -- Позиционируем курсор для активного поля ввода
+    term.setCursor(x + 2, y + 1)
+    term.showCursor(true)
+
+    -- Читаем ввод для текущего поля
+    local result = term.read()
+    term.showCursor(false)
+
+    if result == nil then -- Пользователь нажал Ctrl+C или что-то подобное
+        return nil
+    end
+
+    currentInput = result
+    if isNumeric then
+        -- Попытаться преобразовать в число, если не удалось, вернуть initialValue
+        currentInput = tonumber(currentInput)
+        if currentInput == nil then
+            addLog(logs, "WARN: Введено нечисловое значение для числового поля. Использование значения по умолчанию.", "WARN")
+            currentInput = initialValue
+        end
+    end
+    return currentInput
+end
+
+
+local function drawInputScreen()
+    -- Эта функция теперь в основном используется для отрисовки статического фона и текста
+    -- Фактический ввод обрабатывается promptForInput в addItem/editItem
+    clear()
+    local baseY = HEIGHT - 15
+    local title = (inputMode == "add") and "Добавление предмета" or "Изменение: " .. (dataItems[selectedItem].name or "<?>")
+    uoc.drawText(2, baseY, title, COLORS.ok)
+    uoc.drawText(2, baseY + 1, "Вставьте предмет в 1-й слот ME интерфейса (для добавления).", COLORS.ok)
+    uoc.drawText(2, baseY + 12, "Enter: сохранить/пропустить", COLORS.text) -- Обновленный текст
+    
+    local fields = {
+        {label = "Название:", value = inputFields.name or "", x = 2, y = baseY + 3, w = 40, key = "name"},
+        {label = "Категория:", value = inputFields.category or "", x = 2, y = baseY + 5, w = 40, key = "category"},
+        {label = "Держать:", value = inputFields.count or "", x = 2, y = baseY + 7, w = 20, key = "count"},
+        {label = "Крафт за раз:", value = inputFields.craftSize or "", x = 2, y = baseY + 9, w = 20, key = "craftSize"},
+    }
+
+    for i, field in ipairs(fields) do
+        local isActive = (i == currentField) -- This 'isActive' is now less meaningful as currentField isn't directly used for selection
+        uoc.roundRect(field.x, field.y, field.w, 3, COLORS.input_border, COLORS.input_bg)
+        g.setForeground(COLORS.text)
+        g.set(field.x + 1, field.y, field.label)
+        g.setBackground(COLORS.input_bg)
+        g.fill(field.x + 1, field.y + 1, field.w - 2, 1, " ")
+        g.setForeground(isActive and COLORS.ok or COLORS.input_text) -- Still draw with a color for the "current" field if we choose to use it for visual highlight
+        local display = field.value
+        if display == "" and not isActive then
+            display = "Введите значение..."
+        end
+        -- Removed the "_" for active field as term.read() handles cursor
+        local maxlen = field.w - 4
+        if unicode.len(display) > maxlen then
+            display = unicode.sub(display, unicode.len(display) - maxlen + 1)
+        end
+        g.set(field.x + 2, field.y + 1, display)
+    end
 end
 
 local function draw()
     if changeitem then
-        drawInputScreen() -- This now just draws the static screen elements
+        -- drawInputScreen() is called by promptForInput, so no need here unless for initial static screen
+        -- For a smooth flow, the main screen is not redrawn during direct input from promptForInput
+        -- It will be redrawn after addItem/editItem completes.
     else
         clear()
         drawHeader()
@@ -592,6 +594,7 @@ local function save()
     end
 end
 
+-- Fixed: Removed the extra '}'
 local function resetSelection()
     search = ""
     currentPage = 1
@@ -602,7 +605,6 @@ local function addItem()
     changeitem = true
     inputMode = "add"
     inputFields = {name = "", category = "", count = "", craftSize = ""}
-    inputActive = true
 
     local baseY = HEIGHT - 15
 
@@ -617,12 +619,14 @@ local function addItem()
     -- Prompt for Count
     inputFields.count = promptForInput("Держать:", inputFields.count, 2, baseY + 7, 20, true)
     if inputFields.count == nil then cancelInput(); return end
-    inputFields.count = tonumber(inputFields.count) or 0 -- Ensure it's a number
+    -- The promptForInput already handles conversion to number and default if needed,
+    -- but explicitly ensure it's a number here for clarity before saving.
+    inputFields.count = tonumber(inputFields.count) or 0 
 
     -- Prompt for Craft Size
     inputFields.craftSize = promptForInput("Крафт за раз:", inputFields.craftSize, 2, baseY + 9, 20, true)
     if inputFields.craftSize == nil then cancelInput(); return end
-    inputFields.craftSize = tonumber(inputFields.craftSize) or 1 -- Ensure it's a number
+    inputFields.craftSize = tonumber(inputFields.craftSize) or 1
 
     -- After all inputs are gathered, perform the save logic
     local stack = nil
@@ -652,8 +656,7 @@ local function addItem()
     inputMode = nil
     inputFields = {}
     currentField = 1
-    inputActive = false
-    draw()
+    draw() -- Redraw the main screen after input is done
 end
 
 local function editItem()
@@ -670,7 +673,6 @@ local function editItem()
         count = tostring(item.count or 0),
         craftSize = tostring(item.craftSize or 1)
     }
-    inputActive = true
 
     local baseY = HEIGHT - 15
 
@@ -685,12 +687,12 @@ local function editItem()
     -- Prompt for Count
     inputFields.count = promptForInput("Держать:", inputFields.count, 2, baseY + 7, 20, true)
     if inputFields.count == nil then cancelInput(); return end
-    inputFields.count = tonumber(inputFields.count) or 0
+    inputFields.count = tonumber(inputFields.count) or item.count
 
     -- Prompt for Craft Size
     inputFields.craftSize = promptForInput("Крафт за раз:", inputFields.craftSize, 2, baseY + 9, 20, true)
     if inputFields.craftSize == nil then cancelInput(); return end
-    inputFields.craftSize = tonumber(inputFields.craftSize) or 1
+    inputFields.craftSize = tonumber(inputFields.craftSize) or item.craftSize
 
     -- After all inputs are gathered, perform the save logic
     if inputFields.name then item.name = inputFields.name end
@@ -704,20 +706,18 @@ local function editItem()
     inputMode = nil
     inputFields = {}
     currentField = 1
-    inputActive = false
-    draw()
+    draw() -- Redraw the main screen after input is done
 end
 
 -- This function is now mostly unused, as input is handled by promptForInput
 local function saveItem()
     -- The logic for saving is now embedded within addItem and editItem
     -- after all promptForInput calls are complete.
-    addLog(logs, "DEBUG: saveItem called, but logic is now in addItem/editItem.", "DEBUG")
+    addLog(logs, "DEBUG: saveItem called, but logic is now in addItem/editItem. No direct action taken here.", "DEBUG")
     changeitem = false
     inputMode = nil
     inputFields = {}
     currentField = 1
-    inputActive = false
     draw()
 end
 
@@ -726,9 +726,8 @@ local function cancelInput()
     inputMode = nil
     inputFields = {}
     currentField = 1
-    inputActive = false
     draw()
-}
+end
 
 local function removeItem()
     if not selectedItem then
@@ -741,7 +740,7 @@ local function removeItem()
     clampPage()
     save()
     draw()
-}
+end
 
 local function doCraft()
     isCrafting = true
@@ -868,7 +867,10 @@ local function autoCraftLoop()
                     save()
                     nextCraftUpdate = now + 30
                 end
-                draw() -- Обновляем экран только при изменении данных
+                -- Only redraw the main screen if not in an input sequence
+                if not changeitem then
+                    draw()
+                end
             end
         end
         os.sleep(0.5)
@@ -1060,7 +1062,8 @@ event.listen("key_down", function(_, _, key, _, _)
             else
                 -- Append character to search string (handles Unicode)
                 local char = unicode.char(key)
-                if unicode.len(char) > 0 and char:match("[^\x00-\x1F\x7F]") then -- Exclude control characters
+                -- Only append if it's a printable character (not a control character)
+                if unicode.len(char) > 0 and char:match("[^\x00-\x1F\x7F]") then
                     if unicode.len(search) < WIDTH - 25 then
                         search = search .. char
                     end
