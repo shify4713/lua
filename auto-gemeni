@@ -1005,4 +1005,128 @@ event.listen("key_down", function(_, _, _, code, _)
         if code == 200 then -- Up
             local currentSelectedItemInFiltered = nil
             local startIndex = (currentPage - 1) * perPage + 1
-            local visibleItems
+            local visibleItems = {}
+            for i = startIndex, math.min(#filteredAndSortedItems, startIndex + perPage - 1) do
+                table.insert(visibleItems, filteredAndSortedItems[i])
+            end
+            if selectedItem then
+                for i, v in ipairs(visibleItems) do
+                    if v == dataItems[selectedItem] then
+                        currentSelectedItemInFiltered = i
+                        break
+                    end
+                end
+            end
+            if #visibleItems == 0 then
+                selectedItem = nil
+            elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered > 1 then
+                selectedItem = nil
+                for k, v in ipairs(dataItems) do
+                    if v == visibleItems[currentSelectedItemInFiltered - 1] then
+                        selectedItem = k
+                        break
+                    end
+                end
+            elseif #visibleItems > 0 then
+                selectedItem = nil
+                for k, v in ipairs(dataItems) do
+                    if v == visibleItems[#visibleItems] then
+                        selectedItem = k
+                        break
+                    end
+                end
+            end
+            addLog(logs, "INFO: Нажата стрелка вверх, выбран предмет: " .. (selectedItem and dataItems[selectedItem].name or "ничего"), "INFO")
+        elseif code == 208 then -- Down
+            local currentSelectedItemInFiltered = nil
+            local startIndex = (currentPage - 1) * perPage + 1
+            local visibleItems = {}
+            for i = startIndex, math.min(#filteredAndSortedItems, startIndex + perPage - 1) do
+                table.insert(visibleItems, filteredAndSortedItems[i])
+            end
+            if selectedItem then
+                for i, v in ipairs(visibleItems) do
+                    if v == dataItems[selectedItem] then
+                        currentSelectedItemInFiltered = i
+                        break
+                    end
+                end
+            end
+            if #visibleItems == 0 then
+                selectedItem = nil
+            elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered < #visibleItems then
+                selectedItem = nil
+                for k, v in ipairs(dataItems) do
+                    if v == visibleItems[currentSelectedItemInFiltered + 1] then
+                        selectedItem = k
+                        break
+                    end
+                end
+            elseif #visibleItems > 0 then
+                selectedItem = nil
+                for k, v in ipairs(dataItems) do
+                    if v == visibleItems[1] then
+                        selectedItem = k
+                        break
+                    end
+                end
+            end
+            addLog(logs, "INFO: Нажата стрелка вниз, выбран предмет: " .. (selectedItem and dataItems[selectedItem].name or "ничего"), "INFO")
+        elseif code == 203 then -- Left
+            if currentPage > 1 then
+                currentPage = currentPage - 1
+                selectedItem = nil
+                addLog(logs, "INFO: Нажата стрелка влево, страница: " .. currentPage, "INFO")
+            end
+        elseif code == 205 then -- Right
+            if currentPage < maxPages then
+                currentPage = currentPage + 1
+                selectedItem = nil
+                addLog(logs, "INFO: Нажата стрелка вправо, страница: " .. currentPage, "INFO")
+            end
+        elseif code == 200 and arg.shift then -- Shift + Up
+            logOffset = math.min(logOffset + 1, #logs - 5)
+            addLog(logs, "INFO: Прокрутка логов вверх", "INFO")
+        elseif code == 208 and arg.shift then -- Shift + Down
+            logOffset = math.max(logOffset - 1, 0)
+            addLog(logs, "INFO: Прокрутка логов вниз", "INFO")
+        end
+        draw()
+    end
+end)
+
+event.listen("char", function(_, _, char)
+    if changeitem or not searchActive then return end
+    if unicode.len(char) > 0 and not char:find("[\x00-\x1F\x7F]") then
+        if unicode.len(search) < WIDTH - 25 then
+            search = search .. char
+            currentPage = 1
+            selectedItem = nil
+            buttonHover = nil
+            addLog(logs, "INFO: Введен символ в поиске: " .. char, "INFO")
+            draw()
+        end
+    end
+end)
+
+-------------------- Старт --------------------
+checkComponents()
+bindGpu()
+WIDTH, HEIGHT = g.getResolution()
+g.setResolution(WIDTH, HEIGHT)
+term.clear()
+term.setCursor(1, 1)
+addLog(logs, "INFO: Программа запущена", "INFO")
+local ok, err = pcall(reload)
+if not ok then
+    addLog(logs, "ERROR: Ошибка при начальной загрузке: " .. tostring(err), "ERROR")
+    draw()
+    while true do os.sleep(1) end
+end
+draw()
+local ok, err = pcall(autoCraftLoop)
+if not ok then
+    addLog(logs, "ERROR: Фатальная ошибка в autoCraftLoop: " .. tostring(err), "ERROR")
+    draw()
+    while true do os.sleep(1) end
+end
