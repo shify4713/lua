@@ -41,7 +41,9 @@ local etouch, escroll, ekeydown = nil, nil, nil
 local yTouch = nil
 local changeitem = false
 
-if debug then WIDTH, HEIGHT = 160, 50 end
+if debug then
+    WIDTH, HEIGHT = 160, 50
+end
 g.setResolution(WIDTH, HEIGHT)
 g.setForeground(CTEXT)
 
@@ -254,4 +256,205 @@ local function Check()
                     end
                 end
             else
-                AddLog("Error: Failed to get item details for "..item.name..
+                AddLog("Error: Failed to get item details for "..item.name..": "..tostring(itemsMe))
+            end
+        end
+    end
+    DrawMainPage()
+    os.sleep(0.5)
+end
+
+local function AddItem()
+    changeitem = true
+    local stack = me.getStackInSlot(1)
+    if stack then
+        g.fill(1, HEIGHT-2, WIDTH, 2, " ")
+        g.set(5, HEIGHT-2, "Enter item name: ")
+        term.setCursor(25, HEIGHT-2)
+        local name = tostring(io.read())
+        g.fill(1, HEIGHT-2, WIDTH, 2, " ")
+        g.set(5, HEIGHT-2, "Enter maintain count: ")
+        term.setCursor(25, HEIGHT-2)
+        local count = tonumber(io.read()) or 0
+        g.fill(1, HEIGHT-2, WIDTH, 2, " ")
+        g.set(5, HEIGHT-2, "Enter craft size: ")
+        term.setCursor(25, HEIGHT-2)
+        local craftSize = tonumber(io.read()) or 0
+        table.insert(dataItems, {
+            name = name,
+            id = stack.id,
+            dmg = stack.dmg,
+            count = count,
+            craftSize = craftSize,
+            cpu = 256000
+        })
+        oc.savef("BD.txt", dataItems)
+        AddLog("Added: "..name)
+        dataq = dataItems -- Update dataq to reflect new item
+    else
+        g.set(5, HEIGHT-2, "No item in slot 1")
+        os.sleep(2)
+    end
+    changeitem = false
+    DrawMainPage()
+end
+
+local function RemoveItem()
+    if posSelect and dataItems[posSelect] then
+        AddLog("Removed: "..dataItems[posSelect].name)
+        table.remove(dataItems, posSelect)
+        oc.savef("BD.txt", dataItems)
+        dataq = dataItems -- Update dataq to reflect removal
+        posSelect = nil
+        DrawMainPage()
+    end
+end
+
+local function EditItem()
+    if posSelect and dataItems[posSelect] then
+        toGui("item")
+    end
+end
+
+local function ChangeItem(action)
+    if posSelect and dataItems[posSelect] then
+        g.fill(1, HEIGHT-2, WIDTH, 2, " ")
+        if action == "changeName" then
+            g.set(5, HEIGHT-2, "Enter new name: ")
+            term.setCursor(25, HEIGHT-2)
+            dataItems[posSelect].name = tostring(io.read())
+        elseif action == "changeCount" then
+            g.set(5, HEIGHT-2, "Enter new count: ")
+            term.setCursor(25, HEIGHT-2)
+            dataItems[posSelect].count = tonumber(io.read()) or 0
+        elseif action == "changeCraftSize" then
+            g.set(5, HEIGHT-2, "Enter new craft size: ")
+            term.setCursor(25, HEIGHT-2)
+            dataItems[posSelect].craftSize = tonumber(io.read()) or 0
+        end
+        oc.savef("BD.txt", dataItems)
+        AddLog("Updated: "..dataItems[posSelect].name)
+        dataq = dataItems -- Update dataq to reflect changes
+        DrawItemPage()
+    end
+end
+
+local function eButton(_,_,x,y,_,nick)
+    if ADM[nick] then
+        for _, button in pairs(buttons) do
+            if x >= button.x and x <= button.endX and y >= button.y and y <= button.endY then
+                if button.ButtonIn[guiPath[#guiPath]] then
+                    yTouch = y
+                    button.action()
+                    return true
+                end
+            end
+        end
+    end
+end
+
+local function InputWrite(_,_,key1,key2,nick)
+    if ADM[nick] and not changeitem then
+        for key in pairs(scrolls) do
+            if scrolls[key].ScrollIn[guiPath[#guiPath]] then
+                local y = scrolls[key].iwY
+                g.fill(5, y, WIDTH-10, 1, " ")
+                if key1 == 8 then
+                    inputFind = unicode.sub(inputFind, 1, -2)
+                elseif key1 == 0 and key2 == 211 then
+                    inputFind = ""
+                elseif key1 ~= 0 then
+                    if unicode.len(inputFind or "") < 49 then
+                        inputFind = (inputFind or "") .. unicode.char(key1)
+                    end
+                end
+                g.set(5, y, inputFind ~= "" and inputFind or "Search items...")
+                DrawScrollContent()
+            end
+        end
+    end
+end
+
+local function initButtons()
+    for _, button in pairs(buttons) do
+        button.endX = button.x + button.w - 1
+        button.endY = button.y + button.h - 1
+    end
+end
+
+local buttons = {
+    LOGO = {ButtonIn = {"main", "items", "item"}, visible = true, x = 3, y = 2, w = 30, h = 3, cbutton = CDRAW, ctext = CBUTTON, text = "PreCraft v3.0", action = function() end},
+    Exit = {ButtonIn = {"main", "items", "item"}, visible = true, x = WIDTH-10, y = HEIGHT-3, w = 8, h = 3, cbutton = 0xFF0000, ctext = 0xFFFFFF, text = "Exit", action = function() 
+        if etouch then event.cancel(etouch) end
+        if escroll then event.cancel(escroll) end
+        if ekeydown then event.cancel(ekeydown) end
+        precraft = false 
+    end},
+    Go = {ButtonIn = {"main"}, visible = true, x = 5, y = HEIGHT-5, w = 15, h = 3, cbutton = 0x00FF00, ctext = 0xFFFFFF, text = "Start", action = function() 
+        go = true 
+        toGui("items") 
+        dataq = dataItems
+    end},
+    Stop = {ButtonIn = {"items"}, visible = true, x = 5, y = HEIGHT-5, w = 15, h = 3, cbutton = 0xFF0000, ctext = 0xFFFFFF, text = "Stop", action = function() 
+        go = false 
+        toGui("main") 
+    end},
+    Add = {ButtonIn = {"items"}, visible = true, x = 25, y = HEIGHT-5, w = 15, h = 3, cbutton = CBUTTON, ctext = 0xFFFFFF, text = "Add", action = AddItem},
+    Change = {ButtonIn = {"items"}, visible = true, x = 45, y = HEIGHT-5, w = 15, h = 3, cbutton = CBUTTON, ctext = 0xFFFFFF, text = "Edit", action = EditItem},
+    Remove = {ButtonIn = {"items"}, visible = true, x = 65, y = HEIGHT-5, w = 15, h = 3, cbutton = CBUTTON, ctext = 0xFFFFFF, text = "Remove", action = RemoveItem},
+    Select = {ButtonIn = {"items"}, visible = false, x = 3, y = 7, w = WIDTH-6, h = HEIGHT-12, text = "", action = function() 
+        posSelect = yTouch - 6 + scroll 
+        DrawScrollContent() 
+    end},
+    changeName = {ButtonIn = {"item"}, visible = true, x = 5, y = 25, w = 30, h = 3, cbutton = CBUTTON, ctext = 0xFFFFFF, text = "Change Name", action = function() ChangeItem("changeName") end},
+    changeCount = {ButtonIn = {"item"}, visible = true, x = 5, y = 29, w = 30, h = 3, cbutton = CBUTTON, ctext = 0xFFFFFF, text = "Change Count", action = function() ChangeItem("changeCount") end},
+    changeCraftSize = {ButtonIn = {"item"}, visible = true, x = 5, y = 33, w = 30, h = 3, cbutton = CBUTTON, ctext = 0xFFFFFF, text = "Change Craft Size", action = function() ChangeItem("changeCraftSize") end},
+    changeBack = {ButtonIn = {"item"}, visible = true, x = 5, y = HEIGHT-5, w = 30, h = 3, cbutton = CBUTTON, ctext = 0xFFFFFF, text = "Back", action = Back},
+}
+
+local scrolls = {
+    Items = {
+        ScrollIn = {["main"]=true, ["items"]=true},
+        iwY = HEIGHT-2,
+        x = WIDTH-2,
+        y = 7,
+        w = 2,
+        h = HEIGHT-14,
+        action = function() end
+    }
+}
+
+local function LoadSystem()
+    Clear()
+    dataItems = oc.loadf("BD.txt") or {}
+    dataq = dataItems
+    initButtons()
+    etouch = event.listen("touch", eButton)
+    escroll = event.listen("scroll", eScroll)
+    ekeydown = event.listen("key_down", InputWrite)
+    toGui("main")
+    return true
+end
+
+local function loop()
+    if LoadSystem() then
+        while precraft do
+            if go then
+                Check()
+            else
+                os.sleep(1)
+            end
+        end
+    end
+end
+
+local ok, err = pcall(loop)
+
+if not ok then
+    if etouch then event.cancel(etouch) end
+    if escroll then event.cancel(escroll) end
+    if ekeydown then event.cancel(ekeydown) end
+    g.set(1, 1, "Error: "..tostring(err))
+    os.sleep(5)
+    computer.shutdown(true)
+end
