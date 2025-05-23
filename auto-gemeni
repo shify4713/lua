@@ -1,3 +1,4 @@
+```lua
 local component = require("component")
 local fs = require("filesystem")
 local shell = require("shell")
@@ -41,6 +42,7 @@ local lastRequestTime = 0
 local buttonHover = nil
 local inputMode = nil
 local inputFields = {}
+local eventHandlers = {} -- Store event handler IDs
 
 -- Component Checks
 local function checkComponents()
@@ -345,10 +347,8 @@ local function promptForInput(label, keyName, isNumeric, defaultValue)
                 currentInput = ""
             elseif char and char > 0 then
                 local charStr = unicode.char(char)
-                if unicode.len(charStr) > 0 and not charStr:find("[\x00-\x1F\x7F]") then
-                    if unicode.len(currentInput) < currentFieldConfig.w - 4 then
-                        currentInput = currentInput .. charStr
-                    end
+                if unicode.len(charStr) > 0 and not charStr:find("[\x00-\x1F\x7F]") and unicode.len(currentInput) < currentFieldConfig.w - 4 then
+                    currentInput = currentInput .. charStr
                 end
             end
             redrawInputScreen(currentInput)
@@ -792,9 +792,10 @@ local function init()
     initDataFile()
     addLog("INFO: Program started", "INFO")
     reload()
-    event.listen("touch", onTouch)
-    event.listen("scroll", onScroll)
-    event.listen("key_down", onKeyDown)
+    -- Register event handlers and store their IDs
+    eventHandlers.touch = event.listen("touch", onTouch)
+    eventHandlers.scroll = event.listen("scroll", onScroll)
+    eventHandlers.key_down = event.listen("key_down", onKeyDown)
     draw()
 end
 
@@ -805,12 +806,14 @@ local function main()
     end)
     if not success then
         addLog("ERROR: Fatal error: " .. tostring(err), "ERROR")
-        event.cancel(event.listeners.touch)
-        event.cancel(event.listeners.scroll)
-        event.cancel(event.listeners.key_down)
+        -- Cancel only registered event handlers
+        for _, handler in pairs(eventHandlers) do
+            if handler then event.cancel(handler) end
+        end
         draw()
         computer.shutdown(true)
     end
 end
 
 main()
+```
