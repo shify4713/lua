@@ -1,0 +1,417 @@
+local component = require("component")
+local fs = require("filesystem")
+local shell = require("shell")
+local event = require("event")
+local unicode = require("unicode")
+local term = require("term")
+local g = component.gpu
+local me = component.me_interface
+
+if not fs.exists("/lib/oc.lua") then
+    shell.execute("wget https://www.dropbox.com/s/cgfytt8g174a6vs/libPrecraft.lua?dl=1 /lib/oc.lua")
+end
+local oc = require("oc")
+
+if not fs.exists("/home/BD.txt") then
+    oc.savef("BD.txt", {})
+end
+
+--------------------Settings--------------------
+local CBUTTON, CDRAW, CTEXT = 0x00FFFF, 0x004575, 0xFFFFFF -- button text, frame, main text
+local debug = true -- enable debug mode
+local ADM = {['LiwMorgan']=true} -- admin access
+local scroll = 1 -- scroll position
+local precraft = true -- main loop flag
+local go = false -- crafting check flag
+local WIDTH, HEIGHT = 100, 50
+local STATUS_COLORS = {
+    crafting = 0x00FF00,
+    idle = 0xFFFF00,
+    error = 0xFF0000,
+    complete = 0x00FFFF
+}
+--------------------Settings--------------------
+local inputFind = ""
+local guiPath, debugLog1, debugLog2 = {"main"}, {}, {}
+if debug then WIDTH, HEIGHT = 160, 50 end
+g.setResolution(WIDTH, HEIGHT)
+g.setForeground(CTEXT)
+
+local function Clear()
+    g.setBackground(0x000000)
+    g.fill(1, 1, WIDTH, HEIGHT, " ")
+end
+
+local function DrawHeader()
+    g.setBackground(0x1E1E1E)
+    g.fill(1, 1, WIDTH, 5, " ")
+    oc.drawbutton(3, 2, 30, 3, CBUTTON, CDRAW, "PreCraft v2.0")
+    oc.right(WIDTH-2, 3, "Items: "..#dataItems)
+    g.setBackground(0x000000)
+end
+
+local function DrawStatus()
+    local status = go and "Crafting" or "Stopped"
+    local color = go and STATUS_COLORS.crafting or STATUS_COLORS.idle
+    g.setForeground(color)
+    oc.drawbutton(WIDTH-20, 2, 18, 3, color, CDRAW, status)
+    g.setForeground(CTEXT)
+end
+
+local function DrawScrollContent()
+    if guiPath[#guiPath] == "main" or guiPath[#guiPath] == "items" then
+        local content = ScrollContent()
+        for i = scroll, scroll + 15 do
+            if content[i] then
+                local k = i - scroll + 7
+                local status = content[i].craft and "Crafting" or "Idle"
+                local status_color = content[i].craft and STATUS_COLORS.crafting or STATUS_COLORS.idle
+                
+                if i == posSelect then
+                    g.setBackground(0x2E2E2E)
+                    g.fill(3, k, WIDTH-6, 1, " ")
+                else
+                    g.setBackground(0x000000)
+                end
+                
+                g.set(5, k, tostring(i..". "..content[i].name))
+                g.set(40, k, tostring(content[i].count))
+                g.set(50, k, tostring(content[i].craftSize))
+                g.setForeground(status_color)
+                g.set(60, k, status)
+                g.setForeground(CTEXT)
+            end
+        end
+    end
+end
+
+local function ScrollContent()
+    local cont = {}
+    if inputFind ~= "" then
+        for _, data in pairs(dataItems) do
+            if unicode.lower(data.name):find(unicode.lower(inputFind)) then
+                table.insert(cont, data)
+            end
+        end
+        return cont
+    end
+    return dataItems
+end
+
+local function eScroll(_,_,_,_,zs,nick)
+    if ADM[nick] then
+        for key in pairs(scrolls) do
+            if scrolls[key].ScrollIn[guiPath[#guiPath]] then
+                local maxscroll = math.max(1, #ScrollContent() - 15)
+                if zs == 1 and scroll > 1 then
+                    scroll = scroll - 1
+                elseif zs == -1 and scroll < maxscroll then
+                    scroll = scroll + 1
+                end
+                DrawMainPage()
+            end
+        end
+    end
+end
+
+local function DrawMainPage()
+    Clear()
+    DrawHeader()
+    DrawStatus()
+    DrawButtons()
+    DrawScrolls()
+    DrawScrollContent()
+    if debug then
+        g.setBackground(0x1E1E1E)
+        g.fill(WIDTH-50, 6, 48, 40, " ")
+        g.setForeground(0xFFFF00)
+        g.set(WIDTH-48, 7, "Debug Log:")
+        for i, log in ipairs(debugLog1) do
+            g.set(WIDTH-48, 8+i, log)
+        end
+        g.setForeground(CTEXT)
+        g.setBackground(0x000000)
+    end
+end
+
+local function DrawItemPage()
+    Clear()
+    DrawHeader()
+    if posSelect and dataItems[posSelect] then
+        local item = dataItems[posSelect]
+        g.set(5, 8, "Item: "..item.name)
+        g.set(5, 10, "ID: "..tostring(item.id))
+        g.set(5, 12, "Damage: "..tostring(item.dmg))
+        g.set(5, 14, "Maintain: "..tostring(item.count))
+        g.set(5, 16, "Craft Size: "..tostring(item.craftSize))
+        g.set(5, 18, "CPU: "..tostring(item.cpu))
+        g.setForeground(item.craft and STATUS_COLORS.crafting or STATUS_COLORS.idle)
+        g.set(5, 20, "Status: "..(item.craft and "Crafting" or "Idle"))
+        g.setForeground(CTEXT)
+    end
+    DrawButtons()
+end
+
+local function DrawScrolls()
+    for key, scroll in pairs(scrolls) do
+        if scroll.ScrollIn[guiPath[#guiPath]] then
+            oc.drawscroll(scroll.x, scroll.y, scroll.w, scroll.h, scroll, #ScrollContent(), 0x1E1E1E, 0x004575)
+        end
+    end
+end
+
+local function DrawButtons()
+    for _, button in pairs(buttons) do
+        if button.ButtonIn[guiPath[#guiPath]] and button.visible then
+            oc.drawbutton(button.x, button.y, button.w, button.h, button.ctext, button.cbutton, button.text)
+        end
+    end
+end
+
+local function toGui(gui, clear)
+    if clear then
+        guiPath = {gui}
+    else
+        guiPath[#guiPath + 1] = gui
+    end
+    posSelect = nil
+    scroll = 1
+    DrawMainPage()
+end
+
+local function Back()
+    table.remove(guiPath, #guiPath)
+    posSelect = nil
+    DrawMainPage()
+end
+
+local function AddLog(log)
+    if #debugLog1 > 20 then
+        table.remove(debugLog1, 1)
+    end
+    table.insert(debugLog1, log)
+end
+
+local function Check()
+    for i, item in ipairs(dataq) do
+        if not go then break end
+        if not item.craft or item.craft.isDone() or item.craft.isCanceled() then
+            item.craft = nil
+            local itemsMe = me.getItemDetail({id = item.id, dmg = item.dmg})
+            if itemsMe then
+                local delta = item.count - itemsMe.basic().qty
+                if delta > item.craftSize then delta = item.craftSize end
+                if delta > 0 then
+                    local cpus = me.getCpus()
+                    for _, cpu in ipairs(cpus) do
+                        if not cpu.busy and cpu.storage == item.cpu then
+                            local craftables = me.getCraftables({name = item.id, damage = item.dmg})
+                            if craftables.n >= 1 then
+                                item.craft = craftables[1].request(delta, false, tostring(item.cpu))
+                                if debug then
+                                    AddLog(item.name..": Crafting "..delta)
+                                    local cancel, cancelmsg = item.craft.isCanceled()
+                                    if cancel and cancelmsg then
+                                        AddLog("Error: "..item.name.." - "..cancelmsg)
+                                    end
+                                end
+                            elseif debug then
+                                AddLog("Error: "..item.name.." - No recipe")
+                            end
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+    DrawMainPage()
+    os.sleep(0.5)
+end
+
+local function AddItem()
+    if me.getStackInSlot(1) then
+        g.fill(1, HEIGHT-2, WIDTH, 2, " ")
+        g.set(5, HEIGHT-2, "Enter item name: ")
+        term.setCursor(25, HEIGHT-2)
+        local name = tostring(io.read())
+        g.fill(1, HEIGHT-2, WIDTH, 2, " ")
+        g.set(5, HEIGHT-2, "Enter maintain count: ")
+        term.setCursor(25, HEIGHT-2)
+        local count = tonumber(io.read())
+        g.fill(1, HEIGHT-2, WIDTH, 2, " ")
+        g.set(5, HEIGHT-2, "Enter craft size: ")
+        term.setCursor(25, HEIGHT-2)
+        local craftSize = tonumber(io.read())
+        table.insert(dataItems, {
+            name = name,
+            id = me.getStackInSlot(1).id,
+            dmg = me.getStackInSlot(1).dmg,
+            count = count,
+            craftSize = craftSize,
+            cpu = 256000
+        })
+        oc.savef("BD.txt", dataItems)
+        AddLog("Added: "..name)
+    else
+        g.set(5, HEIGHT-2, "No item in slot 1")
+        os.sleep(2)
+    end
+    DrawMainPage()
+end
+
+local function RemoveItem()
+    if posSelect and dataItems[posSelect] then
+        AddLog("Removed: "..dataItems[posSelect].name)
+        table.remove(dataItems, posSelect)
+        oc.savef("BD.txt", dataItems)
+        posSelect = nil
+        DrawMainPage()
+    end
+end
+
+local function EditItem()
+    if posSelect and dataItems[posSelect] then
+        toGui("item")
+    end
+end
+
+local function ChangeItem(action)
+    if posSelect and dataItems[posSelect] then
+        g.fill(1, HEIGHT-2, WIDTH, 2, " ")
+        if action == "changeName" then
+            g.set(5, HEIGHT-2, "Enter new name: ")
+            term.setCursor(25, HEIGHT-2)
+            dataItems[posSelect].name = tostring(io.read())
+        elseif action == "changeCount" then
+            g.set(5, HEIGHT-2, "Enter new count: ")
+            term.setCursor(25, HEIGHT-2)
+            dataItems[posSelect].count = tonumber(io.read())
+        elseif action == "changeCraftSize" then
+            g.set(5, HEIGHT-2, "Enter new craft size: ")
+            term.setCursor(25, HEIGHT-2)
+            dataItems[posSelect].craftSize = tonumber(io.read())
+        end
+        oc.savef("BD.txt", dataItems)
+        AddLog("Updated: "..dataItems[posSelect].name)
+        DrawItemPage()
+    end
+end
+
+local function eButton(_,_,x,y,_,nick)
+    if ADM[nick] then
+        for _, button in pairs(buttons) do
+            if x >= button.x and x <= button.endX and y >= button.y and y <= button.endY then
+                if button.ButtonIn[guiPath[#guiPath]] then
+                    yTouch = y
+                    button.action()
+                    return true
+                end
+            end
+        end
+    end
+end
+
+local function InputWrite(_,_,key1,key2,nick)
+    if ADM[nick] then
+        for key in pairs(scrolls) do
+            if scrolls[key].ScrollIn[guiPath[#guiPath]] then
+                local y = scrolls[key].iwY
+                g.fill(5, y, WIDTH-10, 1, " ")
+                if key1 == 8 then
+                    inputFind = unicode.sub(inputFind, 1, -2)
+                elseif key1 == 0 and key2 == 211 then
+                    inputFind = ""
+                elseif key1 ~= 0 then
+                    if unicode.len(inputFind or "") < 49 then
+                        inputFind = (inputFind or "") .. unicode.char(key1)
+                    end
+                end
+                g.set(5, y, inputFind ~= "" and inputFind or "Search items...")
+                DrawScrollContent()
+            end
+        end
+    end
+end
+
+local function initButtons()
+    for _, button in pairs(buttons) do
+        button.endX = button.x + button.w - 1
+        button.endY = button.y + button.h - 1
+    end
+end
+
+local buttons = {
+    LOGO = {ButtonIn = {"main", "items", "item"}, visible = true, x = 3, y = 2, w = 30, h = 3, cbutton = CDRAW, ctext = CBUTTON, text = "PreCraft v2.0", action = function() end},
+    Exit = {ButtonIn = {"main", "items", "item"}, visible = true, x = WIDTH-10, y = HEIGHT-3, w = 8, h = 3, cbutton = 0xFF0000, ctext = 0xFFFFFF, text = "Exit", action = function() 
+        event.cancel(etouch) 
+        event.cancel(escroll) 
+        event.cancel(ekeydown) 
+        precraft = false 
+    end},
+    Go = {ButtonIn = {"main"}, visible = true, x = 5, y = HEIGHT-5, w = 15, h = 3, cbutton = 0x00FF00, ctext = 0xFFFFFF, text = "Start", action = function() 
+        go = true 
+        toGui("items") 
+        dataq = dataItems 
+    end},
+    Stop = {ButtonIn = {"items"}, visible = true, x = 5, y = HEIGHT-5, w = 15, h = 3, cbutton = 0xFF0000, ctext = 0xFFFFFF, text = "Stop", action = function() 
+        go = false 
+        toGui("main") 
+    end},
+    Add = {ButtonIn = {"items"}, visible = true, x = 25, y = HEIGHT-5, w = 15, h = 3, cbutton = CBUTTON, ctext = 0xFFFFFF, text = "Add", action = AddItem},
+    Change = {ButtonIn = {"items"}, visible = true, x = 45, y = HEIGHT-5, w = 15, h = 3, cbutton = CBUTTON, ctext = 0xFFFFFF, text = "Edit", action = EditItem},
+    Remove = {ButtonIn = {"items"}, visible = true, x = 65, y = HEIGHT-5, w = 15, h = 3, cbutton = CBUTTON, ctext = 0xFFFFFF, text = "Remove", action = RemoveItem},
+    Select = {ButtonIn = {"items"}, visible = false, x = 3, y = 7, w = WIDTH-6, h = HEIGHT-12, text = "", action = function() 
+        posSelect = yTouch - 6 + scroll 
+        DrawScrollContent() 
+    end},
+    changeName = {ButtonIn = {"item"}, visible = true, x = 5, y = 25, w = 30, h = 3, cbutton = CBUTTON, ctext = 0xFFFFFF, text = "Change Name", action = function() ChangeItem("changeName") end},
+    changeCount = {ButtonIn = {"item"}, visible = true, x = 5, y = 29, w = 30, h = 3, cbutton = CBUTTON, ctext = 0xFFFFFF, text = "Change Count", action = function() ChangeItem("changeCount") end},
+    changeCraftSize = {ButtonIn = {"item"}, visible = true, x = 5, y = 33, w = 30, h = 3, cbutton = CBUTTON, ctext = 0xFFFFFF, text = "Change Craft Size", action = function() ChangeItem("changeCraftSize") end},
+    changeBack = {ButtonIn = {"item"}, visible = true, x = 5, y = HEIGHT-5, w = 30, h = 3, cbutton = CBUTTON, ctext = 0xFFFFFF, text = "Back", action = Back},
+}
+
+local scrolls = {
+    Items = {
+        ScrollIn = {["main"]=true, ["items"]=true},
+        iwY = HEIGHT-2,
+        x = WIDTH-2,
+        y = 7,
+        w = 2,
+        h = HEIGHT-14,
+        action = function() end
+    }
+}
+
+local function LoadSystem()
+    Clear()
+    dataItems = oc.loadf("BD.txt")
+    initButtons()
+    etouch = event.listen("touch", eButton)
+    escroll = event.listen("scroll", eScroll)
+    ekeydown = event.listen("key_down", InputWrite)
+    toGui("main")
+    dataq = dataItems
+    return true
+end
+
+function loop()
+    if LoadSystem() then
+        while precraft do
+            if go then
+                Check()
+            else
+                os.sleep(1)
+            end
+        end
+    end
+end
+
+ok, err = pcall(loop)
+
+if not ok then
+    event.cancel(etouch)
+    event.cancel(escroll)
+    event.cancel(ekeydown)
+    computer.shutdown(true)
+end
