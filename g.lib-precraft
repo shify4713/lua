@@ -1,0 +1,99 @@
+local oc = {}
+local component = require("component")
+local s = require("serialization")
+local unicode = require("unicode")
+local g = component.gpu
+local CTEXT = 0xFFFFFF
+
+function oc.right(x,y,text)
+    local _, n = string.gsub(text, "&", "")
+    local l = unicode.len(text) - n * 2
+    oc.text(x-l, y, text)
+end
+
+function oc.text(x,y,text)
+    local n = 1
+    for i = 1, unicode.len(text) do
+        if unicode.sub(text, i,i) == "&" then
+            oc.setColor(unicode.sub(text, i + 1, i + 1))
+        elseif unicode.sub(text, i - 1, i - 1) ~= "&" then
+            g.set(x+n,y, unicode.sub(text, i,i))
+            n = n + 1
+        end
+    end
+    g.setForeground(CTEXT)
+end
+
+function oc.setColor(index)
+    if index ~= "r" then back = g.getForeground() end
+    if index == "0" then g.setForeground(0x333333) end
+    if index == "1" then g.setForeground(0x0000FF) end
+    if index == "2" then g.setForeground(0x00FF00) end
+    if index == "3" then g.setForeground(0x24B3A7) end
+    if index == "4" then g.setForeground(0xFF0000) end
+    if index == "5" then g.setForeground(0x8B00FF) end
+    if index == "6" then g.setForeground(0xFFA500) end
+    if index == "7" then g.setForeground(0xBBBBBB) end
+    if index == "8" then g.setForeground(0x808080) end
+    if index == "9" then g.setForeground(0x0000FF) end
+    if index == "a" then g.setForeground(0x66FF66) end
+    if index == "b" then g.setForeground(0x00FFFF) end
+    if index == "c" then g.setForeground(0xFF6347) end
+    if index == "d" then g.setForeground(0xFF00FF) end
+    if index == "e" then g.setForeground(0xFFFF00) end
+    if index == "f" then g.setForeground(0xFFFFFF) end
+    if index == "g" then g.setForeground(0x00FF00) end
+    if index == "r" then g.setForeground(back) end
+end
+
+function oc.savef(cd,data)
+    local file = io.open("/home/"..cd, "w")
+    file:write(s.serialize(data))
+    file:close()
+end
+
+function oc.loadf(cd)
+    local file = io.open("/home/"..cd, "r")
+    local str = s.unserialize(file:read("*a"))
+    file:close()
+    return str
+end
+
+function oc.drawbutton(x,y,w,h,col1,col2,text)
+    g.setForeground(col1)
+    g.set(x + w/2 - unicode.len(text)/2, y+h/2, text)
+    if col2 then
+        g.setForeground(col2)
+        for i = 1, w-2 do
+            g.set(x+i,y,"─")
+            g.set(x+i,y+h-1,"─")
+        end
+        for i = 1, h-2 do
+            g.set(x,y+i,"│")
+            g.set(x+w-1,y+i,"│")
+        end
+        g.set(x,y,"┌")
+        g.set(x+w-1,y,"┐")
+        g.set(x,y+h-1,"└")
+        g.set(x+w-1,y+h-1,"┘")
+    end
+    g.setForeground(CTEXT)
+end
+
+function oc.drawscroll(x,y,w,h,scroll,maxh,col1,col2)
+    local lenght = 1
+    g.setBackground(col1)
+    g.fill(x, y, w, h, " ")
+    g.setBackground(col2)
+    if h < maxh then
+        lenght = h * (h / maxh)
+        scroll = math.ceil((scroll-1) * (h/maxh))
+    else
+        lenght = h
+        scroll = scroll - 1
+    end
+    g.fill(x,y+scroll,w,lenght, " ")
+    g.setBackground(0x000000)
+end
+
+return oc
