@@ -49,8 +49,8 @@ if not fs.exists(LIB_PATH) then
     io.stdout:write("ultimateOC.lua не найден. Скачивание...\n")
     local success, err = shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
     if not success then
-        io.stderr:write("Не удалось скачать ultimateOC.lua: " .. tostring(err) .. "\n")
-        os.exit(1)
+        io.stderr:write("Ошибка скачивания ultimateOC.lua: " .. tostring(err) .. "\n")
+        io.stdout:write("Попытка продолжить без библиотеки...\n")
     end
 end
 local ok, uoc = pcall(require, "ultimateOC")
@@ -154,8 +154,6 @@ local logOffset = 0
 local lastRequestedItem = nil
 local lastRequestTime = 0
 local buttonHover = nil
-local inputMode = nil
-local inputFields = {}
 
 -------------------- Логгирование --------------------
 local function addLog(logs, text, lvl)
@@ -259,7 +257,7 @@ local function drawItems()
     g.setForeground(COLORS.select_active)
     g.set(x + col_name + col_category + col_now + 3, y + 1, "│")
     g.setForeground(COLORS.ok)
-    g.set(x + col_name + col_category + col_now + 4, y + 1, string.format("%-" .. col_hold .. "s", "Держать"))
+    g.set(x + col_name + col_category + col_now + 4, y + 1, string.format("%-" .. col_now .. "s", "Держать"))
     g.setForeground(COLORS.select_active)
     g.set(x + col_name + col_category + col_now + col_hold + 4, y + 1, "│")
     g.setForeground(COLORS.ok)
@@ -328,10 +326,9 @@ local function drawSearchBar()
     g.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
     local display = search
     if display == "" and not searchActive then display = "Поиск: введите часть названия..." end
-    if searchActive then display = display .. "_" end
     local maxlen = w - 7
     if unicode.len(display) > maxlen then
-        display = unicode.sub(display, unicode.len(display) - maxlen + 1)
+        display = unicode.sub(display, unicode.len(display) - maxlen + 1, -1)
     end
     g.set(x + 2, y + 1, display)
     g.setBackground(COLORS.bg)
@@ -402,52 +399,32 @@ local function drawButtons()
     uoc.animatedButton(btnX, sortBtnY, sortBtnW, arrowBtnH, displaySortText, sortHover, COLORS.button, COLORS.buttonActive, COLORS.text)
 end
 
-local function promptForInput(label, keyName, isNumeric, defaultValue)
-    local currentInput = inputFields[keyName] or defaultValue or ""
-    local baseY = HEIGHT - 15
-    local fieldsConfig = {
-        {label = "Название:", key = "name", x = 2, y = baseY + 3, w = 40},
-        {label = "Категория:", key = "category", x = 2, y = baseY + 5, w = 40},
-        {label = "Держать:", key = "count", x = 2, y = baseY + 7, w = 20},
-        {label = "Крафт за раз:", key = "craftSize", x = 2, y = baseY + 9, w = 20},
-    }
-    local currentFieldConfig
-    for _, config in ipairs(fieldsConfig) do
-        if config.key == keyName then
-            currentFieldConfig = config
-            break
-        end
-    end
-    local function redrawInputScreen(activeInput)
+local function promptForInput(label, defaultValue, isNumeric)
+    local input = defaultValue or ""
+    local x, y = 2, HEIGHT - 10
+    local w, h = WIDTH - 20, 3
+
+    local function redrawInput()
         clear()
-        uoc.drawText(2, baseY, (inputMode == "add") and "Добавление предмета" or "Изменение: " .. (dataItems[selectedItem] and dataItems[selectedItem].name or "<?>"), COLORS.ok)
-        uoc.drawText(2, baseY + 1, "Вставьте предмет в 1-й слот ME интерфейса (для добавления).", COLORS.ok)
-        uoc.drawText(2, baseY + 12, "Enter: сохранить | Esc: отменить | Backspace: удалить символ | Delete: очистить", COLORS.text)
-        for _, field in ipairs(fieldsConfig) do
-            local isActiveField = (field.key == keyName)
-            uoc.roundRect(field.x, field.y, field.w, 3, COLORS.input_border, COLORS.input_bg)
-            g.setForeground(COLORS.text)
-            g.set(field.x + 1, field.y, field.label)
-            g.setBackground(COLORS.input_bg)
-            g.fill(field.x + 1, field.y + 1, field.w - 2, 1, " ")
-            g.setForeground(isActiveField and COLORS.ok or COLORS.input_text)
-            local displayValue = inputFields[field.key] or ""
-            if isActiveField then
-                displayValue = activeInput .. "_"
-            elseif displayValue == "" then
-                displayValue = "Введите значение..."
-            end
-            local maxlen = field.w - 4
-            if unicode.len(displayValue) > maxlen then
-                displayValue = unicode.sub(displayValue, unicode.len(displayValue) - maxlen + 1)
-            end
-            g.set(field.x + 2, field.y + 1, displayValue)
+        uoc.drawText(2, HEIGHT - 15, label, COLORS.ok)
+        uoc.drawText(2, HEIGHT - 12, "Enter: сохранить | Esc: отменить | Backspace: удалить символ | Delete: очистить", COLORS.text)
+        uoc.roundRect(x, y, w, h, COLORS.input_border, COLORS.input_bg)
+        g.setBackground(COLORS.input_bg)
+        g.fill(x + 1, y + 1, w - 2, h - 2, " ")
+        g.setForeground(COLORS.ok)
+        local displayValue = input
+        if displayValue == "" then displayValue = "Введите значение..." end
+        local maxlen = w - 4
+        if unicode.len(displayValue) > maxlen then
+            displayValue = unicode.sub(displayValue, unicode.len(displayValue) - maxlen + 1, -1)
         end
+        g.set(x + 2, y + 1, displayValue)
         g.setBackground(COLORS.bg)
         g.setForeground(COLORS.text)
     end
-    redrawInputScreen(currentInput)
-    local maxLength = currentFieldConfig.w - 4
+
+    redrawInput()
+    local maxLength = w - 4
     while true do
         local ev = {event.pull(0.1, "char", "key_down")}
         local eventType = ev[1]
@@ -456,8 +433,8 @@ local function promptForInput(label, keyName, isNumeric, defaultValue)
             if unicode.len(char) > 0 and not char:find("[\x00-\x1F\x7F]") then
                 if isNumeric and not char:match("[0-9]") then
                     addLog(logs, "WARN: Введен недопустимый символ для числового поля: " .. char, "WARN")
-                elseif unicode.len(currentInput) < maxLength then
-                    currentInput = currentInput .. char
+                elseif unicode.len(input) < maxLength then
+                    input = input .. char
                     addLog(logs, "INFO: Введен символ: " .. char, "INFO")
                 end
             end
@@ -465,28 +442,28 @@ local function promptForInput(label, keyName, isNumeric, defaultValue)
             local key = ev[4]
             if key == 28 then -- Enter
                 if isNumeric then
-                    local numResult = tonumber(currentInput)
+                    local numResult = tonumber(input)
                     if numResult == nil then
                         addLog(logs, "WARN: Введено нечисловое значение для '" .. label .. "'. Использовано: " .. tostring(defaultValue), "WARN")
                         return tonumber(defaultValue) or 0
                     end
                     return numResult
                 end
-                if currentInput == "" then
-                    currentInput = defaultValue or ""
+                if input == "" then
+                    input = defaultValue or ""
                 end
-                return currentInput
+                return input
             elseif key == 14 then -- Backspace
-                currentInput = unicode.sub(currentInput, 1, -2)
+                input = unicode.sub(input, 1, -2)
                 addLog(logs, "INFO: Удален символ", "INFO")
             elseif key == 211 then -- Delete
-                currentInput = ""
+                input = ""
                 addLog(logs, "INFO: Поле очищено", "INFO")
             elseif key == 1 then -- Escape
                 return nil
             end
         end
-        redrawInputScreen(currentInput)
+        redrawInput()
     end
 end
 
@@ -505,7 +482,7 @@ end
 local function reload()
     local ok, res = pcall(uoc.loadf, DATA_FILE)
     if not ok then
-        addLog(logs, "ERROR: Ошибка загрузки BD.txt: " .. tostring(res), "ERROR")
+        addLog(logs, "ERROR: Ошибка загрузки BD.txt: " .. tostring(res) .. ". Использую пустые данные.", "ERROR")
         dataItems = {}
         settings = {sortCriteria = "name", sortAscending = true}
     else
@@ -569,48 +546,49 @@ end
 
 local function cancelInput()
     changeitem = false
-    inputMode = nil
-    inputFields = {}
     draw()
 end
 
 local function addItem()
     changeitem = true
-    inputMode = "add"
-    inputFields = {name = "", category = "", count = "0", craftSize = "1"}
-    local originalName = ""
     local stack = nil
     local ok_stack, res_stack = pcall(me.getStackInSlot, 1)
     if ok_stack then stack = res_stack end
-    if stack then
-        originalName = stack.label or stack.id
-    end
-    inputFields.name = promptForInput("Название:", "name", false, originalName)
-    if inputFields.name == nil then cancelInput(); return end
-    if inputFields.name == "" then inputFields.name = originalName end
-    inputFields.category = promptForInput("Категория:", "category", false, "Без категории")
-    if inputFields.category == nil then cancelInput(); return end
-    if inputFields.category == "" then inputFields.category = "Без категории" end
-    inputFields.count = promptForInput("Держать:", "count", true, "0")
-    if inputFields.count == nil then cancelInput(); return end
-    inputFields.craftSize = promptForInput("Крафт за раз:", "craftSize", true, "1")
-    if inputFields.craftSize == nil then cancelInput(); return end
-    if stack then
-        table.insert(dataItems, {
-            name = inputFields.name,
-            category = inputFields.category,
-            id = stack.id,
-            dmg = stack.dmg,
-            count = inputFields.count,
-            craftSize = inputFields.craftSize
-        })
-        save()
-        addLog(logs, "INFO: Добавлен предмет: " .. inputFields.name .. " (Категория: " .. inputFields.category .. ")", "INFO")
-        currentPage = getMaxPages()
-        selectedItem = nil
-    else
+    if not stack then
         addLog(logs, "ERROR: Нет предмета в слоте 1!", "ERROR")
+        uoc.drawText(2, HEIGHT - 15, "Предмет не установлен в 1-й слот интерфейса", COLORS.error)
+        os.sleep(2)
+        cancelInput()
+        return
     end
+
+    local originalName = stack.label or stack.id
+    local name = promptForInput("Введите название предмета:", originalName, false)
+    if name == nil then cancelInput(); return end
+    if name == "" then name = originalName end
+
+    local category = promptForInput("Введите категорию:", "Без категории", false)
+    if category == nil then cancelInput(); return end
+    if category == "" then category = "Без категории" end
+
+    local count = promptForInput("Введите кол-во поддержания:", "0", true)
+    if count == nil then cancelInput(); return end
+
+    local craftSize = promptForInput("Введите размер крафта:", "1", true)
+    if craftSize == nil then cancelInput(); return end
+
+    table.insert(dataItems, {
+        name = name,
+        category = category,
+        id = stack.id,
+        dmg = stack.dmg,
+        count = count,
+        craftSize = craftSize
+    })
+    save()
+    addLog(logs, "INFO: Добавлен предмет: " .. name .. " (Категория: " .. category .. ")", "INFO")
+    currentPage = getMaxPages()
+    selectedItem = nil
     cancelInput()
 end
 
@@ -621,25 +599,23 @@ local function editItem()
     end
     local item = dataItems[selectedItem]
     changeitem = true
-    inputMode = "edit"
-    inputFields = {
-        name = item.name or "",
-        category = item.category or "",
-        count = tostring(item.count or 0),
-        craftSize = tostring(item.craftSize or 1)
-    }
-    inputFields.name = promptForInput("Название:", "name", false, item.name)
-    if inputFields.name == nil then cancelInput(); return end
-    inputFields.category = promptForInput("Категория:", "category", false, item.category)
-    if inputFields.category == nil then cancelInput(); return end
-    inputFields.count = promptForInput("Держать:", "count", true, tostring(item.count or 0))
-    if inputFields.count == nil then cancelInput(); return end
-    inputFields.craftSize = promptForInput("Крафт за раз:", "craftSize", true, tostring(item.craftSize or 1))
-    if inputFields.craftSize == nil then cancelInput(); return end
-    item.name = inputFields.name
-    item.category = inputFields.category
-    item.count = inputFields.count
-    item.craftSize = inputFields.craftSize
+
+    local name = promptForInput("Введите название предмета:", item.name, false)
+    if name == nil then cancelInput(); return end
+
+    local category = promptForInput("Введите категорию:", item.category, false)
+    if category == nil then cancelInput(); return end
+
+    local count = promptForInput("Введите кол-во поддержания:", tostring(item.count), true)
+    if count == nil then cancelInput(); return end
+
+    local craftSize = promptForInput("Введите размер крафта:", tostring(item.craftSize), true)
+    if craftSize == nil then cancelInput(); return end
+
+    item.name = name
+    item.category = category
+    item.count = count
+    item.craftSize = craftSize
     save()
     addLog(logs, "INFO: Изменено: " .. item.name .. " (Категория: " .. (item.category or "Без категории") .. ")", "INFO")
     cancelInput()
@@ -749,6 +725,7 @@ local function autoCraftLoop()
         if isCrafting then
             local now = computer.uptime()
             if now >= nextCraftUpdate then
+                addLog(logs, "INFO: Обновление данных...", "INFO")
                 local ok, err = pcall(reload)
                 if not ok then
                     addLog(logs, "ERROR: Ошибка в reload: " .. tostring(err), "ERROR")
@@ -764,14 +741,14 @@ local function autoCraftLoop()
                         end
                     end
                     save()
-                    nextCraftUpdate = now + 30
+                    nextCraftUpdate = now + 5 -- Уменьшил интервал для более частого обновления
                 end
                 if not changeitem then
                     draw()
                 end
             end
         end
-        os.sleep(0.5)
+        os.sleep(0.1) -- Уменьшил задержку для более плавной работы
     end
 end
 
@@ -1067,14 +1044,12 @@ g.setResolution(WIDTH, HEIGHT)
 addLog(logs, "INFO: Программа запущена", "INFO")
 local ok, err = pcall(reload)
 if not ok then
-    addLog(logs, "ERROR: Ошибка при начальной загрузке: " .. tostring(err), "ERROR")
+    addLog(logs, "ERROR: Ошибка при начальной загрузке: " .. tostring(err) .. ". Использую пустые данные.", "ERROR")
     draw()
-    while true do os.sleep(1) end
 end
 draw()
 local ok, err = pcall(autoCraftLoop)
 if not ok then
     addLog(logs, "ERROR: Фатальная ошибка в autoCraftLoop: " .. tostring(err), "ERROR")
     draw()
-    while true do os.sleep(1) end
 end
