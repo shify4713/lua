@@ -693,6 +693,7 @@ end
 
 event.listen("touch", function(_, _, x, y, _, nick)
     if changeitem or not ADM[nick] then return end
+    -- Handle button clicks
     for button, btn in pairs(buttons) do
         for _, gui in ipairs(btn.ButtonIn) do
             if gui == guiPath[#guiPath] and btn.visible then
@@ -707,8 +708,9 @@ event.listen("touch", function(_, _, x, y, _, nick)
             end
         end
     end
-    if y >= HEIGHT - 10 and y <= HEIGHT - 8 then
-        if x >= 2 + (WIDTH - (debug and 75 or 20)) - 3 and x <= 2 + (WIDTH - (debug and 75 or 20)) - 1 and search ~= "" then
+    -- Handle search bar clear button
+    if y >= HEIGHT - 10 and y <= HEIGHT - 8 and x >= 2 and x <= 2 + (WIDTH - (debug and 75 or 20)) - 1 then
+        if x >= 2 + (WIDTH - (debug and 75 or 20)) - 3 and search ~= "" then
             search = ""
             currentPage = 1
             posSelect = nil
@@ -717,18 +719,20 @@ event.listen("touch", function(_, _, x, y, _, nick)
             return
         end
     end
+    -- Handle item selection
     local filteredAndSortedItems = getFilteredAndSortedItems()
     local perPage = getItemsPerPage()
     local startIndex = (currentPage - 1) * perPage + 1
     local itemsStartY = 10
     local itemsEndY = itemsStartY + perPage - 1
-    if y >= itemsStartY and y <= itemsEndY then
+    if y >= itemsStartY and y <= itemsEndY and x >= 1 and x <= WIDTH - (debug and 75 or 25) + 1 then
         local idxOnPage = y - itemsStartY
         local actualIndexInFiltered = startIndex + idxOnPage
         if filteredAndSortedItems[actualIndexInFiltered] then
             for k, v in ipairs(dataItems) do
                 if v == filteredAndSortedItems[actualIndexInFiltered] then
                     posSelect = k
+                    selectedItem = k
                     break
                 end
             end
@@ -737,6 +741,9 @@ event.listen("touch", function(_, _, x, y, _, nick)
         draw()
         return
     end
+    -- Clear selection if clicking outside valid areas
+    posSelect = nil
+    selectedItem = nil
     buttonHover = nil
     draw()
 end)
@@ -759,7 +766,7 @@ event.listen("key_down", function(_, _, key, char, nick)
         search = unicode.sub(search, 1, -2)
     elseif key == 211 then -- Delete
         search = ""
-    elseif key ~= 0 then
+    elseif char ~= 0 then
         local c = unicode.char(char)
         if unicode.len(c) > 0 and not c:find("[\x00-\x1F\x7F]") then
             if unicode.len(search) < WIDTH - (debug and 75 or 25) then
@@ -783,19 +790,24 @@ event.listen("key_down", function(_, _, key, char, nick)
         end
         if #visibleItems == 0 then
             posSelect = nil
+            selectedItem = nil
         elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered > 1 then
             posSelect = nil
+            selectedItem = nil
             for k, v in ipairs(dataItems) do
                 if v == visibleItems[currentSelectedItemInFiltered - 1] then
                     posSelect = k
+                    selectedItem = k
                     break
                 end
             end
         elseif #visibleItems > 0 then
             posSelect = nil
+            selectedItem = nil
             for k, v in ipairs(dataItems) do
                 if v == visibleItems[#visibleItems] then
                     posSelect = k
+                    selectedItem = k
                     break
                 end
             end
@@ -817,19 +829,24 @@ event.listen("key_down", function(_, _, key, char, nick)
         end
         if #visibleItems == 0 then
             posSelect = nil
+            selectedItem = nil
         elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered < #visibleItems then
             posSelect = nil
+            selectedItem = nil
             for k, v in ipairs(dataItems) do
                 if v == visibleItems[currentSelectedItemInFiltered + 1] then
                     posSelect = k
+                    selectedItem = k
                     break
                 end
             end
         elseif #visibleItems > 0 then
             posSelect = nil
+            selectedItem = nil
             for k, v in ipairs(dataItems) do
                 if v == visibleItems[1] then
                     posSelect = k
+                    selectedItem = k
                     break
                 end
             end
@@ -838,11 +855,13 @@ event.listen("key_down", function(_, _, key, char, nick)
         if currentPage > 1 then
             currentPage = currentPage - 1
             posSelect = nil
+            selectedItem = nil
         end
     elseif key == 205 then -- Right
         if currentPage < maxPages then
             currentPage = currentPage + 1
             posSelect = nil
+            selectedItem = nil
         end
     end
     buttonHover = nil
