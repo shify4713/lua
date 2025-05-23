@@ -412,13 +412,83 @@ local function drawButtons()
     uoc.animatedButton(btnX, sortBtnY, sortBtnW, arrowBtnH, displaySortText, sortHover, COLORS.button, COLORS.buttonActive, COLORS.text)
 end
 
+-- Вспомогательная функция для отрисовки поля ввода и чтения значения через term.read()
+local function promptForInput(label, initialValue, x, y, w, isNumeric)
+    local currentInput = initialValue or ""
+    local inputReceived = false
+
+    while not inputReceived do
+        clear()
+        local baseY = HEIGHT - 15
+        local title = (inputMode == "add") and "Добавление предмета" or "Изменение: " .. (dataItems[selectedItem].name or "<?>")
+        uoc.drawText(2, baseY, title, COLORS.ok)
+        uoc.drawText(2, baseY + 1, "Вставьте предмет в 1-й слот ME интерфейса (для добавления).", COLORS.ok)
+
+        local fieldsToDraw = {
+            {label = "Название:", value = inputFields.name or "", x = 2, y = baseY + 3, w = 40, key = "name"},
+            {label = "Категория:", value = inputFields.category or "", x = 2, y = baseY + 5, w = 40, key = "category"},
+            {label = "Держать:", value = inputFields.count or "", x = 2, y = baseY + 7, w = 20, key = "count"},
+            {label = "Крафт за раз:", value = inputFields.craftSize or "", x = 2, y = baseY + 9, w = 20, key = "craftSize"},
+        }
+
+        for i, field in ipairs(fieldsToDraw) do
+            local isActive = (field.label == label) -- Determine if this is the currently active field
+            uoc.roundRect(field.x, field.y, field.w, 3, COLORS.input_border, COLORS.input_bg)
+            g.setForeground(COLORS.text)
+            g.set(field.x + 1, field.y, field.label)
+            g.setBackground(COLORS.input_bg)
+            g.fill(field.x + 1, field.y + 1, field.w - 2, 1, " ")
+            g.setForeground(isActive and COLORS.ok or COLORS.input_text)
+            local display = (field.label == label) and currentInput or field.value -- Show current input for active field
+            
+            if display == "" and not isActive then
+                display = "Введите значение..."
+            end
+            if isActive then
+                display = display .. "_"
+            end
+            local maxlen = field.w - 4
+            if unicode.len(display) > maxlen then
+                display = unicode.sub(display, unicode.len(display) - maxlen + 1)
+            end
+            g.set(field.x + 2, field.y + 1, display)
+        end
+        g.setBackground(COLORS.bg)
+        g.setForeground(COLORS.text)
+        uoc.drawText(2, baseY + 12, "Enter: сохранить/пропустить", COLORS.text)
+
+        -- Position cursor for the active input field
+        term.setCursor(x + 2, y + 1)
+        term.showCursor(true)
+
+        -- Read input for the current field
+        local result = term.read()
+        term.showCursor(false)
+
+        if result == nil then -- User pressed Ctrl+C or similar
+            return nil
+        end
+
+        currentInput = result
+        if isNumeric then
+            currentInput = tonumber(currentInput) or initialValue
+        end
+        inputReceived = true
+    end
+    return currentInput
+end
+
+
 local function drawInputScreen()
+    -- This function is now mainly for the static background and text when in input mode
+    -- Actual input prompts are handled by promptForInput in addItem/editItem
     clear()
     local baseY = HEIGHT - 15
     local title = (inputMode == "add") and "Добавление предмета" or "Изменение: " .. (dataItems[selectedItem].name or "<?>")
     uoc.drawText(2, baseY, title, COLORS.ok)
     uoc.drawText(2, baseY + 1, "Вставьте предмет в 1-й слот ME интерфейса (для добавления).", COLORS.ok)
-
+    uoc.drawText(2, baseY + 12, "Enter: сохранить/пропустить", COLORS.text)
+    
     local fields = {
         {label = "Название:", value = inputFields.name or "", x = 2, y = baseY + 3, w = 40, key = "name"},
         {label = "Категория:", value = inputFields.category or "", x = 2, y = baseY + 5, w = 40, key = "category"},
@@ -447,15 +517,11 @@ local function drawInputScreen()
         end
         g.set(field.x + 2, field.y + 1, display)
     end
-    g.setBackground(COLORS.bg)
-    g.setForeground(COLORS.text)
-    -- Updated instruction for Enter
-    uoc.drawText(2, baseY + 12, "Enter: сохранить/пропустить", COLORS.text)
 end
 
 local function draw()
     if changeitem then
-        drawInputScreen()
+        drawInputScreen() -- This now just draws the static screen elements
     else
         clear()
         drawHeader()
@@ -530,14 +596,63 @@ local function resetSelection()
     search = ""
     currentPage = 1
     selectedItem = nil
-}
+end
 
 local function addItem()
     changeitem = true
     inputMode = "add"
     inputFields = {name = "", category = "", count = "", craftSize = ""}
-    currentField = 1
     inputActive = true
+
+    local baseY = HEIGHT - 15
+
+    -- Prompt for Name
+    inputFields.name = promptForInput("Название:", inputFields.name, 2, baseY + 3, 40, false)
+    if inputFields.name == nil then cancelInput(); return end -- User cancelled
+
+    -- Prompt for Category
+    inputFields.category = promptForInput("Категория:", inputFields.category, 2, baseY + 5, 40, false)
+    if inputFields.category == nil then cancelInput(); return end
+
+    -- Prompt for Count
+    inputFields.count = promptForInput("Держать:", inputFields.count, 2, baseY + 7, 20, true)
+    if inputFields.count == nil then cancelInput(); return end
+    inputFields.count = tonumber(inputFields.count) or 0 -- Ensure it's a number
+
+    -- Prompt for Craft Size
+    inputFields.craftSize = promptForInput("Крафт за раз:", inputFields.craftSize, 2, baseY + 9, 20, true)
+    if inputFields.craftSize == nil then cancelInput(); return end
+    inputFields.craftSize = tonumber(inputFields.craftSize) or 1 -- Ensure it's a number
+
+    -- After all inputs are gathered, perform the save logic
+    local stack = nil
+    local ok, res = pcall(me.getStackInSlot, 1)
+    if ok then stack = res end
+
+    if stack then
+        local name = inputFields.name
+        local category = inputFields.category
+        table.insert(dataItems, {
+            name = name ~= "" and name or stack.label or stack.id,
+            category = category ~= "" and category or "Без категории",
+            id = stack.id,
+            dmg = stack.dmg,
+            count = inputFields.count,
+            craftSize = inputFields.craftSize
+        })
+        save()
+        addLog(logs, "INFO: Добавлен предмет: " .. (name ~= "" and name or stack.label or stack.id) .. " (Категория: " .. (category ~= "" and category or "Без категории") .. ")", "INFO")
+        currentPage = getMaxPages()
+        selectedItem = nil
+    else
+        addLog(logs, "ERROR: Нет предмета в слоте 1!", "ERROR")
+    end
+
+    changeitem = false
+    inputMode = nil
+    inputFields = {}
+    currentField = 1
+    inputActive = false
     draw()
 end
 
@@ -555,43 +670,49 @@ local function editItem()
         count = tostring(item.count or 0),
         craftSize = tostring(item.craftSize or 1)
     }
-    currentField = 1
     inputActive = true
+
+    local baseY = HEIGHT - 15
+
+    -- Prompt for Name
+    inputFields.name = promptForInput("Название:", inputFields.name, 2, baseY + 3, 40, false)
+    if inputFields.name == nil then cancelInput(); return end -- User cancelled
+
+    -- Prompt for Category
+    inputFields.category = promptForInput("Категория:", inputFields.category, 2, baseY + 5, 40, false)
+    if inputFields.category == nil then cancelInput(); return end
+
+    -- Prompt for Count
+    inputFields.count = promptForInput("Держать:", inputFields.count, 2, baseY + 7, 20, true)
+    if inputFields.count == nil then cancelInput(); return end
+    inputFields.count = tonumber(inputFields.count) or 0
+
+    -- Prompt for Craft Size
+    inputFields.craftSize = promptForInput("Крафт за раз:", inputFields.craftSize, 2, baseY + 9, 20, true)
+    if inputFields.craftSize == nil then cancelInput(); return end
+    inputFields.craftSize = tonumber(inputFields.craftSize) or 1
+
+    -- After all inputs are gathered, perform the save logic
+    if inputFields.name then item.name = inputFields.name end
+    if inputFields.category then item.category = inputFields.category end
+    if inputFields.count then item.count = inputFields.count end
+    if inputFields.craftSize then item.craftSize = inputFields.craftSize end
+    save()
+    addLog(logs, "INFO: Изменено: " .. item.name .. " (Категория: " .. (item.category or "Без категории") .. ")", "INFO")
+
+    changeitem = false
+    inputMode = nil
+    inputFields = {}
+    currentField = 1
+    inputActive = false
     draw()
 end
 
+-- This function is now mostly unused, as input is handled by promptForInput
 local function saveItem()
-    if inputMode == "add" then
-        local stack = nil
-        local ok, res = pcall(me.getStackInSlot, 1)
-        if ok then stack = res end
-        if stack then
-            local name = inputFields.name
-            local category = inputFields.category
-            table.insert(dataItems, {
-                name = name ~= "" and name or stack.label or stack.id,
-                category = category ~= "" and category or "Без категории",
-                id = stack.id,
-                dmg = stack.dmg,
-                count = tonumber(inputFields.count) or 0,
-                craftSize = tonumber(inputFields.craftSize) or 1
-            })
-            save()
-            addLog(logs, "INFO: Добавлен предмет: " .. (name ~= "" and name or stack.label or stack.id) .. " (Категория: " .. (category ~= "" and category or "Без категории") .. ")", "INFO")
-            currentPage = getMaxPages()
-            selectedItem = nil
-        else
-            addLog(logs, "ERROR: Нет предмета в слоте 1!", "ERROR")
-        end
-    elseif inputMode == "edit" then
-        local item = dataItems[selectedItem]
-        if inputFields.name then item.name = inputFields.name end
-        if inputFields.category then item.category = inputFields.category end
-        if inputFields.count then item.count = tonumber(inputFields.count) or item.count end
-        if inputFields.craftSize then item.craftSize = tonumber(inputFields.craftSize) or item.craftSize end
-        save()
-        addLog(logs, "INFO: Изменено: " .. item.name .. " (Категория: " .. (item.category or "Без категории") .. ")", "INFO")
-    end
+    -- The logic for saving is now embedded within addItem and editItem
+    -- after all promptForInput calls are complete.
+    addLog(logs, "DEBUG: saveItem called, but logic is now in addItem/editItem.", "DEBUG")
     changeitem = false
     inputMode = nil
     inputFields = {}
@@ -620,7 +741,7 @@ local function removeItem()
     clampPage()
     save()
     draw()
-end
+}
 
 local function doCraft()
     isCrafting = true
@@ -692,7 +813,7 @@ local function tryCraftItem(itemToCraft)
             if quantityToRequest == 0 then quantityToRequest = 1 end
             local estimatedActualOutputFromAE2 = math.ceil(quantityToRequest / actualAE2RecipeOutput) * actualAE2RecipeOutput
             if current + estimatedActualOutputFromAE2 >= count then
-                addLog(logs, "INFO: Предмет '" .. (itemToCraft.name or "<??>") .. "' достигнет цели (" .. estimatedActualAE2RecipeOutput .. "x).", "INFO")
+                addLog(logs, "INFO: Предмет '" .. (itemToCraft.name or "<??>") .. "' достигнет цели (" .. estimatedActualOutputFromAE2 .. "x).", "INFO")
                 craftStatus = "Достаточно: " .. (itemToCraft.name or "<??>")
                 return false
             end
@@ -791,7 +912,7 @@ local function updateButtonHover(x, y)
 end
 
 event.listen("touch", function(_, _, x, y, _, _)
-    if changeitem then return end
+    if changeitem then return end -- Don't process touch events when in input mode
     local btnWidth = 12
     local btnHeight = 3
     local btnX = WIDTH - btnWidth - 5
@@ -869,8 +990,10 @@ event.listen("touch", function(_, _, x, y, _, _)
         return
     end
     if y >= HEIGHT - 10 and y <= HEIGHT - 8 then
+        -- Search bar area
         searchActive = false
         if x >= 2 + (WIDTH - 20) - 3 and x <= 2 + (WIDTH - 20) - 1 and search ~= "" then
+            -- Click on 'X' to clear search
             search = ""
             currentPage = 1
             selectedItem = nil
@@ -879,6 +1002,7 @@ event.listen("touch", function(_, _, x, y, _, _)
             return
         end
         if x >= 2 + 1 and x <= 2 + (WIDTH - 20) - 4 then
+            -- Click inside search bar to activate it
             searchActive = true
             buttonHover = nil
             draw()
@@ -912,7 +1036,7 @@ event.listen("touch", function(_, _, x, y, _, _)
 end)
 
 event.listen("mouse_move", function(_, _, x, y)
-    if changeitem then return end
+    if changeitem then return end -- Don't update hover when in input mode
     local newHover = updateButtonHover(x, y)
     if newHover ~= buttonHover then
         buttonHover = newHover
@@ -921,158 +1045,120 @@ event.listen("mouse_move", function(_, _, x, y)
 end)
 
 event.listen("key_down", function(_, _, key, _, _)
-    if changeitem then
-        local fieldNames = {"name", "category", "count", "craftSize"}
-        if key == 15 then -- Tab
-            currentField = currentField + 1
-            if currentField > totalInputFields then currentField = 1 end
-            draw()
-        elseif key == 28 then -- Enter
-            if currentField < totalInputFields then
-                currentField = currentField + 1
-            else
-                saveItem() -- Save only if on the last field
-            end
-            draw()
-        elseif key == 1 then -- Esc (now behaves as cancel input)
-            cancelInput()
-        else
-            local currentFieldName = fieldNames[currentField]
-            local currentValue = inputFields[currentFieldName] or ""
+    -- Key handling for non-input mode (main screen navigation/search)
+    if not changeitem then
+        local filteredAndSortedItems = getFilteredAndSortedItems()
+        local perPage = getItemsPerPage()
+        local maxPages = getMaxPages()
+        if searchActive then
             if key == 14 then -- Backspace
-                inputFields[currentFieldName] = unicode.sub(currentValue, 1, -2)
-            elseif key == 211 then -- Delete (Clears the entire field)
-                inputFields[currentFieldName] = ""
+                search = unicode.sub(search, 1, -2)
+            elseif key == 211 then -- Delete
+                search = ""
+            elseif key == 28 then -- Enter (to deactivate search)
+                searchActive = false
             else
-                -- Append character if it's a displayable character
+                -- Append character to search string (handles Unicode)
                 local char = unicode.char(key)
-                if unicode.len(char) > 0 and char:match("[^\x00-\x1F\x7F]") then -- Check for non-control characters
-                    if (currentFieldName == "count" or currentFieldName == "craftSize") then
-                        if char:match("%d") then -- Only digits for count and craftSize
-                            if unicode.len(currentValue) < 30 then -- Limit length
-                                inputFields[currentFieldName] = currentValue .. char
-                            end
-                        end
-                    else
-                        if unicode.len(currentValue) < 40 then -- Limit length for text fields
-                            inputFields[currentFieldName] = currentValue .. char
-                        end
+                if unicode.len(char) > 0 and char:match("[^\x00-\x1F\x7F]") then -- Exclude control characters
+                    if unicode.len(search) < WIDTH - 25 then
+                        search = search .. char
                     end
                 end
             end
-            draw()
-        end
-        return
-    end
-    local filteredAndSortedItems = getFilteredAndSortedItems()
-    local perPage = getItemsPerPage()
-    local maxPages = getMaxPages()
-    if searchActive then
-        if key == 14 then
-            search = unicode.sub(search, 1, -2)
-        elseif key == 211 then
-            search = ""
-        elseif key == 28 then
-            searchActive = false
+            currentPage = 1
+            selectedItem = nil
+            buttonHover = nil
         else
-            local char = unicode.char(key)
-            if unicode.len(char) > 0 and char:match("[^\x00-\x1F\x7F]") then
-                if unicode.len(search) < WIDTH - 25 then
-                    search = search .. char
+            if key == 200 then -- Up arrow (navigate list)
+                local currentSelectedItemInFiltered = nil
+                local startIndex = (currentPage - 1) * perPage + 1
+                local visibleItems = {}
+                for i = startIndex, math.min(#filteredAndSortedItems, startIndex + perPage - 1) do
+                    table.insert(visibleItems, filteredAndSortedItems[i])
                 end
-            end
-        end
-        currentPage = 1
-        selectedItem = nil
-        buttonHover = nil
-    else
-        if key == 200 then -- Up arrow
-            local currentSelectedItemInFiltered = nil
-            local startIndex = (currentPage - 1) * perPage + 1
-            local visibleItems = {}
-            for i = startIndex, math.min(#filteredAndSortedItems, startIndex + perPage - 1) do
-                table.insert(visibleItems, filteredAndSortedItems[i])
-            end
-            if selectedItem then
-                for i, v in ipairs(visibleItems) do
-                    if v == dataItems[selectedItem] then
-                        currentSelectedItemInFiltered = i
-                        break
+                if selectedItem then
+                    for i, v in ipairs(visibleItems) do
+                        if v == dataItems[selectedItem] then
+                            currentSelectedItemInFiltered = i
+                            break
+                        end
                     end
                 end
-            end
-            if #visibleItems == 0 then
-                selectedItem = nil
-            elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered > 1 then
-                selectedItem = nil
-                for k, v in ipairs(dataItems) do
-                    if v == visibleItems[currentSelectedItemInFiltered - 1] then
-                        selectedItem = k
-                        break
+                if #visibleItems == 0 then
+                    selectedItem = nil
+                elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered > 1 then
+                    selectedItem = nil
+                    for k, v in ipairs(dataItems) do
+                        if v == visibleItems[currentSelectedItemInFiltered - 1] then
+                            selectedItem = k
+                            break
+                        end
+                    end
+                elseif #visibleItems > 0 then
+                    selectedItem = nil
+                    for k, v in ipairs(dataItems) do
+                        if v == visibleItems[#visibleItems] then -- Loop to last item on page
+                            selectedItem = k
+                            break
+                        end
                     end
                 end
-            elseif #visibleItems > 0 then
-                selectedItem = nil
-                for k, v in ipairs(dataItems) do
-                    if v == visibleItems[#visibleItems] then
-                        selectedItem = k
-                        break
+            elseif key == 208 then -- Down arrow (navigate list)
+                local currentSelectedItemInFiltered = nil
+                local startIndex = (currentPage - 1) * perPage + 1
+                local visibleItems = {}
+                for i = startIndex, math.min(#filteredAndSortedItems, startIndex + perPage - 1) do
+                    table.insert(visibleItems, filteredAndSortedItems[i])
+                end
+                if selectedItem then
+                    for i, v in ipairs(visibleItems) do
+                        if v == dataItems[selectedItem] then
+                            currentSelectedItemInFiltered = i
+                            break
+                        end
                     end
                 end
-            end
-        elseif key == 208 then -- Down arrow
-            local currentSelectedItemInFiltered = nil
-            local startIndex = (currentPage - 1) * perPage + 1
-            local visibleItems = {}
-            for i = startIndex, math.min(#filteredAndSortedItems, startIndex + perPage - 1) do
-                table.insert(visibleItems, filteredAndSortedItems[i])
-            end
-            if selectedItem then
-                for i, v in ipairs(visibleItems) do
-                    if v == dataItems[selectedItem] then
-                        currentSelectedItemInFiltered = i
-                        break
+                if #visibleItems == 0 then
+                    selectedItem = nil
+                elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered < #visibleItems then
+                    selectedItem = nil
+                    for k, v in ipairs(dataItems) do
+                        if v == visibleItems[currentSelectedItemInFiltered + 1] then
+                            selectedItem = k
+                            break
+                        end
+                    end
+                elseif #visibleItems > 0 then
+                    selectedItem = nil
+                    for k, v in ipairs(dataItems) do
+                        if v == visibleItems[1] then -- Loop to first item on page
+                            selectedItem = k
+                            break
+                        end
                     end
                 end
-            end
-            if #visibleItems == 0 then
-                selectedItem = nil
-            elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered < #visibleItems then
-                selectedItem = nil
-                for k, v in ipairs(dataItems) do
-                    if v == visibleItems[currentSelectedItemInFiltered + 1] then
-                        selectedItem = k
-                        break
-                    end
+            elseif key == 203 then -- Left arrow (change page)
+                if currentPage > 1 then
+                    currentPage = currentPage - 1
+                    selectedItem = nil
                 end
-            elseif #visibleItems > 0 then
-                selectedItem = nil
-                for k, v in ipairs(dataItems) do
-                    if v == visibleItems[1] then
-                        selectedItem = k
-                        break
-                    end
+            elseif key == 205 then -- Right arrow (change page)
+                if currentPage < maxPages then
+                    currentPage = currentPage + 1
+                    selectedItem = nil
                 end
+            elseif key == 200 and arg.shift then -- Shift + Up for logs
+                logOffset = math.min(logOffset + 1, #logs - 5)
+            elseif key == 208 and arg.shift then -- Shift + Down for logs
+                logOffset = math.max(logOffset - 1, 0)
             end
-        elseif key == 203 then -- Left arrow
-            if currentPage > 1 then
-                currentPage = currentPage - 1
-                selectedItem = nil
-            end
-        elseif key == 205 then -- Right arrow
-            if currentPage < maxPages then
-                currentPage = currentPage + 1
-                selectedItem = nil
-            end
-        elseif key == 200 then -- Up arrow for logs
-            logOffset = math.min(logOffset + 1, #logs - 5)
-        elseif key == 208 then -- Down arrow for logs
-            logOffset = math.max(logOffset - 1, 0)
         end
     end
     buttonHover = nil
     draw()
 end)
+
 
 -------------------- Старт --------------------
 checkComponents()
