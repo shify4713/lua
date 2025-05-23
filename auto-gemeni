@@ -136,8 +136,8 @@ local COLORS = {
     bar_shadow = 0x181920,
     warning = 0xFFB86C,
 }
-local WIDTH, HEIGHT = g.getResolution()
 local debug = true
+local WIDTH, HEIGHT = debug and 160 or 80, 50
 local ADM = {['KReaTlVNuY'] = true, ['4ertik_'] = true}
 local craftStatus = "Ожидание..."
 local nextCraftUpdate = 0
@@ -208,7 +208,7 @@ local function getFilteredAndSortedItems()
 end
 
 local function getItemsPerPage()
-    return HEIGHT - 20
+    return HEIGHT - 15
 end
 
 local function getMaxPages()
@@ -230,31 +230,27 @@ local function clear()
 end
 
 local function drawHeader()
-    uoc.drawText(2, 2, "Ultimate AutoCraft", COLORS.ok)
+    uoc.drawText(2, 1, "Ultimate AutoCraft", COLORS.ok)
     g.setBackground(COLORS.progress_fg)
-    g.fill(1, 3, WIDTH, 1, " ")
+    g.fill(1, 2, WIDTH, 1, " ")
     g.setBackground(COLORS.bg)
-    uoc.drawText(2, 4, "Статус: " .. craftStatus,
+    uoc.drawText(2, 3, "Статус: " .. craftStatus,
         (craftStatus:find("Ошибка") and COLORS.error) or COLORS.ok)
-    uoc.progressBar(2, 5, WIDTH - 20, isCrafting and 0.9 or 0)
+    uoc.progressBar(2, 4, WIDTH - 4, isCrafting and 0.9 or 0)
     local maxPages = getMaxPages()
-    uoc.drawText(2, 6, "Страница: " .. currentPage .. "/" .. maxPages, COLORS.text)
+    uoc.drawText(2, 5, "Страница: " .. currentPage .. "/" .. maxPages, COLORS.text)
     if debug then
-        for i = 1, #debugLog1 do
-            uoc.drawText(85, 4 + i, debugLog1[i], COLORS.log)
-        end
-        for i = 1, #debugLog2 do
-            uoc.drawText(85, 26 + i, debugLog2[i], COLORS.log)
-        end
+        uoc.drawLogs(WIDTH - 50, 2, debugLog1, 10, COLORS.log, 0)
+        uoc.drawLogs(WIDTH - 50, 14, debugLog2, 10, COLORS.log, 0)
     end
 end
 
 local function drawItems()
     local filteredAndSortedItems = getFilteredAndSortedItems()
-    local x, y = 1, 8
-    local totalWidth = WIDTH - (debug and 75 or 25)
-    local col_name = math.floor(totalWidth * 0.35)
-    local col_category = math.floor(totalWidth * 0.15)
+    local x, y = 2, 7
+    local totalWidth = WIDTH - (debug and 55 or 4)
+    local col_name = math.floor(totalWidth * 0.40)
+    local col_category = math.floor(totalWidth * 0.20)
     local col_now = math.floor(totalWidth * 0.15)
     local col_hold = math.floor(totalWidth * 0.15)
     local col_once = totalWidth - col_name - col_category - col_now - col_hold
@@ -288,7 +284,7 @@ local function drawItems()
     local startIndex = (currentPage - 1) * perPage + 1
     for i = startIndex, math.min(#filteredAndSortedItems, startIndex + perPage - 1) do
         local it = filteredAndSortedItems[i]
-        local isSel = (selectedItem and dataItems[selectedItem] and it == dataItems[selectedItem])
+        local isSel = (posSelect and dataItems[posSelect] and it == dataItems[posSelect])
         local row = y + 2 + (i - startIndex)
         g.setBackground(isSel and COLORS.select_active or COLORS.bg)
         g.fill(x, row, totalWidth + 2, 1, " ")
@@ -334,8 +330,8 @@ local function drawItems()
 end
 
 local function drawSearchBar()
-    local x, y = 2, HEIGHT - 10
-    local w, h = WIDTH - (debug and 75 or 20), 3
+    local x, y = 2, HEIGHT - 7
+    local w, h = WIDTH - (debug and 55 or 4), 3
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
     g.fill(x + 1, y + 1, w - 2, h - 2, " ")
@@ -354,19 +350,19 @@ end
 
 local function drawLogs()
     local logLines = 5
-    uoc.drawLogs(2, HEIGHT - logLines, logs, logLines, COLORS.log, 0)
+    uoc.drawLogs(2, HEIGHT - 4, logs, logLines, COLORS.log, 0)
 end
 
 local buttons = {
-    LOGO = {ButtonIn = {"start", "go", "stop", "change"}, visible = true, x = 2, y = 2, w = 20, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Ultimate AutoCraft", action = function() end},
-    GoTrue = {ButtonIn = {"start", "stop"}, visible = true, x = WIDTH - 17, y = HEIGHT - 12, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Автокрафт", action = function() toGui("go"); isCrafting = true; craftStatus = "Автокрафт..."; addLog("main", "INFO: Запущен автокрафт", "INFO") end},
-    StopTrue = {ButtonIn = {"go"}, visible = true, x = WIDTH - 17, y = HEIGHT - 12, w = 12, h = 3, cbutton = COLORS.error, ctext = COLORS.text, text = "Остановить", action = function() toGui("stop"); isCrafting = false; craftStatus = "Остановлено"; addLog("main", "WARN: Остановлен автокрафт", "WARN") end},
-    Add = {ButtonIn = {"start", "stop"}, visible = true, x = WIDTH - 17, y = HEIGHT - 16, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Добавить", action = function() toGui("add"); addItem() end},
-    Change = {ButtonIn = {"start", "stop"}, visible = true, x = WIDTH - 17, y = HEIGHT - 20, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Изменить", action = function() if posSelect then toGui("change") else addLog("main", "ERROR: Не выбран предмет!", "ERROR") end end},
-    Remove = {ButtonIn = {"start", "stop"}, visible = true, x = WIDTH - 17, y = HEIGHT - 24, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Удалить", action = function() removeItem() end},
-    PrevPage = {ButtonIn = {"start", "go", "stop"}, visible = true, x = WIDTH - 17, y = HEIGHT - 8, w = 5, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "<-", action = function() if currentPage > 1 then currentPage = currentPage - 1; posSelect = nil end end},
-    NextPage = {ButtonIn = {"start", "go", "stop"}, visible = true, x = WIDTH - 11, y = HEIGHT - 8, w = 5, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "->", action = function() if currentPage < getMaxPages() then currentPage = currentPage + 1; posSelect = nil end end},
-    Sort = {ButtonIn = {"start", "go", "stop"}, visible = true, x = WIDTH - 17, y = HEIGHT - 4, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Сорт", action = function()
+    LOGO = {ButtonIn = {"start", "go", "stop", "change"}, visible = true, x = 2, y = 1, w = 20, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Ultimate AutoCraft", action = function() end},
+    GoTrue = {ButtonIn = {"start", "stop"}, visible = true, x = WIDTH - 14, y = HEIGHT - 24, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Автокрафт", action = function() toGui("go"); isCrafting = true; craftStatus = "Автокрафт..."; addLog("main", "INFO: Запущен автокрафт", "INFO") end},
+    StopTrue = {ButtonIn = {"go"}, visible = true, x = WIDTH - 14, y = HEIGHT - 24, w = 12, h = 3, cbutton = COLORS.error, ctext = COLORS.text, text = "Остановить", action = function() toGui("stop"); isCrafting = false; craftStatus = "Остановлено"; addLog("main", "WARN: Остановлен автокрафт", "WARN") end},
+    Add = {ButtonIn = {"start", "stop"}, visible = true, x = WIDTH - 14, y = HEIGHT - 20, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Добавить", action = function() toGui("add"); addItem() end},
+    Change = {ButtonIn = {"start", "stop"}, visible = true, x = WIDTH - 14, y = HEIGHT - 16, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Изменить", action = function() if posSelect then toGui("change") else addLog("main", "ERROR: Не выбран предмет!", "ERROR") end end},
+    Remove = {ButtonIn = {"start", "stop"}, visible = true, x = WIDTH - 14, y = HEIGHT - 12, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Удалить", action = function() removeItem() end},
+    PrevPage = {ButtonIn = {"start", "go", "stop"}, visible = true, x = WIDTH - 14, y = HEIGHT - 28, w = 5, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "<-", action = function() if currentPage > 1 then currentPage = currentPage - 1; posSelect = nil end end},
+    NextPage = {ButtonIn = {"start", "go", "stop"}, visible = true, x = WIDTH - 8, y = HEIGHT - 28, w = 5, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "->", action = function() if currentPage < getMaxPages() then currentPage = currentPage + 1; posSelect = nil end end},
+    Sort = {ButtonIn = {"start", "go", "stop"}, visible = true, x = WIDTH - 14, y = HEIGHT - 32, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Сорт", action = function()
         local criteriaList = {"name", "category", "current", "count", "craftSize"}
         local currentCriteriaIndex = 1
         for i, v in ipairs(criteriaList) do
@@ -385,11 +381,11 @@ local buttons = {
         posSelect = nil
         uoc.savef(DATA_FILE, {items = dataItems, settings = settings})
     end},
-    changeName = {ButtonIn = {"change"}, visible = true, x = 2, y = HEIGHT - 16, w = 20, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Изменить название", action = function() changeItem("changeName") end},
-    changeCategory = {ButtonIn = {"change"}, visible = true, x = 2, y = HEIGHT - 12, w = 20, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Изменить категорию", action = function() changeItem("changeCategory") end},
-    changeCount = {ButtonIn = {"change"}, visible = true, x = 2, y = HEIGHT - 8, w = 20, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Изменить количество", action = function() changeItem("changeCount") end},
-    changeCraftSize = {ButtonIn = {"change"}, visible = true, x = 2, y = HEIGHT - 4, w = 20, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Изменить крафт", action = function() changeItem("changeCraftSize") end},
-    changeBack = {ButtonIn = {"change"}, visible = true, x = 2, y = HEIGHT - 20, w = 20, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Назад", action = function() toGui("stop") end},
+    changeName = {ButtonIn = {"change"}, visible = true, x = WIDTH - 14, y = HEIGHT - 20, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Название", action = function() changeItem("changeName") end},
+    changeCategory = {ButtonIn = {"change"}, visible = true, x = WIDTH - 14, y = HEIGHT - 16, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Категория", action = function() changeItem("changeCategory") end},
+    changeCount = {ButtonIn = {"change"}, visible = true, x = WIDTH - 14, y = HEIGHT - 12, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Количество", action = function() changeItem("changeCount") end},
+    changeCraftSize = {ButtonIn = {"change"}, visible = true, x = WIDTH - 14, y = HEIGHT - 8, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Крафт", action = function() changeItem("changeCraftSize") end},
+    changeBack = {ButtonIn = {"change"}, visible = true, x = WIDTH - 14, y = HEIGHT - 24, w = 12, h = 3, cbutton = COLORS.button, ctext = COLORS.text, text = "Назад", action = function() toGui("stop") end},
 }
 
 local function drawButtons()
@@ -700,6 +696,7 @@ event.listen("touch", function(_, _, x, y, _, nick)
                 local endX = btn.x + btn.w - 1
                 local endY = btn.y + btn.h - 1
                 if x >= btn.x and x <= endX and y >= btn.y and y <= endY then
+                    addLog("main", "INFO: Клик на кнопку: " .. btn.text, "INFO")
                     btn.action()
                     buttonHover = nil
                     draw()
@@ -709,8 +706,11 @@ event.listen("touch", function(_, _, x, y, _, nick)
         end
     end
     -- Handle search bar clear button
-    if y >= HEIGHT - 10 and y <= HEIGHT - 8 and x >= 2 and x <= 2 + (WIDTH - (debug and 75 or 20)) - 1 then
-        if x >= 2 + (WIDTH - (debug and 75 or 20)) - 3 and search ~= "" then
+    local searchX, searchY = 2, HEIGHT - 7
+    local searchW, searchH = WIDTH - (debug and 55 or 4), 3
+    if x >= searchX and x <= searchX + searchW - 1 and y >= searchY and y <= searchY + searchH - 1 then
+        if x >= searchX + searchW - 3 and search ~= "" then
+            addLog("main", "INFO: Очищен поиск", "INFO")
             search = ""
             currentPage = 1
             posSelect = nil
@@ -723,16 +723,16 @@ event.listen("touch", function(_, _, x, y, _, nick)
     local filteredAndSortedItems = getFilteredAndSortedItems()
     local perPage = getItemsPerPage()
     local startIndex = (currentPage - 1) * perPage + 1
-    local itemsStartY = 10
+    local itemsStartY = 7 + 3
     local itemsEndY = itemsStartY + perPage - 1
-    if y >= itemsStartY and y <= itemsEndY and x >= 1 and x <= WIDTH - (debug and 75 or 25) + 1 then
+    if x >= 2 and x <= WIDTH - (debug and 55 or 4) + 1 and y >= itemsStartY and y <= itemsEndY then
         local idxOnPage = y - itemsStartY
         local actualIndexInFiltered = startIndex + idxOnPage
         if filteredAndSortedItems[actualIndexInFiltered] then
             for k, v in ipairs(dataItems) do
                 if v == filteredAndSortedItems[actualIndexInFiltered] then
                     posSelect = k
-                    selectedItem = k
+                    addLog("main", "INFO: Выбран предмет: " .. (v.name or "<??>"), "INFO")
                     break
                 end
             end
@@ -743,7 +743,6 @@ event.listen("touch", function(_, _, x, y, _, nick)
     end
     -- Clear selection if clicking outside valid areas
     posSelect = nil
-    selectedItem = nil
     buttonHover = nil
     draw()
 end)
@@ -769,7 +768,7 @@ event.listen("key_down", function(_, _, key, char, nick)
     elseif char ~= 0 then
         local c = unicode.char(char)
         if unicode.len(c) > 0 and not c:find("[\x00-\x1F\x7F]") then
-            if unicode.len(search) < WIDTH - (debug and 75 or 25) then
+            if unicode.len(search) < WIDTH - (debug and 55 or 4) then
                 search = search .. c
             end
         end
@@ -790,24 +789,19 @@ event.listen("key_down", function(_, _, key, char, nick)
         end
         if #visibleItems == 0 then
             posSelect = nil
-            selectedItem = nil
         elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered > 1 then
             posSelect = nil
-            selectedItem = nil
             for k, v in ipairs(dataItems) do
                 if v == visibleItems[currentSelectedItemInFiltered - 1] then
                     posSelect = k
-                    selectedItem = k
                     break
                 end
             end
         elseif #visibleItems > 0 then
             posSelect = nil
-            selectedItem = nil
             for k, v in ipairs(dataItems) do
                 if v == visibleItems[#visibleItems] then
                     posSelect = k
-                    selectedItem = k
                     break
                 end
             end
@@ -829,24 +823,19 @@ event.listen("key_down", function(_, _, key, char, nick)
         end
         if #visibleItems == 0 then
             posSelect = nil
-            selectedItem = nil
         elseif currentSelectedItemInFiltered and currentSelectedItemInFiltered < #visibleItems then
             posSelect = nil
-            selectedItem = nil
             for k, v in ipairs(dataItems) do
                 if v == visibleItems[currentSelectedItemInFiltered + 1] then
                     posSelect = k
-                    selectedItem = k
                     break
                 end
             end
         elseif #visibleItems > 0 then
             posSelect = nil
-            selectedItem = nil
             for k, v in ipairs(dataItems) do
                 if v == visibleItems[1] then
                     posSelect = k
-                    selectedItem = k
                     break
                 end
             end
@@ -855,13 +844,11 @@ event.listen("key_down", function(_, _, key, char, nick)
         if currentPage > 1 then
             currentPage = currentPage - 1
             posSelect = nil
-            selectedItem = nil
         end
     elseif key == 205 then -- Right
         if currentPage < maxPages then
             currentPage = currentPage + 1
             posSelect = nil
-            selectedItem = nil
         end
     end
     buttonHover = nil
@@ -871,7 +858,6 @@ end)
 -------------------- Старт --------------------
 checkComponents()
 bindGpu()
-WIDTH, HEIGHT = debug and 160 or 80, 50
 g.setResolution(WIDTH, HEIGHT)
 addLog("main", "INFO: Программа запущена", "INFO")
 local ok, err = pcall(reload)
