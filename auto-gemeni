@@ -14,6 +14,23 @@ local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
 local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/ultimateOC.lua"
 
+-- Глобальные переменные
+local WIDTH, HEIGHT
+local M -- Таблица для функций из ultimateOC.lua
+local craftItems = {} -- Список предметов для крафта
+local meItems = {} -- Список предметов в ME-системе
+local logs = {} -- Логи программы
+local currentTab = "main" -- Текущая активная вкладка: "main", "settings", "add", "logs"
+local selectedItem = nil -- Выбранный предмет в списке (для редактирования/удаления)
+local currentPage = 1 -- Текущая страница в списке предметов
+local itemsPerPage = 15 -- Количество предметов на одной странице
+local logOffset = 0 -- Смещение для прокрутки логов
+local inputBuffer = "" -- Буфер для ввода текста (название предмета или строка поиска)
+local inputMode = nil -- "add" для добавления, "search" для поиска, nil если не активен ввод
+local buttonHover = nil -- Отслеживание наведения курсора для кнопок (для M.drawButton)
+local buttonHoverY = nil
+
+
 -- Проверка доступности компонентов
 local function checkComponents()
     if not component.isAvailable("gpu") then
@@ -34,12 +51,12 @@ end
 local function bindGpu()
     local screen = component.list("screen")()
     if not screen then
-        io.stderr:write("Ошибка: Не найден экран для привязки GPU\n")
+        M.addLog(logs, "ERROR: Не найден экран для привязки GPU", "ERROR")
         os.exit(1)
     end
     local success, err = pcall(g.bind, screen)
     if not success then
-        io.stderr:write("Ошибка при привязке GPU к экрану: " .. tostring(err) .. "\n")
+        M.addLog(logs, "ERROR: Ошибка при привязке GPU к экрану: " .. tostring(err), "ERROR")
         os.exit(1)
     end
 end
@@ -47,45 +64,20 @@ end
 -- Загрузка или скачивание библиотеки
 local function loadLibrary()
     if not fs.exists(LIB_PATH) then
-        addLog(logs, "INFO: Библиотека " .. LIB_PATH .. " не найдена, скачивание...", "INFO")
+        M.addLog(logs, "INFO: Библиотека " .. LIB_PATH .. " не найдена, скачивание...", "INFO")
         local ok, err = shell.execute("wget " .. LIB_URL .. " " .. LIB_PATH)
         if not ok then
-            addLog(logs, "ERROR: Не удалось скачать библиотеку: " .. tostring(err), "ERROR")
+            M.addLog(logs, "ERROR: Не удалось скачать библиотеку: " .. tostring(err), "ERROR")
             return nil
         end
-        addLog(logs, "INFO: Библиотека успешно скачана.", "INFO")
+        M.addLog(logs, "INFO: Библиотека успешно скачана.", "INFO")
     end
-    local ok, M = pcall(require, string.sub(LIB_PATH, 2)) -- Убираем / в начале для require
+    local ok, lib = pcall(require, string.sub(LIB_PATH, 2)) -- Убираем / в начале для require
     if not ok then
-        addLog(logs, "ERROR: Ошибка при загрузке библиотеки: " .. tostring(M), "ERROR")
+        M.addLog(logs, "ERROR: Ошибка при загрузке библиотеки: " .. tostring(lib), "ERROR")
         return nil
     end
-    return M
-end
-
--- Глобальные переменные
-local WIDTH, HEIGHT
-local M
-local craftItems = {} -- Список предметов для крафта
-local meItems = {} -- Список предметов в ME-системе
-local logs = {} -- Логи
-local currentTab = "main" -- Текущая активная вкладка: "main", "settings", "add", "logs"
-local selectedItem = nil -- Выбранный предмет в списке (для редактирования/удаления)
-local currentPage = 1 -- Текущая страница в списке предметов
-local itemsPerPage = 15 -- Количество предметов на одной странице
-local logOffset = 0 -- Смещение для прокрутки логов
-local inputBuffer = "" -- Буфер для ввода текста (название предмета)
-local isAddingItem = false -- Флаг, активен ли режим добавления предмета
-local currentSearchTerm = "" -- Строка поиска для фильтрации предметов
-
-
--- Вспомогательная функция для добавления логов (из lib-gemeni.txt)
-local function addLog(logs_tbl, text, lvl)
-    lvl = lvl or "INFO"
-    local now = os.date("!*t", os.time()+3*3600) -- МСК
-    local t = string.format("[%02d:%02d:%02d][%s] %s", now.hour, now.min, now.sec, lvl, text)
-    table.insert(logs_tbl, t)
-    while #logs_tbl > 50 do table.remove(logs_tbl, 1) end
+    return lib
 end
 
 -- Загрузка данных
@@ -94,13 +86,13 @@ local function loadData()
         local success, data = pcall(M.loadf, DATA_FILE)
         if success then
             craftItems = data
-            addLog(logs, "Данные успешно загружены из " .. DATA_FILE, "INFO")
+            M.addLog(logs, "Данные успешно загружены из " .. DATA_FILE, "INFO")
         else
-            addLog(logs, "ERROR: Ошибка при загрузке данных: " .. tostring(data), "ERROR")
-            craftItems = {}
+            M.addLog(logs, "ERROR: Ошибка при загрузке данных: " .. tostring(data), "ERROR")
+            craftItems = {} -- Сброс на пустой список при ошибке
         end
     else
-        addLog(logs, "INFO: Файл данных " .. DATA_FILE .. " не найден. Создан пустой список.", "INFO")
+        M.addLog(logs, "INFO: Файл данных " .. DATA_FILE .. " не найден. Создан пустой список.", "INFO")
         craftItems = {}
     end
 end
@@ -109,9 +101,9 @@ end
 local function saveData()
     local success, err = pcall(M.savef, DATA_FILE, craftItems)
     if not success then
-        addLog(logs, "ERROR: Ошибка при сохранении данных: " .. tostring(err), "ERROR")
+        M.addLog(logs, "ERROR: Ошибка при сохранении данных: " .. tostring(err), "ERROR")
     else
-        addLog(logs, "Данные успешно сохранены в " .. DATA_FILE, "INFO")
+        M.addLog(logs, "Данные успешно сохранены в " .. DATA_FILE, "INFO")
     end
 end
 
@@ -120,10 +112,10 @@ local function updateMEItems()
     local success, items = pcall(me.getItemsInNetwork)
     if success then
         meItems = items
-        addLog(logs, "Список предметов ME обновлен. Всего: " .. #meItems, "INFO")
+        M.addLog(logs, "Список предметов ME обновлен. Всего: " .. #meItems, "INFO")
     else
-        addLog(logs, "ERROR: Не удалось получить список предметов из ME-ининтерфейса: " .. tostring(items), "ERROR")
-        meItems = {}
+        M.addLog(logs, "ERROR: Не удалось получить список предметов из ME-интерфейса: " .. tostring(items), "ERROR")
+        meItems = {} -- Сброс на пустой список при ошибке
     end
 end
 
@@ -146,14 +138,11 @@ local function addItemToDB(itemName)
         }
         table.insert(craftItems, newItem)
         saveData() -- Сохраняем после добавления
-        addLog(logs, "Предмет '" .. itemName .. "' успешно добавлен.", "INFO")
-        -- После добавления предмета, можно переключиться на другую вкладку или остаться на текущей
-        -- currentTab = "main" -- Например, переключиться на главную вкладку
+        M.addLog(logs, "Предмет '" .. itemName .. "' успешно добавлен.", "INFO")
     else
-        addLog(logs, "Предмет '" .. itemName .. "' уже существует.", "WARN")
+        M.addLog(logs, "Предмет '" .. itemName .. "' уже существует.", "WARN")
     end
 end
-
 
 -- Функция для удаления предмета
 local function deleteItem(index)
@@ -161,7 +150,7 @@ local function deleteItem(index)
         local itemName = craftItems[index].name
         table.remove(craftItems, index)
         saveData()
-        addLog(logs, "Предмет '" .. itemName .. "' удален.", "INFO")
+        M.addLog(logs, "Предмет '" .. itemName .. "' удален.", "INFO")
         selectedItem = nil -- Сбрасываем выбранный предмет
         -- Проверяем, не вышла ли текущая страница за границы
         local maxPages = math.max(1, math.ceil(#craftItems / itemsPerPage))
@@ -169,7 +158,7 @@ local function deleteItem(index)
             currentPage = maxPages
         end
     else
-        addLog(logs, "ERROR: Не удалось удалить предмет. Неверный индекс.", "ERROR")
+        M.addLog(logs, "ERROR: Не удалось удалить предмет. Неверный индекс.", "ERROR")
     end
 end
 
@@ -178,9 +167,9 @@ local function changeItemValue(index, field, newValue)
     if index and craftItems[index] then
         craftItems[index][field] = newValue
         saveData()
-        addLog(logs, "Изменено: " .. craftItems[index].name .. " -> " .. field .. " = " .. tostring(newValue), "INFO")
+        M.addLog(logs, "Изменено: " .. craftItems[index].name .. " -> " .. field .. " = " .. tostring(newValue), "INFO")
     else
-        addLog(logs, "ERROR: Не удалось изменить предмет. Неверный индекс.", "ERROR")
+        M.addLog(logs, "ERROR: Не удалось изменить предмет. Неверный индекс.", "ERROR")
     end
 end
 
@@ -198,29 +187,29 @@ local function draw()
     M.drawButton(2, 2, "[Главная]", function()
         currentTab = "main"
         selectedItem = nil
-        inputBuffer = "" -- Очищаем буфер при смене вкладки
-        isAddingItem = false
+        inputBuffer = ""
+        inputMode = "search" -- Поиск активен по умолчанию на главной
         currentSearchTerm = ""
     end, currentTab == "main")
     M.drawButton(12, 2, "[Настройки]", function()
         currentTab = "settings"
         selectedItem = nil
         inputBuffer = ""
-        isAddingItem = false
+        inputMode = nil
         currentSearchTerm = ""
     end, currentTab == "settings")
     M.drawButton(25, 2, "[Добавить]", function()
         currentTab = "add"
         selectedItem = nil
-        inputBuffer = "" -- Очищаем буфер при смене вкладки
-        isAddingItem = true -- Активируем режим ввода при переходе
+        inputBuffer = ""
+        inputMode = "add" -- Ввод активен на вкладке добавления
         currentSearchTerm = ""
     end, currentTab == "add")
     M.drawButton(36, 2, "[Логи]", function()
         currentTab = "logs"
         selectedItem = nil
         inputBuffer = ""
-        isAddingItem = false
+        inputMode = nil
         currentSearchTerm = ""
     end, currentTab == "logs")
 
@@ -232,7 +221,16 @@ local function draw()
         -- Поле поиска
         g.setForeground(0xFFFFFF)
         g.setBackground(0x282A36)
-        g.set(3, 3, "Поиск: " .. currentSearchTerm .. string.rep(" ", math.max(0, WIDTH - 10 - unicode.len(currentSearchTerm))))
+        g.set(3, 3, "Поиск: " .. currentSearchTerm)
+        local searchInputX = 3 + unicode.len("Поиск: ")
+        local maxSearchInputWidth = WIDTH - searchInputX - 1
+
+        -- Подсветка поля поиска, если оно активно
+        if inputMode == "search" then
+            g.setBackground(0x6272A4) -- Цвет фона для активного поля
+            g.set(searchInputX, 3, unicode.sub(currentSearchTerm, 1, maxSearchInputWidth) .. string.rep(" ", math.max(0, maxSearchInputWidth - unicode.len(currentSearchTerm))))
+            g.setBackground(0x282A36) -- Возвращаем основной фон
+        end
 
         -- Отображение списка предметов
         local filteredItems = M.filterItems(craftItems, currentSearchTerm)
@@ -269,7 +267,7 @@ local function draw()
                     currentPage = currentPage - 1
                     selectedItem = nil
                 end
-            end, M.buttonHover == WIDTH - 15 and M.buttonHoverY == HEIGHT - 3)
+            end, buttonHover == WIDTH - 15 and buttonHoverY == HEIGHT - 3)
             g.setForeground(0xFFFFFF)
             g.set(WIDTH - 12, HEIGHT - 3, string.format("%d/%d", currentPage, maxPages))
             M.drawButton(WIDTH - 8, HEIGHT - 3, ">", function()
@@ -277,7 +275,7 @@ local function draw()
                     currentPage = currentPage + 1
                     selectedItem = nil
                 end
-            end, M.buttonHover == WIDTH - 8 and M.buttonHoverY == HEIGHT - 3)
+            end, buttonHover == WIDTH - 8 and buttonHoverY == HEIGHT - 3)
         end
 
         -- Кнопки действий
@@ -295,11 +293,11 @@ local function draw()
                         deleteItem(index)
                     end
                 end
-            end, M.buttonHover == 3 and M.buttonHoverY == HEIGHT - 5)
+            end, buttonHover == 3 and buttonHoverY == HEIGHT - 5)
             M.drawButton(15, HEIGHT - 5, "[Изменить]", function()
                 -- Здесь можно открыть под-интерфейс для изменения
-                addLog(logs, "Функция 'Изменить' пока не реализована.", "INFO")
-            end, M.buttonHover == 15 and M.buttonHoverY == HEIGHT - 5)
+                M.addLog(logs, "Функция 'Изменить' пока не реализована.", "INFO")
+            end, buttonHover == 15 and buttonHoverY == HEIGHT - 5)
         end
 
     elseif currentTab == "settings" then
@@ -331,21 +329,22 @@ local function draw()
             if inputBuffer ~= "" then
                 addItemToDB(inputBuffer)
                 inputBuffer = "" -- Очищаем буфер после добавления
-                isAddingItem = false -- Выключаем режим ввода после добавления
             else
-                addLog(logs, "ERROR: Название предмета не может быть пустым.", "WARN")
+                M.addLog(logs, "ERROR: Название предмета не может быть пустым.", "WARN")
             end
-        end, M.buttonHover == 3 and M.buttonHoverY == 8)
+        end, buttonHover == 3 and buttonHoverY == 8)
 
         -- Кнопка "Отмена"
         M.drawButton(3, 10, "[Отмена]", function()
             inputBuffer = ""
-            isAddingItem = false -- Отмена ввода
-        end, M.buttonHover == 3 and M.buttonHoverY == 10)
+            inputMode = nil -- Отмена ввода, выключаем режим ввода
+        end, buttonHover == 3 and buttonHoverY == 10)
 
     elseif currentTab == "logs" then
         M.drawBox(1, 1, WIDTH, HEIGHT, "Логи", 0x8BE9FD)
-        M.drawLogs(3, 4, logs, math.min(HEIGHT - 6, #logs), 0xFFFFFF) -- Отрисовка логов
+        -- Отрисовка логов с учетом смещения
+        local displayCount = math.min(HEIGHT - 6, #logs) -- Максимальное количество логов для отображения
+        M.drawLogs(3, 4, logs, displayCount, 0xFFFFFF, logOffset)
     end
 
     -- Нижний бар для ошибок/информации (отображение последней записи лога)
@@ -360,13 +359,10 @@ end
 local function autoCraftLoop()
     while true do
         updateMEItems() -- Обновляем предметы в ME
-        -- Здесь будет логика проверки ME-интерфейса и инициирования крафтов
-        -- На данный момент, просто логируем для отладки
-        addLog(logs, "INFO: Проверка ME-интерфейса и статуса крафтов...", "INFO")
+        M.addLog(logs, "INFO: Проверка ME-интерфейса и статуса крафтов...", "INFO")
 
-        -- Пример: Проверка первого предмета в списке
         if #craftItems > 0 then
-            local itemToCraft = craftItems[1]
+            local itemToCraft = craftItems[1] -- Пример: Проверка первого предмета в списке
             local meItemCount = 0
             for _, meItem in ipairs(meItems) do
                 if meItem.label == itemToCraft.name then
@@ -377,13 +373,13 @@ local function autoCraftLoop()
 
             if meItemCount < itemToCraft.minCount then
                 local needed = itemToCraft.minCount - meItemCount
-                addLog(logs, "WARN: Нужно скрафтить " .. needed .. " " .. itemToCraft.name, "WARN")
+                M.addLog(logs, "WARN: Нужно скрафтить " .. needed .. " " .. itemToCraft.name, "WARN")
                 -- Здесь будет вызов me.craft(itemToCraft.name, needed)
             else
-                addLog(logs, "INFO: " .. itemToCraft.name .. " (в ME: " .. meItemCount .. ") достаточно.", "INFO")
+                M.addLog(logs, "INFO: " .. itemToCraft.name .. " (в ME: " .. meItemCount .. ") достаточно.", "INFO")
             end
         else
-            addLog(logs, "INFO: Список предметов для крафта пуст.", "INFO")
+            M.addLog(logs, "INFO: Список предметов для крафта пуст.", "INFO")
         end
 
         os.sleep(10) -- Интервал проверки, можно вынести в настройки
@@ -391,28 +387,23 @@ local function autoCraftLoop()
 end
 
 -------------------- Инициализация и главный цикл --------------------
-addLog(logs, "INFO: Запуск программы...", "INFO")
+-- До первой попытки использования M.addLog, используем io.stderr
+io.stderr:write("INFO: Запуск программы...\n")
 checkComponents()
 bindGpu()
 WIDTH, HEIGHT = g.getResolution()
 g.setResolution(WIDTH, HEIGHT)
 
-M = loadLibrary() -- Загружаем библиотеку
+-- Загрузка библиотеки M - она должна быть доступна до всех M.addLog
+M = loadLibrary()
 if not M then
-    addLog(logs, "FATAL: Не удалось загрузить библиотеку. Завершение работы.", "ERROR")
-    draw()
-    while true do os.sleep(1) end
+    io.stderr:write("FATAL: Не удалось загрузить библиотеку. Завершение работы.\n")
+    os.exit(1)
 end
 
-addLog(logs, "INFO: Программа запущена", "INFO")
+M.addLog(logs, "INFO: Программа запущена", "INFO")
 loadData()
 updateMEItems()
-
-local reload = function()
-    -- Перезагрузка данных и ME-предметов при необходимости
-    loadData()
-    updateMEItems()
-end
 
 -- Основной цикл обработки событий
 event.listen("interrupted", computer.shutdown)
@@ -425,17 +416,26 @@ while true do
     if e == "touch" then
         local x, y = a, b
         local success, msg = pcall(function()
+            -- Сбрасываем режим ввода при клике, если это не поле ввода
+            inputMode = nil
+
             -- Обработка кликов по кнопкам вкладок
             if y == 2 then -- Ряд вкладок
-                if x >= 2 and x <= 2 + unicode.len("[Главная]") - 1 then currentTab = "main"; selectedItem = nil; inputBuffer = ""; isAddingItem = false; currentSearchTerm = ""
-                elseif x >= 12 and x <= 12 + unicode.len("[Настройки]") - 1 then currentTab = "settings"; selectedItem = nil; inputBuffer = ""; isAddingItem = false; currentSearchTerm = ""
-                elseif x >= 25 and x <= 25 + unicode.len("[Добавить]") - 1 then currentTab = "add"; selectedItem = nil; inputBuffer = ""; isAddingItem = true; currentSearchTerm = ""
-                elseif x >= 36 and x <= 36 + unicode.len("[Логи]") - 1 then currentTab = "logs"; selectedItem = nil; inputBuffer = ""; isAddingItem = false; currentSearchTerm = ""
+                if x >= 2 and x <= 2 + unicode.len("[Главная]") - 1 then currentTab = "main"; selectedItem = nil; inputBuffer = ""; inputMode = "search"; currentSearchTerm = ""
+                elseif x >= 12 and x <= 12 + unicode.len("[Настройки]") - 1 then currentTab = "settings"; selectedItem = nil; inputBuffer = ""; inputMode = nil; currentSearchTerm = ""
+                elseif x >= 25 and x <= 25 + unicode.len("[Добавить]") - 1 then currentTab = "add"; selectedItem = nil; inputBuffer = ""; inputMode = "add"; currentSearchTerm = ""
+                elseif x >= 36 and x <= 36 + unicode.len("[Логи]") - 1 then currentTab = "logs"; selectedItem = nil; inputBuffer = ""; inputMode = nil; currentSearchTerm = ""
                 end
             end
 
             -- Обработка кликов внутри вкладок
             if currentTab == "main" then
+                -- Клик по полю поиска
+                local searchInputX = 3 + unicode.len("Поиск: ")
+                if y == 3 and x >= searchInputX and x <= WIDTH - 2 then
+                    inputMode = "search"
+                end
+
                 -- Клик по элементу списка
                 local filteredItems = M.filterItems(craftItems, currentSearchTerm)
                 local startIndex = (currentPage - 1) * itemsPerPage + 1
@@ -444,7 +444,7 @@ while true do
                     local yPos = 5 + displayIndex
                     if y == yPos then
                         selectedItem = filteredItems[i]
-                        addLog(logs, "Выбран предмет: " .. selectedItem.name, "INFO")
+                        M.addLog(logs, "Выбран предмет: " .. selectedItem.name, "INFO")
                         break
                     end
                 end
@@ -465,7 +465,7 @@ while true do
                             end
                         end
                     elseif x >= 15 and x <= 15 + unicode.len("[Изменить]") - 1 then
-                        addLog(logs, "Функция 'Изменить' пока не реализована.", "INFO")
+                        M.addLog(logs, "Функция 'Изменить' пока не реализована.", "INFO")
                     end
                 end
 
@@ -488,107 +488,121 @@ while true do
                 end
 
             elseif currentTab == "add" then
+                -- Клик по полю ввода, чтобы активировать его
+                local inputX = 3 + unicode.len("Ввод: ")
+                if y == 6 and x >= inputX and x <= WIDTH - 2 then
+                    inputMode = "add"
+                end
+
                 -- Обработка кнопки "Добавить"
                 if y == 8 and x >= 3 and x <= 3 + unicode.len("[Добавить]") - 1 then
                     if inputBuffer ~= "" then
                         addItemToDB(inputBuffer)
                         inputBuffer = ""
-                        isAddingItem = false
+                        inputMode = nil -- После добавления сбрасываем режим ввода
                     else
-                        addLog(logs, "ERROR: Название предмета не может быть пустым.", "WARN")
+                        M.addLog(logs, "ERROR: Название предмета не может быть пустым.", "WARN")
                     end
                 -- Обработка кнопки "Отмена"
                 elseif y == 10 and x >= 3 and x <= 3 + unicode.len("[Отмена]") - 1 then
                     inputBuffer = ""
-                    isAddingItem = false
+                    inputMode = nil
                 end
             end
         end)
         if not success then
-            addLog(logs, "ERROR: Ошибка обработки клика: " .. tostring(msg), "ERROR")
+            M.addLog(logs, "ERROR: Ошибка обработки клика: " .. tostring(msg), "ERROR")
         end
     elseif e == "key" then
         local key = a
         local unicodeChar = unicode.char(key) -- Получаем символ из кода клавиши
-        local arg = b -- Аргументы события (например, Shift)
 
-        if currentTab == "main" then
-            if key == 14 then -- Backspace для поиска
+        if inputMode == "add" then -- Если активен режим ввода для добавления
+            if key == 28 then -- Enter
+                if inputBuffer ~= "" then
+                    addItemToDB(inputBuffer)
+                    inputBuffer = "" -- Очищаем буфер после добавления
+                    inputMode = nil -- Выключаем режим ввода
+                else
+                    M.addLog(logs, "ERROR: Название предмета не может быть пустым.", "WARN")
+                end
+            elseif key == 14 then -- Backspace
+                inputBuffer = unicode.sub(inputBuffer, 1, unicode.len(inputBuffer) - 1)
+            elseif unicodeChar ~= nil and unicodeChar ~= "" then -- Любой другой вводимый символ
+                local inputX = 3 + unicode.len("Ввод: ")
+                local maxInputWidth = WIDTH - inputX - 1
+                if unicode.len(inputBuffer) < maxInputWidth then -- Ограничение длины ввода
+                    inputBuffer = inputBuffer .. unicodeChar
+                end
+            end
+        elseif inputMode == "search" then -- Если активен режим ввода для поиска
+            if key == 14 then -- Backspace
                 currentSearchTerm = unicode.sub(currentSearchTerm, 1, unicode.len(currentSearchTerm) - 1)
                 currentPage = 1 -- Сброс страницы при изменении поиска
                 selectedItem = nil
             elseif unicodeChar ~= nil and unicodeChar ~= "" and key ~= 28 then -- Любой другой вводимый символ, кроме Enter
-                if unicode.len(currentSearchTerm) < (WIDTH - 10) then -- Ограничение длины поиска
+                local searchInputX = 3 + unicode.len("Поиск: ")
+                local maxSearchInputWidth = WIDTH - searchInputX - 1
+                if unicode.len(currentSearchTerm) < maxSearchInputWidth then -- Ограничение длины поиска
                     currentSearchTerm = currentSearchTerm .. unicodeChar
                 end
                 currentPage = 1
                 selectedItem = nil
             end
-        elseif currentTab == "add" then
-            if key == 28 then -- Enter
-                if inputBuffer ~= "" then
-                    addItemToDB(inputBuffer)
-                    inputBuffer = "" -- Очищаем буфер после добавления
-                    isAddingItem = false -- Выключаем режим ввода
-                else
-                    addLog(logs, "ERROR: Название предмета не может быть пустым.", "WARN")
-                end
-            elseif key == 14 then -- Backspace
-                inputBuffer = unicode.sub(inputBuffer, 1, unicode.len(inputBuffer) - 1)
-            elseif unicodeChar ~= nil and unicodeChar ~= "" then -- Любой другой вводимый символ
-                -- Добавляем только печатные символы и ограничиваем длину
-                local maxInputWidth = WIDTH - (3 + unicode.len("Ввод: ")) - 1
-                if unicode.len(inputBuffer) < maxInputWidth then -- Ограничение длины ввода
-                    inputBuffer = inputBuffer .. unicodeChar
-                end
-            end
-        elseif currentTab == "logs" then
-            if key == 200 and arg.shift then -- Shift + Up для логов (прокрутка вверх)
+        elseif currentTab == "logs" then -- Клавиши прокрутки логов
+            if key == 200 then -- Up Arrow
                 logOffset = math.min(logOffset + 1, math.max(0, #logs - (HEIGHT - 6)))
-            elseif key == 208 and arg.shift then -- Shift + Down для логов (прокрутка вниз)
+            elseif key == 208 then -- Down Arrow
                 logOffset = math.max(logOffset - 1, 0)
             end
         end
     end
-    -- Обновляем состояние наведения кнопок
+
+    -- Обновляем состояние наведения кнопок (для M.drawButton)
     local mx, my = term.getCursor()
-    M.buttonHover = nil
-    M.buttonHoverY = nil
+    buttonHover = nil
+    buttonHoverY = nil
 
     -- Проверка наведения на кнопки вкладок
     if my == 2 then
-        if mx >= 2 and mx <= 2 + unicode.len("[Главная]") - 1 then M.buttonHover, M.buttonHoverY = 2, 2
-        elseif mx >= 12 and mx <= 12 + unicode.len("[Настройки]") - 1 then M.buttonHover, M.buttonHoverY = 12, 2
-        elseif mx >= 25 and mx <= 25 + unicode.len("[Добавить]") - 1 then M.buttonHover, M.buttonHoverY = 25, 2
-        elseif mx >= 36 and mx <= 36 + unicode.len("[Логи]") - 1 then M.buttonHover, M.buttonHoverY = 36, 2
+        if mx >= 2 and mx <= 2 + unicode.len("[Главная]") - 1 then buttonHover, buttonHoverY = 2, 2
+        elseif mx >= 12 and mx <= 12 + unicode.len("[Настройки]") - 1 then buttonHover, buttonHoverY = 12, 2
+        elseif mx >= 25 and mx <= 25 + unicode.len("[Добавить]") - 1 then buttonHover, buttonHoverY = 25, 2
+        elseif mx >= 36 and mx <= 36 + unicode.len("[Логи]") - 1 then buttonHover, buttonHoverY = 36, 2
         end
     end
 
     -- Проверка наведения на кнопки внутри вкладок
     if currentTab == "main" then
         if my == HEIGHT - 5 then
-            if mx >= 3 and mx <= 3 + unicode.len("[Удалить]") - 1 then M.buttonHover, M.buttonHoverY = 3, HEIGHT - 5
-            elseif mx >= 15 and mx <= 15 + unicode.len("[Изменить]") - 1 then M.buttonHover, M.buttonHoverY = 15, HEIGHT - 5
+            if mx >= 3 and mx <= 3 + unicode.len("[Удалить]") - 1 then buttonHover, buttonHoverY = 3, HEIGHT - 5
+            elseif mx >= 15 and mx <= 15 + unicode.len("[Изменить]") - 1 then buttonHover, buttonHoverY = 15, HEIGHT - 5
             end
         elseif my == HEIGHT - 3 then
-            if mx >= WIDTH - 15 and mx <= WIDTH - 15 + unicode.len("<") - 1 then M.buttonHover, M.buttonHoverY = WIDTH - 15, HEIGHT - 3
-            elseif mx >= WIDTH - 8 and mx <= WIDTH - 8 + unicode.len(">") - 1 then M.buttonHover, M.buttonHoverY = WIDTH - 8, HEIGHT - 3
+            local maxPages = math.max(1, math.ceil(#M.filterItems(craftItems, currentSearchTerm) / itemsPerPage))
+            if maxPages > 1 then
+                if mx >= WIDTH - 15 and mx <= WIDTH - 15 + unicode.len("<") - 1 then buttonHover, buttonHoverY = WIDTH - 15, HEIGHT - 3
+                elseif mx >= WIDTH - 8 and mx <= WIDTH - 8 + unicode.len(">") - 1 then buttonHover, buttonHoverY = WIDTH - 8, HEIGHT - 3
+                end
             end
         end
     elseif currentTab == "add" then
         if my == 8 then
-            if mx >= 3 and mx <= 3 + unicode.len("[Добавить]") - 1 then M.buttonHover, M.buttonHoverY = 3, 8 end
+            if mx >= 3 and mx <= 3 + unicode.len("[Добавить]") - 1 then buttonHover, buttonHoverY = 3, 8 end
         elseif my == 10 then
-            if mx >= 3 and mx <= 3 + unicode.len("[Отмена]") - 1 then M.buttonHover, M.buttonHoverY = 3, 10 end
+            if mx >= 3 and mx <= 3 + unicode.len("[Отмена]") - 1 then buttonHover, buttonHoverY = 3, 10 end
         end
     end
+    -- Присваиваем M.buttonHover и M.buttonHoverY для использования в M.drawButton
+    M.buttonHover = buttonHover
+    M.buttonHoverY = buttonHoverY
 
     draw()
 end
 
 local ok, err = pcall(autoCraftLoop)
 if not ok then
-    addLog(logs, "ERROR: Фатальная ошибка в autoCraftLoop: " .. tostring(err), "ERROR")
+    M.addLog(logs, "ERROR: Фатальная ошибка в autoCraftLoop: " .. tostring(err), "ERROR")
     draw()
     while true do os.sleep(1) end
 end
