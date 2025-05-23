@@ -328,13 +328,19 @@ local function drawSearchBar()
     g.set(x + w - 3, y + 1, (search ~= "" and "×" or " "))
     g.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
     local display = search
-    if display == "" then display = "Поиск: введите часть названия..." end
+    if display == "" and not searchActive then display = "Поиск: введите часть названия..." end
     if searchActive then display = display .. "_" end
     local maxlen = w - 7
     if unicode.len(display) > maxlen then
         display = unicode.sub(display, unicode.len(display) - maxlen + 1)
     end
     g.set(x + 2, y + 1, display)
+    if searchActive then
+        term.setCursor(x + 2 + unicode.len(search), y + 1)
+        term.showCursor(true)
+    else
+        term.showCursor(false)
+    end
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
 end
@@ -421,19 +427,19 @@ local function promptForInput(label, keyName, isNumeric, defaultValue)
     end
     local function redrawInputScreen(activeInput)
         clear()
-        uoc.drawText(2, baseY, (inputMode == "add") and "Добавление предмета" or "Изменение: " .. (dataItems[selectedItem].name or "<?>"), COLORS.ok)
+        uoc.drawText(2, baseY, (inputMode == "add") and "Добавление предмета" or "Изменение: " .. (dataItems[selectedItem] and dataItems[selectedItem].name or "<?>"), COLORS.ok)
         uoc.drawText(2, baseY + 1, "Вставьте предмет в 1-й слот ME интерфейса (для добавления).", COLORS.ok)
-        uoc.drawText(2, baseY + 12, "Enter: сохранить/пропустить", COLORS.text)
+        uoc.drawText(2, baseY + 12, "Enter: сохранить | Esc: отменить | Backspace: удалить символ | Delete: очистить", COLORS.text)
         for _, field in ipairs(fieldsConfig) do
-            local isActiveFieldInner = (field.key == keyName)
+            local isActiveField = (field.key == keyName)
             uoc.roundRect(field.x, field.y, field.w, 3, COLORS.input_border, COLORS.input_bg)
             g.setForeground(COLORS.text)
             g.set(field.x + 1, field.y, field.label)
             g.setBackground(COLORS.input_bg)
             g.fill(field.x + 1, field.y + 1, field.w - 2, 1, " ")
-            g.setForeground(isActiveFieldInner and COLORS.ok or COLORS.input_text)
+            g.setForeground(isActiveField and COLORS.ok or COLORS.input_text)
             local displayValue = inputFields[field.key] or ""
-            if isActiveFieldInner then
+            if isActiveField then
                 displayValue = activeInput .. "_"
             elseif displayValue == "" then
                 displayValue = "Введите значение..."
@@ -446,45 +452,59 @@ local function promptForInput(label, keyName, isNumeric, defaultValue)
         end
         g.setBackground(COLORS.bg)
         g.setForeground(COLORS.text)
+        if keyName then
+            term.setCursor(currentFieldConfig.x + 2 + unicode.len(activeInput), currentFieldConfig.y + 1)
+            term.showCursor(true)
+        else
+            term.showCursor(false)
+        end
     end
     redrawInputScreen(currentInput)
-    term.setCursor(currentFieldConfig.x + 2 + unicode.len(currentInput), currentFieldConfig.y + 1)
-    term.showCursor(true)
-    local result = nil
+    local maxLength = currentFieldConfig.w - 4
     while true do
-        local eventType, _, char, key = event.pullMultiple("char", "key_down")
-        if eventType == "key_down" then
+        local ev = {event.pull(0.1, "char", "key_down")}
+        local eventType = ev[1]
+        if eventType == "char" then
+            local char = ev[3]
+            if unicode.len(char) > 0 and not char:find("[\x00-\x1F\x7F]") then
+                if isNumeric and not char:match("[0-9]") then
+                    addLog(logs, "WARN: Введен недопустимый символ для числового поля: " .. char, "WARN")
+                elseif unicode.len(currentInput) < maxLength then
+                    currentInput = currentInput .. char
+                    addLog(logs, "INFO: Введен символ: " .. char, "INFO")
+                end
+            end
+        elseif eventType == "key_down" then
+            local key = ev[4]
             if key == 28 then -- Enter
-                result = currentInput
-                break
+                if isNumeric then
+                    local numResult = tonumber(currentInput)
+                    if numResult == nil then
+                        addLog(logs, "WARN: Введено нечисловое значение для '" .. label .. "'. Использовано: " .. tostring(defaultValue), "WARN")
+                        term.showCursor(false)
+                        return tonumber(defaultValue) or 0
+                    end
+                    term.showCursor(false)
+                    return numResult
+                end
+                if currentInput == "" then
+                    currentInput = defaultValue or ""
+                end
+                term.showCursor(false)
+                return currentInput
             elseif key == 14 then -- Backspace
                 currentInput = unicode.sub(currentInput, 1, -2)
+                addLog(logs, "INFO: Удален символ", "INFO")
             elseif key == 211 then -- Delete
                 currentInput = ""
-            end
-        elseif eventType == "char" then
-            if unicode.len(char) > 0 and not char:find("[\x00-\x1F\x7F]") then
-                if unicode.len(currentInput) < currentFieldConfig.w - 4 then
-                    currentInput = currentInput .. char
-                end
+                addLog(logs, "INFO: Поле очищено", "INFO")
+            elseif key == 1 then -- Escape
+                term.showCursor(false)
+                return nil
             end
         end
         redrawInputScreen(currentInput)
-        term.setCursor(currentFieldConfig.x + 2 + unicode.len(currentInput), currentFieldConfig.y + 1)
     end
-    term.showCursor(false)
-    if result == "" then
-        result = defaultValue
-    end
-    if isNumeric then
-        local numResult = tonumber(result)
-        if numResult == nil then
-            addLog(logs, "WARN: Введено нечисловое значение для '" .. label .. "'. Использовано: " .. tostring(defaultValue), "WARN")
-            return tonumber(defaultValue)
-        end
-        return numResult
-    end
-    return result
 end
 
 local function draw()
@@ -568,6 +588,7 @@ local function cancelInput()
     changeitem = false
     inputMode = nil
     inputFields = {}
+    term.showCursor(false)
     draw()
 end
 
@@ -608,10 +629,7 @@ local function addItem()
     else
         addLog(logs, "ERROR: Нет предмета в слоте 1!", "ERROR")
     end
-    changeitem = false
-    inputMode = nil
-    inputFields = {}
-    draw()
+    cancelInput()
 end
 
 local function editItem()
@@ -642,10 +660,7 @@ local function editItem()
     item.craftSize = inputFields.craftSize
     save()
     addLog(logs, "INFO: Изменено: " .. item.name .. " (Категория: " .. (item.category or "Без категории") .. ")", "INFO")
-    changeitem = false
-    inputMode = nil
-    inputFields = {}
-    draw()
+    cancelInput()
 end
 
 local function removeItem()
@@ -890,12 +905,12 @@ event.listen("touch", function(_, _, x, y, _, _)
         return
     end
     if y >= HEIGHT - 10 and y <= HEIGHT - 8 then
-        searchActive = false
         if x >= 2 + (WIDTH - 20) - 3 and x <= 2 + (WIDTH - 20) - 1 and search ~= "" then
             search = ""
             currentPage = 1
             selectedItem = nil
             buttonHover = nil
+            searchActive = false
             draw()
             return
         end
@@ -941,24 +956,31 @@ event.listen("mouse_move", function(_, _, x, y)
     end
 end)
 
-event.listen("key_down", function(_, _, key, _, _)
+event.listen("key_down", function(_, _, _, key, _)
     if not changeitem then
         local filteredAndSortedItems = getFilteredAndSortedItems()
         local perPage = getItemsPerPage()
         local maxPages = getMaxPages()
         if searchActive then
-            if key == 14 then
+            if key == 14 then -- Backspace
                 search = unicode.sub(search, 1, -2)
-            elseif key == 211 then
+                addLog(logs, "INFO: Удален символ в поиске", "INFO")
+            elseif key == 211 then -- Delete
                 search = ""
-            elseif key == 28 then
+                addLog(logs, "INFO: Поле поиска очищено", "INFO")
+            elseif key == 28 then -- Enter
                 searchActive = false
+                term.showCursor(false)
+            elseif key == 1 then -- Escape
+                search = ""
+                searchActive = false
+                term.showCursor(false)
             end
             currentPage = 1
             selectedItem = nil
             buttonHover = nil
         else
-            if key == 200 then
+            if key == 200 then -- Up
                 local currentSelectedItemInFiltered = nil
                 local startIndex = (currentPage - 1) * perPage + 1
                 local visibleItems = {}
@@ -992,7 +1014,7 @@ event.listen("key_down", function(_, _, key, _, _)
                         end
                     end
                 end
-            elseif key == 208 then
+            elseif key == 208 then -- Down
                 local currentSelectedItemInFiltered = nil
                 local startIndex = (currentPage - 1) * perPage + 1
                 local visibleItems = {}
@@ -1026,25 +1048,20 @@ event.listen("key_down", function(_, _, key, _, _)
                         end
                     end
                 end
-            elseif key == 203 then
+            elseif key == 203 then -- Left
                 if currentPage > 1 then
                     currentPage = currentPage - 1
                     selectedItem = nil
                 end
-            elseif key == 205 then
+            elseif key == 205 then -- Right
                 if currentPage < maxPages then
                     currentPage = currentPage + 1
                     selectedItem = nil
                 end
-            elseif key == 200 and arg.shift then
-                logOffset = math.min(logOffset + 1, #logs - 5)
-            elseif key == 208 and arg.shift then
-                logOffset = math.max(logOffset - 1, 0)
             end
         end
+        draw()
     end
-    buttonHover = nil
-    draw()
 end)
 
 event.listen("char", function(_, _, char)
@@ -1052,6 +1069,7 @@ event.listen("char", function(_, _, char)
         if unicode.len(char) > 0 and not char:find("[\x00-\x1F\x7F]") then
             if unicode.len(search) < WIDTH - 25 then
                 search = search .. char
+                addLog(logs, "INFO: Введен символ в поиск: " .. char, "INFO")
             end
         end
         currentPage = 1
