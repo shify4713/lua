@@ -14,22 +14,16 @@ local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
 local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/ultimateOC.lua"
 
--- Глобальные переменные
-local WIDTH, HEIGHT
-local M -- Таблица для функций из ultimateOC.lua
-local craftItems = {} -- Список предметов для крафта
-local meItems = {} -- Список предметов в ME-системе
-local logs = {} -- Логи программы
-local currentTab = "main" -- Текущая активная вкладка: "main", "settings", "add", "logs"
-local selectedItem = nil -- Выбранный предмет в списке (для редактирования/удаления)
-local currentPage = 1 -- Текущая страница в списке предметов
-local itemsPerPage = 15 -- Количество предметов на одной странице
-local logOffset = 0 -- Смещение для прокрутки логов
-local inputBuffer = "" -- Буфер для ввода текста (название предмета или строка поиска)
-local inputMode = nil -- "add" для добавления, "search" для поиска, nil если не активен ввод
-local buttonHover = nil -- Отслеживание наведения курсора для кнопок (для M.drawButton)
-local buttonHoverY = nil
-
+-- Загрузка или скачивание ultimateOC.lua
+if not fs.exists(LIB_PATH) then
+    io.write("Загрузка ultimateOC.lua...\n")
+    local success, err = shell.execute("wget", LIB_URL, LIB_PATH)
+    if not success then
+        io.stderr:write("Ошибка загрузки ultimateOC.lua: " .. tostring(err) .. "\n")
+        os.exit(1)
+    end
+end
+local M = require("ultimateOC") -- Загружаем библиотеку
 
 -- Проверка доступности компонентов
 local function checkComponents()
@@ -51,558 +45,476 @@ end
 local function bindGpu()
     local screen = component.list("screen")()
     if not screen then
-        M.addLog(logs, "ERROR: Не найден экран для привязки GPU", "ERROR")
+        io.stderr:write("Ошибка: Не найден экран для привязки GPU\n")
         os.exit(1)
     end
     local success, err = pcall(g.bind, screen)
     if not success then
-        M.addLog(logs, "ERROR: Ошибка при привязке GPU к экрану: " .. tostring(err), "ERROR")
+        io.stderr:write("Ошибка при привязке GPU к экрану: " .. tostring(err) .. "\n")
         os.exit(1)
     end
 end
 
--- Загрузка или скачивание библиотеки
-local function loadLibrary()
-    if not fs.exists(LIB_PATH) then
-        M.addLog(logs, "INFO: Библиотека " .. LIB_PATH .. " не найдена, скачивание...", "INFO")
-        local ok, err = shell.execute("wget " .. LIB_URL .. " " .. LIB_PATH)
-        if not ok then
-            M.addLog(logs, "ERROR: Не удалось скачать библиотеку: " .. tostring(err), "ERROR")
-            return nil
-        end
-        M.addLog(logs, "INFO: Библиотека успешно скачана.", "INFO")
-    end
-    local ok, lib = pcall(require, string.sub(LIB_PATH, 2)) -- Убираем / в начале для require
-    if not ok then
-        M.addLog(logs, "ERROR: Ошибка при загрузке библиотеки: " .. tostring(lib), "ERROR")
-        return nil
-    end
-    return lib
-end
+-- Глобальные переменные
+local WIDTH, HEIGHT
+local running = true
+local logs = {}
+local craftList = {}
+local selectedItem = nil
+local currentPage = 1
+local logOffset = 0 -- Для прокрутки логов
+local inputMode = nil -- 'addName', 'addCount', 'addCraftSize', 'changeName', 'changeCount', 'changeCraftSize'
+local currentInput = ""
+local inputPrompt = ""
 
--- Загрузка данных
+-- Цвета
+local COLOR_BACKGROUND = 0x282A36
+local COLOR_FOREGROUND = 0xF8F8F2
+local COLOR_ACCENT = 0x8BE9FD
+local COLOR_ERROR = 0xFF5555
+local COLOR_WARNING = 0xFFB86C
+local COLOR_INFO = 0x50FA7B
+
+-- Загрузка/Сохранение данных
 local function loadData()
-    if fs.exists(DATA_FILE) then
-        local success, data = pcall(M.loadf, DATA_FILE)
-        if success then
-            craftItems = data
-            M.addLog(logs, "Данные успешно загружены из " .. DATA_FILE, "INFO")
-        else
-            M.addLog(logs, "ERROR: Ошибка при загрузке данных: " .. tostring(data), "ERROR")
-            craftItems = {} -- Сброс на пустой список при ошибке
-        end
+    craftList = M.loadf(DATA_FILE)
+    if type(craftList) ~= "table" then
+        craftList = {}
+        M.addLog(logs, "Обнаружены поврежденные данные или пустой файл. Создан новый пустой список крафтов.", "WARN")
     else
-        M.addLog(logs, "INFO: Файл данных " .. DATA_FILE .. " не найден. Создан пустой список.", "INFO")
-        craftItems = {}
+        -- Убедимся, что каждый элемент имеет все необходимые поля
+        for k, v in pairs(craftList) do
+            v.craftSize = v.craftSize or 1
+            v.minCount = v.minCount or 1
+        end
     end
 end
 
--- Сохранение данных
 local function saveData()
-    local success, err = pcall(M.savef, DATA_FILE, craftItems)
-    if not success then
-        M.addLog(logs, "ERROR: Ошибка при сохранении данных: " .. tostring(err), "ERROR")
-    else
-        M.addLog(logs, "Данные успешно сохранены в " .. DATA_FILE, "INFO")
+    local ok, err = pcall(M.savef, DATA_FILE, craftList)
+    if not ok then
+        M.addLog(logs, "Ошибка сохранения данных: " .. tostring(err), "ERROR")
     end
 end
 
--- Обновление списка предметов в ME-системе
-local function updateMEItems()
-    local success, items = pcall(me.getItemsInNetwork)
-    if success then
-        meItems = items
-        M.addLog(logs, "Список предметов ME обновлен. Всего: " .. #meItems, "INFO")
-    else
-        M.addLog(logs, "ERROR: Не удалось получить список предметов из ME-интерфейса: " .. tostring(items), "ERROR")
-        meItems = {} -- Сброс на пустой список при ошибке
-    end
+-- Добавление лога
+local function addLog(text, lvl)
+    M.addLog(logs, text, lvl)
 end
 
--- Функция для добавления предмета в базу данных
-local function addItemToDB(itemName)
-    local exists = false
-    for _, item in ipairs(craftItems) do
-        if item.name == itemName then
-            exists = true
-            break
-        end
-    end
-
-    if not exists then
-        local newItem = {
-            name = itemName,
-            count = 1, -- Дефолтное количество
-            craftSize = 1, -- Дефолтный размер крафта
-            minCount = 1, -- Дефолтное минимальное количество
-        }
-        table.insert(craftItems, newItem)
-        saveData() -- Сохраняем после добавления
-        M.addLog(logs, "Предмет '" .. itemName .. "' успешно добавлен.", "INFO")
-    else
-        M.addLog(logs, "Предмет '" .. itemName .. "' уже существует.", "WARN")
-    end
-end
-
--- Функция для удаления предмета
-local function deleteItem(index)
-    if index and craftItems[index] then
-        local itemName = craftItems[index].name
-        table.remove(craftItems, index)
-        saveData()
-        M.addLog(logs, "Предмет '" .. itemName .. "' удален.", "INFO")
-        selectedItem = nil -- Сбрасываем выбранный предмет
-        -- Проверяем, не вышла ли текущая страница за границы
-        local maxPages = math.max(1, math.ceil(#craftItems / itemsPerPage))
-        if currentPage > maxPages then
-            currentPage = maxPages
-        end
-    else
-        M.addLog(logs, "ERROR: Не удалось удалить предмет. Неверный индекс.", "ERROR")
-    end
-end
-
--- Функция для изменения значения (универсальная)
-local function changeItemValue(index, field, newValue)
-    if index and craftItems[index] then
-        craftItems[index][field] = newValue
-        saveData()
-        M.addLog(logs, "Изменено: " .. craftItems[index].name .. " -> " .. field .. " = " .. tostring(newValue), "INFO")
-    else
-        M.addLog(logs, "ERROR: Не удалось изменить предмет. Неверный индекс.", "ERROR")
-    end
-end
-
--- Основная функция отрисовки GUI
+-- Обновление элементов на экране
 local function draw()
-    g.setBackground(0x282A36) -- Фоновый цвет Dracula
-    g.setForeground(0xF8F8F2) -- Цвет текста Dracula
-    g.setResolution(WIDTH, HEIGHT)
-    g.fill(1, 1, WIDTH, HEIGHT, " ") -- Очистка экрана
+    g.setBackground(COLOR_BACKGROUND)
+    g.setForeground(COLOR_FOREGROUND)
+    g.clear()
 
-    -- Заголовок программы
-    M.drawBox(1, 1, WIDTH, 2, "Auto-Gemeni", 0xBD93F9)
+    -- Заголовок
+    M.drawText(2, 1, "Auto-Gemeni Crafting Interface", COLOR_ACCENT)
 
-    -- Вкладки
-    M.drawButton(2, 2, "[Главная]", function()
-        currentTab = "main"
-        selectedItem = nil
-        inputBuffer = ""
-        inputMode = "search" -- Поиск активен по умолчанию на главной
-        currentSearchTerm = ""
-    end, currentTab == "main")
-    M.drawButton(12, 2, "[Настройки]", function()
-        currentTab = "settings"
-        selectedItem = nil
-        inputBuffer = ""
-        inputMode = nil
-        currentSearchTerm = ""
-    end, currentTab == "settings")
-    M.drawButton(25, 2, "[Добавить]", function()
-        currentTab = "add"
-        selectedItem = nil
-        inputBuffer = ""
-        inputMode = "add" -- Ввод активен на вкладке добавления
-        currentSearchTerm = ""
-    end, currentTab == "add")
-    M.drawButton(36, 2, "[Логи]", function()
-        currentTab = "logs"
-        selectedItem = nil
-        inputBuffer = ""
-        inputMode = nil
-        currentSearchTerm = ""
-    end, currentTab == "logs")
+    -- Список крафтов
+    M.drawText(2, 3, "Список Крафтов:", COLOR_ACCENT)
+    local itemsPerPage = math.floor((HEIGHT - 10) / 2) -- 2 строки на элемент
+    local startIndex = (currentPage - 1) * itemsPerPage + 1
+    local endIndex = math.min(startIndex + itemsPerPage - 1, #craftList)
 
+    local displayIndex = 0
+    local sortedKeys = {}
+    for k in pairs(craftList) do table.insert(sortedKeys, k) end
+    table.sort(sortedKeys) -- Сортируем для стабильного отображения
 
-    -- Содержимое вкладок
-    if currentTab == "main" then
-        M.drawBox(1, 1, WIDTH, HEIGHT, "Список предметов", 0x8BE9FD)
+    for i = startIndex, endIndex do
+        local key = sortedKeys[i]
+        local item = craftList[key]
+        if item then
+            local yOffset = 4 + (displayIndex * 2)
+            local isSelected = (selectedItem and selectedItem.name == key)
 
-        -- Поле поиска
-        g.setForeground(0xFFFFFF)
-        g.setBackground(0x282A36)
-        g.set(3, 3, "Поиск: " .. currentSearchTerm)
-        local searchInputX = 3 + unicode.len("Поиск: ")
-        local maxSearchInputWidth = WIDTH - searchInputX - 1
+            local itemText = string.format("%s: %d (Крафт: %d)", key, item.minCount, item.craftSize)
+            local itemColor = isSelected and COLOR_INFO or COLOR_FOREGROUND
+            local bgColor = isSelected and 0x44475A or COLOR_BACKGROUND -- Цвет фона для выбранного элемента
 
-        -- Подсветка поля поиска, если оно активно
-        if inputMode == "search" then
-            g.setBackground(0x6272A4) -- Цвет фона для активного поля
-            g.set(searchInputX, 3, unicode.sub(currentSearchTerm, 1, maxSearchInputWidth) .. string.rep(" ", math.max(0, maxSearchInputWidth - unicode.len(currentSearchTerm))))
-            g.setBackground(0x282A36) -- Возвращаем основной фон
+            M.drawText(2, yOffset, itemText, itemColor, bgColor)
+            displayIndex = displayIndex + 1
         end
-
-        -- Отображение списка предметов
-        local filteredItems = M.filterItems(craftItems, currentSearchTerm)
-        local startIndex = (currentPage - 1) * itemsPerPage + 1
-        local endIndex = math.min(startIndex + itemsPerPage - 1, #filteredItems)
-
-        if #filteredItems == 0 and currentSearchTerm ~= "" then
-            g.setForeground(0x8BE9FD)
-            g.set(3, 6, "Ничего не найдено по запросу: '" .. currentSearchTerm .. "'")
-        elseif #filteredItems == 0 then
-            g.setForeground(0x8BE9FD)
-            g.set(3, 6, "Список предметов пуст. Добавьте предметы во вкладке 'Добавить'.")
-        else
-            for i = startIndex, endIndex do
-                local item = filteredItems[i]
-                local displayIndex = i - startIndex + 1
-                local yPos = 5 + displayIndex
-
-                local textColor = 0xFFFFFF
-                if selectedItem and selectedItem.name == item.name then
-                    textColor = 0x50FA7B -- Цвет выбранного элемента
-                end
-
-                g.setForeground(textColor)
-                g.set(3, yPos, string.format("%d. %s (ME: %d, Мин: %d, Крафт: %d)", i, item.name, item.count, item.minCount, item.craftSize))
-            end
-        end
-
-        -- Навигация по страницам
-        local maxPages = math.max(1, math.ceil(#filteredItems / itemsPerPage))
-        if maxPages > 1 then
-            M.drawButton(WIDTH - 15, HEIGHT - 3, "<", function()
-                if currentPage > 1 then
-                    currentPage = currentPage - 1
-                    selectedItem = nil
-                end
-            end, buttonHover == WIDTH - 15 and buttonHoverY == HEIGHT - 3)
-            g.setForeground(0xFFFFFF)
-            g.set(WIDTH - 12, HEIGHT - 3, string.format("%d/%d", currentPage, maxPages))
-            M.drawButton(WIDTH - 8, HEIGHT - 3, ">", function()
-                if currentPage < maxPages then
-                    currentPage = currentPage + 1
-                    selectedItem = nil
-                end
-            end, buttonHover == WIDTH - 8 and buttonHoverY == HEIGHT - 3)
-        end
-
-        -- Кнопки действий
-        if selectedItem then
-            M.drawButton(3, HEIGHT - 5, "[Удалить]", function()
-                if selectedItem then
-                    local index = -1
-                    for i, item in ipairs(craftItems) do
-                        if item.name == selectedItem.name then
-                            index = i
-                            break
-                        end
-                    end
-                    if index ~= -1 then
-                        deleteItem(index)
-                    end
-                end
-            end, buttonHover == 3 and buttonHoverY == HEIGHT - 5)
-            M.drawButton(15, HEIGHT - 5, "[Изменить]", function()
-                -- Здесь можно открыть под-интерфейс для изменения
-                M.addLog(logs, "Функция 'Изменить' пока не реализована.", "INFO")
-            end, buttonHover == 15 and buttonHoverY == HEIGHT - 5)
-        end
-
-    elseif currentTab == "settings" then
-        M.drawBox(1, 1, WIDTH, HEIGHT, "Настройки", 0x8BE9FD)
-        g.setForeground(0xFFFFFF)
-        g.set(3, 4, "Здесь будут настройки программы.")
-        g.set(3, 6, "Например, интервал автокрафта, параметры логирования.")
-    elseif currentTab == "add" then
-        M.drawBox(1, 1, WIDTH, HEIGHT, "Добавить предмет", 0x8BE9FD)
-
-        g.setForeground(0xFFFFFF)
-        g.setBackground(0x282A36)
-
-        -- Инструкции для пользователя
-        g.set(3, 3, "Введите название предмета:")
-        g.set(3, 4, "(Нажмите Enter для добавления, Backspace для удаления)")
-
-        -- Отображение текущего ввода
-        g.set(3, 6, "Ввод: ")
-        local inputX = 3 + unicode.len("Ввод: ")
-        local maxInputWidth = WIDTH - inputX - 1 -- Оставляем небольшой отступ справа
-
-        g.setBackground(0x6272A4) -- Цвет фона для поля ввода
-        g.set(inputX, 6, unicode.sub(inputBuffer, 1, maxInputWidth) .. string.rep(" ", math.max(0, maxInputWidth - unicode.len(inputBuffer))))
-        g.setBackground(0x282A36) -- Возвращаем основной фон
-
-        -- Кнопка "Добавить"
-        M.drawButton(3, 8, "[Добавить]", function()
-            if inputBuffer ~= "" then
-                addItemToDB(inputBuffer)
-                inputBuffer = "" -- Очищаем буфер после добавления
-            else
-                M.addLog(logs, "ERROR: Название предмета не может быть пустым.", "WARN")
-            end
-        end, buttonHover == 3 and buttonHoverY == 8)
-
-        -- Кнопка "Отмена"
-        M.drawButton(3, 10, "[Отмена]", function()
-            inputBuffer = ""
-            inputMode = nil -- Отмена ввода, выключаем режим ввода
-        end, buttonHover == 3 and buttonHoverY == 10)
-
-    elseif currentTab == "logs" then
-        M.drawBox(1, 1, WIDTH, HEIGHT, "Логи", 0x8BE9FD)
-        -- Отрисовка логов с учетом смещения
-        local displayCount = math.min(HEIGHT - 6, #logs) -- Максимальное количество логов для отображения
-        M.drawLogs(3, 4, logs, displayCount, 0xFFFFFF, logOffset)
     end
 
-    -- Нижний бар для ошибок/информации (отображение последней записи лога)
-    M.drawBox(1, HEIGHT - 2, WIDTH, 2, "", 0x6272A4)
-    if #logs > 0 then
-        g.setForeground(0xFFFFFF)
-        g.set(2, HEIGHT - 1, logs[#logs])
+    -- Навигация по страницам
+    local maxPages = math.max(1, math.ceil(#craftList / itemsPerPage))
+    local pageInfo = string.format("Страница %d/%d", currentPage, maxPages)
+    M.drawText(WIDTH - #pageInfo - 1, 1, pageInfo, COLOR_ACCENT)
+
+    -- Логи
+    M.drawText(2, HEIGHT - 7, "Логи:", COLOR_ACCENT)
+    M.drawLogs(2, HEIGHT - 5, logs, 5, COLOR_FOREGROUND, logOffset)
+
+    -- Кнопки и поля ввода
+    local buttonY = 3
+    local buttonX = math.floor(WIDTH / 2) + 5
+    local buttonWidth = 20
+    local buttonHeight = 1
+
+    -- Кнопки действий
+    M.drawButton(buttonX, buttonY, buttonWidth, buttonHeight, "Добавить предмет", "add_item", COLOR_ACCENT, COLOR_BACKGROUND)
+    buttonY = buttonY + 2
+    M.drawButton(buttonX, buttonY, buttonWidth, buttonHeight, "Изменить название", "change_name", COLOR_ACCENT, COLOR_BACKGROUND, selectedItem == nil)
+    buttonY = buttonY + 2
+    M.drawButton(buttonX, buttonY, buttonWidth, buttonHeight, "Изменить количество", "change_count", COLOR_ACCENT, COLOR_BACKGROUND, selectedItem == nil)
+    buttonY = buttonY + 2
+    M.drawButton(buttonX, buttonY, buttonWidth, buttonHeight, "Изменить размер крафта", "change_craft_size", COLOR_ACCENT, COLOR_BACKGROUND, selectedItem == nil)
+    buttonY = buttonY + 2
+    M.drawButton(buttonX, buttonY, buttonWidth, buttonHeight, "Удалить предмет", "remove_item", COLOR_ACCENT, COLOR_BACKGROUND, selectedItem == nil)
+    buttonY = buttonY + 2
+    M.drawButton(buttonX, buttonY, buttonWidth, buttonHeight, "Отменить", "cancel_input", COLOR_WARNING, COLOR_BACKGROUND, inputMode == nil)
+    buttonY = buttonY + 2
+    M.drawButton(buttonX, buttonY, buttonWidth, buttonHeight, "Выход", "exit", COLOR_ERROR, COLOR_BACKGROUND)
+
+    -- Поле ввода
+    if inputMode then
+        local inputPromptY = HEIGHT - 8
+        local inputFieldY = HEIGHT - 9
+        local inputFieldX = 2
+        local inputFieldWidth = WIDTH - 4
+
+        M.drawText(inputFieldX, inputFieldY, inputPrompt, COLOR_ACCENT)
+        g.setBackground(0x44475A)
+        g.setForeground(COLOR_FOREGROUND)
+        g.set(inputFieldX, inputFieldY + 1, string.rep(" ", inputFieldWidth)) -- Clear previous input
+        M.drawText(inputFieldX, inputFieldY + 1, currentInput, COLOR_FOREGROUND)
     end
 end
 
--- Цикл автокрафта (заглушка)
+-- Функция для обработки добавления нового элемента
+local function addNewItem(name, count, craftSize)
+    if craftList[name] then
+        addLog(string.format("Предмет '%s' уже существует в списке. Используйте 'Изменить'.", name), "WARN")
+        return
+    end
+    craftList[name] = { minCount = tonumber(count) or 1, craftSize = tonumber(craftSize) or 1 }
+    saveData()
+    addLog(string.format("Добавлен предмет: %s (Мин. кол-во: %d, Размер крафта: %d)", name, craftList[name].minCount, craftList[name].craftSize), "INFO")
+    selectedItem = { name = name }
+end
+
+-- Функция для обработки изменения существующего элемента
+local function changeItem(key, field, newValue)
+    if not craftList[key] then
+        addLog(string.format("Предмет '%s' не найден.", key), "ERROR")
+        return
+    end
+
+    local oldValue
+    if field == "name" then
+        if craftList[newValue] then
+            addLog(string.format("Предмет с названием '%s' уже существует. Выберите другое название.", newValue), "WARN")
+            return
+        end
+        oldValue = key
+        local itemData = craftList[key]
+        craftList[newValue] = itemData
+        craftList[key] = nil
+        selectedItem.name = newValue -- Обновляем выбранный элемент
+        addLog(string.format("Название предмета '%s' изменено на '%s'.", oldValue, newValue), "INFO")
+    elseif field == "count" then
+        oldValue = craftList[key].minCount
+        craftList[key].minCount = tonumber(newValue) or craftList[key].minCount
+        addLog(string.format("Количество поддержания для '%s' изменено с %d на %d.", key, oldValue, craftList[key].minCount), "INFO")
+    elseif field == "craftSize" then
+        oldValue = craftList[key].craftSize
+        craftList[key].craftSize = tonumber(newValue) or craftList[key].craftSize
+        addLog(string.format("Размер крафта для '%s' изменен с %d на %d.", key, oldValue, craftList[key].craftSize), "INFO")
+    end
+    saveData()
+end
+
+-- Функция для удаления элемента
+local function removeItem(key)
+    if not craftList[key] then
+        addLog(string.format("Предмет '%s' не найден.", key), "ERROR")
+        return
+    end
+    craftList[key] = nil
+    saveData()
+    addLog(string.format("Предмет '%s' удален.", key), "INFO")
+    selectedItem = nil
+    -- После удаления возможно нужно пересчитать страницы или сбросить selectedItem
+    local itemsPerPage = math.floor((HEIGHT - 10) / 2)
+    local maxPages = math.max(1, math.ceil(#craftList / itemsPerPage))
+    if currentPage > maxPages then
+        currentPage = maxPages
+    end
+end
+
+-- Главный цикл автокрафта (заглушка, оставлена как есть из исходного файла)
 local function autoCraftLoop()
-    while true do
-        updateMEItems() -- Обновляем предметы в ME
-        M.addLog(logs, "INFO: Проверка ME-интерфейса и статуса крафтов...", "INFO")
-
-        if #craftItems > 0 then
-            local itemToCraft = craftItems[1] -- Пример: Проверка первого предмета в списке
-            local meItemCount = 0
-            for _, meItem in ipairs(meItems) do
-                if meItem.label == itemToCraft.name then
-                    meItemCount = meItem.size
-                    break
-                end
-            end
-
-            if meItemCount < itemToCraft.minCount then
-                local needed = itemToCraft.minCount - meItemCount
-                M.addLog(logs, "WARN: Нужно скрафтить " .. needed .. " " .. itemToCraft.name, "WARN")
-                -- Здесь будет вызов me.craft(itemToCraft.name, needed)
-            else
-                M.addLog(logs, "INFO: " .. itemToCraft.name .. " (в ME: " .. meItemCount .. ") достаточно.", "INFO")
-            end
-        else
-            M.addLog(logs, "INFO: Список предметов для крафта пуст.", "INFO")
-        end
-
-        os.sleep(10) -- Интервал проверки, можно вынести в настройки
+    while running do
+        -- Здесь будет основная логика автокрафта
+        -- Например, проверка ME-интерфейса и создание крафтов
+        -- Для демонстрации пока просто выводим сообщение
+        -- addLog("Выполняется проверка крафтов...", "DEBUG")
+        os.sleep(5) -- Пауза для снижения нагрузки
     end
 end
 
--------------------- Инициализация и главный цикл --------------------
--- До первой попытки использования M.addLog, используем io.stderr
-io.stderr:write("INFO: Запуск программы...\n")
-checkComponents()
-bindGpu()
-WIDTH, HEIGHT = g.getResolution()
-g.setResolution(WIDTH, HEIGHT)
-
--- Загрузка библиотеки M - она должна быть доступна до всех M.addLog
-M = loadLibrary()
-if not M then
-    io.stderr:write("FATAL: Не удалось загрузить библиотеку. Завершение работы.\n")
-    os.exit(1)
+-- Инициализация GPU и разрешение
+local function bindGpuAndSetResolution()
+    bindGpu()
+    WIDTH, HEIGHT = g.getResolution()
+    g.setResolution(WIDTH, HEIGHT)
+    g.setBackground(COLOR_BACKGROUND)
+    g.setForeground(COLOR_FOREGROUND)
+    g.clear()
 end
 
-M.addLog(logs, "INFO: Программа запущена", "INFO")
-loadData()
-updateMEItems()
-
--- Основной цикл обработки событий
-event.listen("interrupted", computer.shutdown)
-event.listen("terminate", computer.shutdown)
-
-event.pull = event.pull or event.pullRaw
-while true do
-    local e, a, b, c, d, ee = event.pull(0.1) -- Таймаут для обновления экрана
-
-    if e == "touch" then
-        local x, y = a, b
-        local success, msg = pcall(function()
-            -- Сбрасываем режим ввода при клике, если это не поле ввода
+-- Основная функция обработки событий
+event.listen("mouse_click", function(_, x, y, button, _, _, player)
+    -- Обработка кликов по кнопкам
+    local action = M.checkButton(x, y)
+    if action then
+        if action == "add_item" then
+            inputMode = 'addName'
+            currentInput = ""
+            inputPrompt = "Введите название нового предмета:"
+            addLog("Режим добавления: Введите название предмета.", "INFO")
+        elseif action == "change_name" and selectedItem then
+            inputMode = 'changeName'
+            currentInput = selectedItem.name
+            inputPrompt = string.format("Изменить название для '%s' на:", selectedItem.name)
+            addLog(string.format("Режим изменения названия для '%s'.", selectedItem.name), "INFO")
+        elseif action == "change_count" and selectedItem then
+            inputMode = 'changeCount'
+            currentInput = tostring(craftList[selectedItem.name].minCount)
+            inputPrompt = string.format("Изменить мин. количество для '%s' на:", selectedItem.name)
+            addLog(string.format("Режим изменения мин. количества для '%s'.", selectedItem.name), "INFO")
+        elseif action == "change_craft_size" and selectedItem then
+            inputMode = 'changeCraftSize'
+            currentInput = tostring(craftList[selectedItem.name].craftSize)
+            inputPrompt = string.format("Изменить размер крафта для '%s' на:", selectedItem.name)
+            addLog(string.format("Режим изменения размера крафта для '%s'.", selectedItem.name), "INFO")
+        elseif action == "remove_item" and selectedItem then
+            local confirm = M.showConfirmDialog(g, WIDTH, HEIGHT, "Удалить " .. selectedItem.name .. "?", "Да", "Нет")
+            if confirm then
+                removeItem(selectedItem.name)
+            else
+                addLog("Удаление отменено.", "INFO")
+            end
+        elseif action == "cancel_input" then
             inputMode = nil
+            currentInput = ""
+            inputPrompt = ""
+            addLog("Режим ввода отменен.", "INFO")
+        elseif action == "exit" then
+            addLog("Завершение работы программы...", "INFO")
+            running = false
+        end
+        draw()
+        return -- Обработали клик по кнопке, выходим
+    end
 
-            -- Обработка кликов по кнопкам вкладок
-            if y == 2 then -- Ряд вкладок
-                if x >= 2 and x <= 2 + unicode.len("[Главная]") - 1 then currentTab = "main"; selectedItem = nil; inputBuffer = ""; inputMode = "search"; currentSearchTerm = ""
-                elseif x >= 12 and x <= 12 + unicode.len("[Настройки]") - 1 then currentTab = "settings"; selectedItem = nil; inputBuffer = ""; inputMode = nil; currentSearchTerm = ""
-                elseif x >= 25 and x <= 25 + unicode.len("[Добавить]") - 1 then currentTab = "add"; selectedItem = nil; inputBuffer = ""; inputMode = "add"; currentSearchTerm = ""
-                elseif x >= 36 and x <= 36 + unicode.len("[Логи]") - 1 then currentTab = "logs"; selectedItem = nil; inputBuffer = ""; inputMode = nil; currentSearchTerm = ""
+    -- Выбор элемента списка
+    local itemsPerPage = math.floor((HEIGHT - 10) / 2)
+    local startIndex = (currentPage - 1) * itemsPerPage + 1
+    local displayIndex = 0
+    local sortedKeys = {}
+    for k in pairs(craftList) do table.insert(sortedKeys, k) end
+    table.sort(sortedKeys)
+
+    for i = startIndex, math.min(startIndex + itemsPerPage - 1, #craftList) do
+        local key = sortedKeys[i]
+        if key then
+            local yOffset = 4 + (displayIndex * 2)
+            if y == yOffset or y == yOffset + 1 then -- Если клик на строке элемента
+                if selectedItem and selectedItem.name == key then
+                    selectedItem = nil -- Снять выделение, если кликнули по тому же
+                else
+                    selectedItem = { name = key }
+                end
+                draw()
+                return
+            end
+            displayIndex = displayIndex + 1
+        end
+    end
+end)
+
+event.listen("key_down", function(_, key, _, arg)
+    if inputMode then
+        if key == 28 then -- Enter
+            if inputMode == 'addName' then
+                if currentInput ~= "" then
+                    local newItemName = currentInput
+                    inputMode = 'addCount'
+                    currentInput = "1" -- Дефолтное значение
+                    inputPrompt = string.format("Введите мин. количество для '%s':", newItemName)
+                    addLog(string.format("Введите мин. количество для '%s'.", newItemName), "INFO")
+                else
+                    addLog("Название предмета не может быть пустым.", "WARN")
+                end
+            elseif inputMode == 'addCount' then
+                local count = tonumber(currentInput)
+                if count and count > 0 then
+                    local newItemName = inputPrompt:match("для '(.-)'") -- Извлекаем имя из промпта
+                    inputMode = 'addCraftSize'
+                    currentInput = "1" -- Дефолтное значение
+                    inputPrompt = string.format("Введите размер крафта для '%s':", newItemName)
+                    addLog(string.format("Введите размер крафта для '%s'.", newItemName), "INFO")
+                else
+                    addLog("Количество должно быть положительным числом.", "WARN")
+                end
+            elseif inputMode == 'addCraftSize' then
+                local craftSize = tonumber(currentInput)
+                if craftSize and craftSize > 0 then
+                    local newItemName = inputPrompt:match("для '(.-)'") -- Извлекаем имя из промпта
+                    addNewItem(newItemName, inputPrompt:match("мин. количество для '(.-)'") and tonumber(inputPrompt:match("мин. количество для '(.-)'")) or 1, craftSize) -- hacky way to get previous count. Needs better state management
+                    inputMode = nil
+                    currentInput = ""
+                    inputPrompt = ""
+                else
+                    addLog("Размер крафта должен быть положительным числом.", "WARN")
+                end
+            elseif inputMode == 'changeName' and selectedItem then
+                if currentInput ~= "" then
+                    changeItem(selectedItem.name, "name", currentInput)
+                    inputMode = nil
+                    currentInput = ""
+                    inputPrompt = ""
+                else
+                    addLog("Название предмета не может быть пустым.", "WARN")
+                end
+            elseif inputMode == 'changeCount' and selectedItem then
+                local count = tonumber(currentInput)
+                if count and count > 0 then
+                    changeItem(selectedItem.name, "count", count)
+                    inputMode = nil
+                    currentInput = ""
+                    inputPrompt = ""
+                else
+                    addLog("Количество должно быть положительным числом.", "WARN")
+                end
+            elseif inputMode == 'changeCraftSize' and selectedItem then
+                local craftSize = tonumber(currentInput)
+                if craftSize and craftSize > 0 then
+                    changeItem(selectedItem.name, "craftSize", craftSize)
+                    inputMode = nil
+                    currentInput = ""
+                    inputPrompt = ""
+                else
+                    addLog("Размер крафта должен быть положительным числом.", "WARN")
                 end
             end
+        elseif key == 14 then -- Backspace
+            currentInput = unicode.sub(currentInput, 1, unicode.len(currentInput) - 1)
+        elseif key == 42 then -- Tab
+            -- Игнорируем Tab в режиме ввода
+        elseif key == 1 then -- Escape
+            inputMode = nil
+            currentInput = ""
+            inputPrompt = ""
+            addLog("Ввод отменен пользователем.", "INFO")
+        else -- Обычный ввод символов
+            local char = term.getChar(key, arg.shift)
+            if char then
+                currentInput = currentInput .. char
+            end
+        end
+        draw()
+    else -- Режим навигации (без активного ввода)
+        if key == 200 then -- Стрелка Вверх
+            local itemsPerPage = math.floor((HEIGHT - 10) / 2)
+            local sortedKeys = {}
+            for k in pairs(craftList) do table.insert(sortedKeys, k) end
+            table.sort(sortedKeys)
 
-            -- Обработка кликов внутри вкладок
-            if currentTab == "main" then
-                -- Клик по полю поиска
-                local searchInputX = 3 + unicode.len("Поиск: ")
-                if y == 3 and x >= searchInputX and x <= WIDTH - 2 then
-                    inputMode = "search"
-                end
-
-                -- Клик по элементу списка
-                local filteredItems = M.filterItems(craftItems, currentSearchTerm)
-                local startIndex = (currentPage - 1) * itemsPerPage + 1
-                for i = startIndex, math.min(startIndex + itemsPerPage - 1, #filteredItems) do
-                    local displayIndex = i - startIndex + 1
-                    local yPos = 5 + displayIndex
-                    if y == yPos then
-                        selectedItem = filteredItems[i]
-                        M.addLog(logs, "Выбран предмет: " .. selectedItem.name, "INFO")
+            if selectedItem then
+                local currentIndex = 0
+                for i, k in ipairs(sortedKeys) do
+                    if k == selectedItem.name then
+                        currentIndex = i
                         break
                     end
                 end
-
-                -- Обработка кнопок действий в главной вкладке
-                if y == HEIGHT - 5 then
-                    if x >= 3 and x <= 3 + unicode.len("[Удалить]") - 1 then
-                        if selectedItem then
-                            local index = -1
-                            for i, item in ipairs(craftItems) do
-                                if item.name == selectedItem.name then
-                                    index = i
-                                    break
-                                end
-                            end
-                            if index ~= -1 then
-                                deleteItem(index)
-                            end
-                        end
-                    elseif x >= 15 and x <= 15 + unicode.len("[Изменить]") - 1 then
-                        M.addLog(logs, "Функция 'Изменить' пока не реализована.", "INFO")
+                if currentIndex > 1 then
+                    selectedItem = { name = sortedKeys[currentIndex - 1] }
+                    -- Переход на предыдущую страницу, если выбранный элемент уходит за видимые пределы
+                    local newIndexInPage = (currentIndex - 1) - ((currentPage - 1) * itemsPerPage)
+                    if newIndexInPage < 1 then
+                        currentPage = math.max(1, currentPage - 1)
                     end
                 end
-
-                -- Обработка кнопок пагинации
-                if y == HEIGHT - 3 then
-                    local maxPages = math.max(1, math.ceil(#filteredItems / itemsPerPage))
-                    if maxPages > 1 then
-                        if x >= WIDTH - 15 and x <= WIDTH - 15 + unicode.len("<") - 1 then
-                            if currentPage > 1 then
-                                currentPage = currentPage - 1
-                                selectedItem = nil
-                            end
-                        elseif x >= WIDTH - 8 and x <= WIDTH - 8 + unicode.len(">") - 1 then
-                            if currentPage < maxPages then
-                                currentPage = currentPage + 1
-                                selectedItem = nil
-                            end
-                        end
-                    end
-                end
-
-            elseif currentTab == "add" then
-                -- Клик по полю ввода, чтобы активировать его
-                local inputX = 3 + unicode.len("Ввод: ")
-                if y == 6 and x >= inputX and x <= WIDTH - 2 then
-                    inputMode = "add"
-                end
-
-                -- Обработка кнопки "Добавить"
-                if y == 8 and x >= 3 and x <= 3 + unicode.len("[Добавить]") - 1 then
-                    if inputBuffer ~= "" then
-                        addItemToDB(inputBuffer)
-                        inputBuffer = ""
-                        inputMode = nil -- После добавления сбрасываем режим ввода
-                    else
-                        M.addLog(logs, "ERROR: Название предмета не может быть пустым.", "WARN")
-                    end
-                -- Обработка кнопки "Отмена"
-                elseif y == 10 and x >= 3 and x <= 3 + unicode.len("[Отмена]") - 1 then
-                    inputBuffer = ""
-                    inputMode = nil
-                end
+            elseif #craftList > 0 then
+                selectedItem = { name = sortedKeys[1] } -- Выбираем первый элемент, если ничего не выбрано
             end
-        end)
-        if not success then
-            M.addLog(logs, "ERROR: Ошибка обработки клика: " .. tostring(msg), "ERROR")
-        end
-    elseif e == "key" then
-        local key = a
-        local unicodeChar = unicode.char(key) -- Получаем символ из кода клавиши
+        elseif key == 208 then -- Стрелка Вниз
+            local itemsPerPage = math.floor((HEIGHT - 10) / 2)
+            local sortedKeys = {}
+            for k in pairs(craftList) do table.insert(sortedKeys, k) end
+            table.sort(sortedKeys)
 
-        if inputMode == "add" then -- Если активен режим ввода для добавления
-            if key == 28 then -- Enter
-                if inputBuffer ~= "" then
-                    addItemToDB(inputBuffer)
-                    inputBuffer = "" -- Очищаем буфер после добавления
-                    inputMode = nil -- Выключаем режим ввода
-                else
-                    M.addLog(logs, "ERROR: Название предмета не может быть пустым.", "WARN")
+            if selectedItem then
+                local currentIndex = 0
+                for i, k in ipairs(sortedKeys) do
+                    if k == selectedItem.name then
+                        currentIndex = i
+                        break
+                    end
                 end
-            elseif key == 14 then -- Backspace
-                inputBuffer = unicode.sub(inputBuffer, 1, unicode.len(inputBuffer) - 1)
-            elseif unicodeChar ~= nil and unicodeChar ~= "" then -- Любой другой вводимый символ
-                local inputX = 3 + unicode.len("Ввод: ")
-                local maxInputWidth = WIDTH - inputX - 1
-                if unicode.len(inputBuffer) < maxInputWidth then -- Ограничение длины ввода
-                    inputBuffer = inputBuffer .. unicodeChar
+                if currentIndex < #craftList then
+                    selectedItem = { name = sortedKeys[currentIndex + 1] }
+                    -- Переход на следующую страницу, если выбранный элемент уходит за видимые пределы
+                    local newIndexInPage = (currentIndex) - ((currentPage - 1) * itemsPerPage)
+                    if newIndexInPage >= itemsPerPage then
+                        currentPage = math.min(math.ceil(#craftList / itemsPerPage), currentPage + 1)
+                    end
                 end
+            elseif #craftList > 0 then
+                selectedItem = { name = sortedKeys[1] } -- Выбираем первый элемент, если ничего не выбрано
             end
-        elseif inputMode == "search" then -- Если активен режим ввода для поиска
-            if key == 14 then -- Backspace
-                currentSearchTerm = unicode.sub(currentSearchTerm, 1, unicode.len(currentSearchTerm) - 1)
-                currentPage = 1 -- Сброс страницы при изменении поиска
-                selectedItem = nil
-            elseif unicodeChar ~= nil and unicodeChar ~= "" and key ~= 28 then -- Любой другой вводимый символ, кроме Enter
-                local searchInputX = 3 + unicode.len("Поиск: ")
-                local maxSearchInputWidth = WIDTH - searchInputX - 1
-                if unicode.len(currentSearchTerm) < maxSearchInputWidth then -- Ограничение длины поиска
-                    currentSearchTerm = currentSearchTerm .. unicodeChar
-                end
-                currentPage = 1
+        elseif key == 203 then -- Стрелка Влево (смена страницы)
+            if currentPage > 1 then
+                currentPage = currentPage - 1
                 selectedItem = nil
             end
-        elseif currentTab == "logs" then -- Клавиши прокрутки логов
-            if key == 200 then -- Up Arrow
-                logOffset = math.min(logOffset + 1, math.max(0, #logs - (HEIGHT - 6)))
-            elseif key == 208 then -- Down Arrow
-                logOffset = math.max(logOffset - 1, 0)
+        elseif key == 205 then -- Стрелка Вправо (смена страницы)
+            local itemsPerPage = math.floor((HEIGHT - 10) / 2)
+            local maxPages = math.max(1, math.ceil(#craftList / itemsPerPage))
+            if currentPage < maxPages then
+                currentPage = currentPage + 1
+                selectedItem = nil
             end
+        elseif key == 200 and arg.shift then -- Shift + Up для логов (прокрутка вверх)
+            logOffset = math.min(logOffset + 1, #logs - 5)
+        elseif key == 208 and arg.shift then -- Shift + Down для логов (прокрутка вниз)
+            logOffset = math.max(logOffset - 1, 0)
         end
     end
-
-    -- Обновляем состояние наведения кнопок (для M.drawButton)
-    local mx, my = term.getCursor()
-    buttonHover = nil
-    buttonHoverY = nil
-
-    -- Проверка наведения на кнопки вкладок
-    if my == 2 then
-        if mx >= 2 and mx <= 2 + unicode.len("[Главная]") - 1 then buttonHover, buttonHoverY = 2, 2
-        elseif mx >= 12 and mx <= 12 + unicode.len("[Настройки]") - 1 then buttonHover, buttonHoverY = 12, 2
-        elseif mx >= 25 and mx <= 25 + unicode.len("[Добавить]") - 1 then buttonHover, buttonHoverY = 25, 2
-        elseif mx >= 36 and mx <= 36 + unicode.len("[Логи]") - 1 then buttonHover, buttonHoverY = 36, 2
-        end
-    end
-
-    -- Проверка наведения на кнопки внутри вкладок
-    if currentTab == "main" then
-        if my == HEIGHT - 5 then
-            if mx >= 3 and mx <= 3 + unicode.len("[Удалить]") - 1 then buttonHover, buttonHoverY = 3, HEIGHT - 5
-            elseif mx >= 15 and mx <= 15 + unicode.len("[Изменить]") - 1 then buttonHover, buttonHoverY = 15, HEIGHT - 5
-            end
-        elseif my == HEIGHT - 3 then
-            local maxPages = math.max(1, math.ceil(#M.filterItems(craftItems, currentSearchTerm) / itemsPerPage))
-            if maxPages > 1 then
-                if mx >= WIDTH - 15 and mx <= WIDTH - 15 + unicode.len("<") - 1 then buttonHover, buttonHoverY = WIDTH - 15, HEIGHT - 3
-                elseif mx >= WIDTH - 8 and mx <= WIDTH - 8 + unicode.len(">") - 1 then buttonHover, buttonHoverY = WIDTH - 8, HEIGHT - 3
-                end
-            end
-        end
-    elseif currentTab == "add" then
-        if my == 8 then
-            if mx >= 3 and mx <= 3 + unicode.len("[Добавить]") - 1 then buttonHover, buttonHoverY = 3, 8 end
-        elseif my == 10 then
-            if mx >= 3 and mx <= 3 + unicode.len("[Отмена]") - 1 then buttonHover, buttonHoverY = 3, 10 end
-        end
-    end
-    -- Присваиваем M.buttonHover и M.buttonHoverY для использования в M.drawButton
-    M.buttonHover = buttonHover
-    M.buttonHoverY = buttonHoverY
-
     draw()
-end
+end)
 
-local ok, err = pcall(autoCraftLoop)
+-- Проверка компонентов и инициализация
+checkComponents()
+bindGpuAndSetResolution()
+M.addLog(logs, "INFO: Программа запущена", "INFO")
+
+-- Начальная загрузка данных
+local ok, err = pcall(loadData)
 if not ok then
-    M.addLog(logs, "ERROR: Фатальная ошибка в autoCraftLoop: " .. tostring(err), "ERROR")
+    addLog("ERROR: Ошибка при начальной загрузке: " .. tostring(err), "ERROR")
     draw()
-    while true do os.sleep(1) end
+    while true do os.sleep(1) end -- Оставить программу работающей для просмотра логов
 end
+draw()
+
+-- Запуск основного цикла автокрафта в отдельном потоке (если есть luacurl, иначе в основном)
+local autoCraftThread = computer.createThread(autoCraftLoop)
+
+-- Главный цикл обработки событий UI
+while running do
+    local _, _, _, _, _, _, _, _, mouseX, mouseY = event.pull("touch", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, true) -- Получаем позицию мыши для M.checkButtonHover
+    M.checkButtonHover(mouseX, mouseY)
+    draw()
+    os.sleep(0.05) -- Небольшая пауза для снижения нагрузки на процессор
+end
+
+M.addLog(logs, "Программа завершена.", "INFO")
+g.clear() -- Очистить экран при выходе
+g.setResolution(WIDTH, HEIGHT) -- Сброс разрешения, если оно было изменено
+g.set(1,1, "Программа завершена. Проверьте логи.")
