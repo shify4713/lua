@@ -1,7 +1,10 @@
 -- precraft.lua
--- Улучшенная версия PreCraft с полностью переработанным UI и логированием крафтов,
--- изменения и добавлений. Интерфейс стал более «живым»: добавлены границы окон,
--- обновленная цветовая схема и подробное логирование событий.
+-- Улучшенная версия PreCraft с переработанным UI,
+-- расширенной таблицей (включает колонку "Категория"),
+-- сортировкой по имени, категории и количеству, а также
+-- исправлением ошибки обращения к переменной "buttons".
+-- Логи отображают события крафта, изменений и добавлений с таймстампами
+-- и цветовой индикацией состояний запасов.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -32,7 +35,7 @@ local ADM = { ["LiwMorgan"] = true }  -- Доступ только для LiwMor
 local WIDTH, HEIGHT = 160, 50
 gpu.setResolution(WIDTH, HEIGHT)
 
--- Цветовая палитра (улучшенная)
+-- Цветовая палитра
 local BG_MAIN            = 0x1A1A1A  -- Тёмно-серый фон
 local CTEXT              = 0xDADADA  -- Светло-серый текст
 local COLOR_BUTTON       = 0x4A90E2  -- Синий для кнопок
@@ -46,7 +49,7 @@ local COLOR_HIGH   = 0x00FF66  -- Зелёный – достаточно
 
 -- Размеры компонентов интерфейса
 local TABLE_X = 2
-local TABLE_WIDTH = 120          -- Ширина таблицы
+local TABLE_WIDTH = 120          -- Ширина таблицы (остается до логов справа)
 local LOGS_X = TABLE_X + TABLE_WIDTH + 2  -- Логи располагаются справа
 local HEADER_Y = 2               -- Верхний отступ для заголовка
 local TABLE_HEADER_Y = HEADER_Y + 3
@@ -61,7 +64,6 @@ local inputFind = ""      -- Фильтр по имени
 local scroll = 1          -- Позиция прокрутки в таблице
 local posSelect = nil     -- Индекс выбранного элемента
 local changeItem = false  -- Флаг режима редактирования
-
 local craftingActive = false  -- Переключатель автокрафта
 local running = true          -- Флаг работы цикла
 local maxScroll = 1           -- Максимальное смещение прокрутки
@@ -72,8 +74,11 @@ local sortCriteriaDisplay = { name = "Имя", category = "Категория", 
 
 local redrawNeeded = true     -- Флаг необходимости перерисовки экрана
 
--- Новая система логирования – логи по событиям крафта, изменений и добавлений
-local craftLogs = {}          -- Хранит до 20 последних записей
+-- Система логирования (записывает до 20 последних записей)
+local craftLogs = {}  -- Логи для крафтов, изменений и добавлений
+
+-- Переменная buttons объявлена заранее, чтобы не возникала ошибка обращения (#buttons)
+local buttons
 
 ------------------ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ------------------
 
@@ -99,9 +104,7 @@ local function updateContent()
     end)
   elseif sortCriteria == "count" then
     table.sort(content, function(a, b) 
-      local ca = tonumber(a.count) or 0
-      local cb = tonumber(b.count) or 0
-      return ca < cb
+      return (tonumber(a.count) or 0) < (tonumber(b.count) or 0)
     end)
   end
 
@@ -128,7 +131,6 @@ end
 
 -------------------- СИСТЕМА ЛОГИРОВАНИЯ --------------------
 
--- Отрисовка области логов с цветными сообщениями
 local function drawLogsArea()
   local prevBg = gpu.getBackground()
   gpu.setBackground(BG_MAIN)
@@ -142,8 +144,7 @@ local function drawLogsArea()
   gpu.setBackground(prevBg)
 end
 
--- Функция для добавления лог-события с таймстампом, типом и цветовой индикацией
--- status может принимать значения: "sufficient", "intermediate", "insufficient"
+-- Добавляет лог-событие с таймстампом, типом и индикацией (цвет зависит от status)
 local function addLogEvent(eventType, message, status)
   local statusColors = {
     sufficient   = COLOR_HIGH,
@@ -163,22 +164,19 @@ end
 
 --------------------- ФУНКЦИИ ОТРИСОВКИ ---------------------
 
--- Рисуем рамку с использованием символов Unicode
+-- Рисует прямоугольную рамку с использованием символов Unicode
 local function drawBorder(x, y, w, h, fgColor)
   fgColor = fgColor or CTEXT
   gpu.setForeground(fgColor)
-  -- Верхняя рамка
   gpu.set(x, y, "┌" .. string.rep("─", w - 2) .. "┐")
-  -- Нижняя рамка
   gpu.set(x, y + h - 1, "└" .. string.rep("─", w - 2) .. "┘")
-  -- Боковые рамки
   for i = y + 1, y + h - 2 do
     gpu.set(x, i, "│")
     gpu.set(x + w - 1, i, "│")
   end
 end
 
--- Статическая отрисовка области интерфейса (заголовок, рамки для таблицы и логов)
+-- Рисует статическую часть интерфейса: заголовок, рамки для таблицы и логов
 local function drawStatic()
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, 1, WIDTH, HEIGHT, " ")
@@ -188,16 +186,15 @@ local function drawStatic()
   local header = "PreCraft - Автокрафт предметов"
   gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), HEADER_Y, header)
   
-  -- Вывод текущего критерия сортировки
   gpu.set(2, HEADER_Y + 1, "Сортировка: " .. sortCriteriaDisplay[sortCriteria])
   
-  -- Рамка для таблицы
+  -- Рамка таблицы
   local tableHeaderWidth = TABLE_WIDTH
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, tableHeaderWidth + 2, tableHeaderHeight)
   
-  -- Заголовок таблицы (с форматированием)
-  local headerStr = string.format("|%-4s|%-50s|%-8s|%-8s|%-10s|", "Idx", "Name", "Req", "ME", "Craft")
+  -- Заголовок таблицы (с новой колонкой "Категория")
+  local headerStr = string.format("|%-4s|%-40s|%-20s|%-8s|%-8s|%-10s|", "Idx", "Name", "Категория", "Req", "ME", "Craft")
   headerStr = headerStr .. string.rep(" ", TABLE_WIDTH - unicode.len(headerStr))
   gpu.setBackground(BG_MAIN)
   gpu.setForeground(CTEXT)
@@ -211,12 +208,13 @@ local function drawStatic()
 end
 
 local function drawTableItems()
-  -- Очистка области таблицы
+  -- Очищаем область таблицы
   for row = TABLE_BODY_START_Y, TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
   end
 
+  -- Для каждого отображаемого элемента
   for i = scroll, math.min(#content, scroll + VISIBLE_TABLE_ROWS - 1) do
     local row = TABLE_BODY_START_Y + (i - scroll)
     local item = content[i]
@@ -242,7 +240,7 @@ local function drawTableItems()
       gpu.setBackground(BG_MAIN)
     end
 
-    local line = string.format("|%-4d|%-50s|%-8d|%-8d|%-10d|", i, item.name, reqCount, currentQty, item.craftSize or 0)
+    local line = string.format("|%-4d|%-40s|%-20s|%-8d|%-8d|%-10d|", i, item.name, item.category or "", reqCount, currentQty, item.craftSize or 0)
     line = line .. string.rep(" ", TABLE_WIDTH - unicode.len(line))
     gpu.setForeground(colorText)
     gpu.set(TABLE_X, row, line)
@@ -265,7 +263,6 @@ local function drawButtons()
 end
 
 local function drawEditMode()
-  -- Модальное окно редактирования
   local dialogX, dialogY, dialogW, dialogH = 20, 15, 100, 12
   drawBorder(dialogX - 1, dialogY - 1, dialogW + 2, dialogH + 2, COLOR_BUTTON)
   gpu.setBackground(COLOR_HIGHLIGHT)
@@ -358,22 +355,18 @@ local function addItem()
     gpu.set(2, 43, "Введите название:")
     term.setCursor(20, 43)
     local name = tostring(io.read())
-
     gpu.fill(1, 43, WIDTH, 1, " ")
     gpu.set(2, 43, "Введите категорию:")
     term.setCursor(20, 43)
     local category = tostring(io.read())
-
     gpu.fill(1, 43, WIDTH, 1, " ")
     gpu.set(2, 43, "Введите требуемое число:")
     term.setCursor(25, 43)
     local count = tonumber(io.read())
-
     gpu.fill(1, 43, WIDTH, 1, " ")
     gpu.set(2, 43, "Введите объём крафта:")
     term.setCursor(25, 43)
     local craftSize = tonumber(io.read())
-
     gpu.fill(1, 43, WIDTH, 1, " ")
     table.insert(dataItems, {
       name = name,
@@ -526,8 +519,8 @@ local function onKeyDown(_, _, key, code, nick)
 end
 
 --------------------- ИНИЦИАЛИЗАЦИЯ КНОПОК ---------------------
-
-local buttons = {
+-- Определяем кнопки, используя предварительно объявленную переменную buttons
+buttons = {
   {
     ButtonIn = {"start"}, visible = true,
     x = 2, y = HEIGHT - 3, w = 12, h = 3,
