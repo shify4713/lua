@@ -1,7 +1,8 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Версия с разделением статичных и динамичных областей для минимизации мерцания.
--- Статичная часть (заголовок, рамки и метка сортировки) рисуется один раз,
--- динамика (таблица, кнопки, логи) обновляется только в изменяемых областях.
+-- Версия с разделением статичных и динамичных областей.
+-- Статичная часть (заголовок, рамки, метка сортировки) обновляется только при изменении.
+-- Динамичная область (таблица, кнопки, логи) перерисовывается быстро и без мерцаний.
+-- Раз в 20 сек производится обновление количеств предметов и запускается автокрафт при необходимости.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -78,7 +79,7 @@ local bgChanges = false
 -- Время последнего обновления статичной области
 local lastMainUpdate = os.time()
 
--- Кэширование количества для стабильного отображения (обновляем раз в 20 сек)
+-- Кэширование количеств для стабильного отображения (обновляем раз в 20 сек)
 local cachedCounts = {}
 local lastCountUpdate = 0
 local COUNT_UPDATE_INTERVAL = 20  -- в секундах
@@ -128,9 +129,9 @@ local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
   gpu.set(textPosX, textPosY, text)
 end
 
----------------------- СТАТИЧНЫЙ UI (заголовок, рамки, метка сортировки) ----------------------
+---------------------- СТАТИЧНЫЙ UI (Заголовок, рамки, метка сортировки) ----------------------
 local function drawStaticUI()
-  -- Рисуем заголовок и метку сортировки (область строк 1-3)
+  -- Заголовок и метка сортировки (строки 1-3)
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.fill(1, 1, WIDTH, 3, " ")
   local header = "PreCraft - Автокрафт предметов"
@@ -139,11 +140,11 @@ local function drawStaticUI()
   gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), 1, header)
   gpu.set(2, 2, sortText)
   
-  -- Рисуем рамку для таблицы
+  -- Рисуем рамку таблицы
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableHeaderHeight, COLOR_BUTTON)
   
-  -- Рисуем заголовок таблицы
+  -- Заголовок таблицы
   local headerStr = "|" .. padOrTrim("Idx", 5) .. "|" ..
                           padOrTrim("Name", 94) .. "|" ..
                           padOrTrim("Категория", 15) .. "|" ..
@@ -156,17 +157,16 @@ local function drawStaticUI()
   gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("─", TABLE_WIDTH))
 end
 
--- Обновление метки сортировки (при изменении критерия)
+-- Функция обновления метки сортировки (вызывается при изменении критерия)
 local function updateSortLabel()
   local sortText = "Сортировка: " .. sortCriteriaDisplay[sortCriteria]
   gpu.setBackground(COLOR_HEADER_BG)
-  -- предполагаем максимальную длину 25 символов для метки
-  gpu.fill(2, 2, 25, 1, " ")
+  gpu.fill(2, 2, 25, 1, " ")  -- очищаем область для метки
   gpu.setForeground(CTEXT)
   gpu.set(2, 2, sortText)
 end
 
----------------------- ЛОГИ (оверлей) ----------------------
+---------------------- ОВЕРЛЕЙ ЛОГОВ ----------------------
 local function drawFloatingLogs()
   local overlayWidth = 70
   local overlayHeight = 20
@@ -190,9 +190,8 @@ local function drawFloatingLogs()
   end
 end
 
----------------------- ТАБЛИЦА: Рисование строк ----------------------
+---------------------- ТАБЛИЦА (индивидуальные строки) ----------------------
 local function drawTableItems()
-  -- Очищаем только область таблицы (тело таблицы)
   for row = TABLE_BODY_START_Y, TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
@@ -261,10 +260,8 @@ drawButtons = _drawButtons
 
 ---------------------- ДИНАМИЧНАЯ ОБЛАСТЬ (таблица и кнопки) ----------------------
 local function drawDynamicUI()
-  -- Обновляем только область таблицы (без затрагивания заголовка)
   drawTableItems()
   drawScrollBar()
-  -- Обновляем нижнюю панель с кнопками (область последних 3 строк)
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, HEIGHT - 3, WIDTH, 3, " ")
   drawButtons()
@@ -280,7 +277,7 @@ local function fullRedraw()
   end
 end
 
----------------------- ОБНОВЛЕНИЕ ДИНАМИЧЕСКОЙ ОБЛАСТИ (без очистки всех статичных элементов) ----------------------
+---------------------- ОБНОВЛЕНИЕ ДИНАМИКИ (без очистки статичных элементов) ----------------------
 local function immediateRedraw(force)
   if inputActive then return end
   if force then
@@ -336,7 +333,6 @@ local function inputOverlay(promptMessage)
   local boxW, boxH = 60, 3
   local boxX = math.floor((WIDTH - boxW) / 2)
   local boxY = math.floor((HEIGHT - boxH) / 2)
-  -- Рисуем рамку ввода поверх существующего интерфейса
   drawBorder(boxX - 1, boxY - 1, boxW + 2, boxH + 2, COLOR_BUTTON)
   gpu.setBackground(BG_MAIN)
   gpu.fill(boxX, boxY, boxW, boxH, " ")
@@ -347,7 +343,7 @@ local function inputOverlay(promptMessage)
   local input = term.read()
   term.setCursorBlink(false)
   inputActive = false
-  fullRedraw()  -- восстанавливаем UI после ввода
+  fullRedraw()
   return input:sub(1, -2)
 end
 
@@ -551,7 +547,7 @@ local function initButtons()
         end
         addLog("[Edit] Сортировка по " .. sortCriteriaDisplay[sortCriteria], COLOR_MEDIUM)
         updateContent()
-        updateSortLabel()  -- обновляем только метку сортировки
+        updateSortLabel()
         immediateRedraw(true)
       end
     },
@@ -563,16 +559,15 @@ local function initButtons()
         logsVisible = not logsVisible
         if logsVisible then
           drawFloatingLogs()
-          logTimerId = event.timer(1.0, function() drawFloatingLogs() end, math.huge)
+          if logTimerId then event.cancel(logTimerId) end
+          logTimerId = event.timer(0.5, function() drawFloatingLogs() end, math.huge)
         else
-          if logTimerId then
-            event.cancel(logTimerId)
-            logTimerId = nil
-          end
+          if logTimerId then event.cancel(logTimerId); logTimerId = nil end
           immediateRedraw(true)
         end
+        immediateRedraw(true)
       end
-    }
+    },
   }
 end
 
@@ -612,5 +607,5 @@ local craftTimer = event.timer(1.0, autoCraftCheck, math.huge)
 ---------------------- ГЛАВНЫЙ ЦИКЛ ----------------------
 LoadSystem()
 while running do
-  event.pull(0.5)
+  event.pull(0.2)
 end
