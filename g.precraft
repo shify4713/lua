@@ -28,6 +28,7 @@ if not fs.exists(dataFile) then
 end
 
 ---------------------- ГЛОБАЛЫЕ ПЕРЕМЕННЫЕ ----------------------
+local ADM = { ["LiwMorgan"] = true } -- Только LiwMorgan имеет доступ к касаниям!
 local dataItems = {}         -- Список предметов
 local dataQueue = {}         -- Очередь для автокрафта (те же данные)
 local scroll = 1             -- Текущая позиция таблицы
@@ -186,7 +187,6 @@ local function updateSortLabel()
 end
 
 ---------------------- ОБНОВЛЕНИЕ ОБЛАСТЕЙ ----------------------
--- Обновление области таблицы (ячейки и скроллбар)
 local function drawTableSection()
   for row = TABLE_BODY_START_Y, BUTTONS_Y - 1 do
     gpu.setBackground(BG_MAIN)
@@ -245,14 +245,12 @@ local function drawTableSection()
   end
 end
 
--- Обновление области кнопок (нижняя панель)
 local function drawButtonSection()
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, BUTTONS_Y, WIDTH, BUTTONS_HEIGHT, " ")
   drawButtons()
 end
 
--- Полная перерисовка всего экрана (статический UI, таблица и кнопки)
 local function fullRedraw()
   if logsVisible then
     gpu.setBackground(BG_MAIN)
@@ -265,7 +263,6 @@ local function fullRedraw()
   end
 end
 
--- Перерисовка только динамических зон (обычно вызывается при изменениях)
 local function immediateRedraw(force)
   if inputActive then return end
   if force then
@@ -466,7 +463,6 @@ local function onTouch(_, _, x, y, _, nick)
       if x >= button.x and x <= (button.x + button.w - 1)
          and y >= button.y and y <= (button.y + button.h - 1) then
           button.action()
-          -- Обновляем кнопку сразу
           drawButtonSection()
           return true
       end
