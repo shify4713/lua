@@ -1,6 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
 -- Улучшенная версия: разделение статичных и динамичных частей интерфейса,
--- обновление таблицы и кнопок происходит реже (интервал обновления 0.5 сек),
+-- обновление таблицы и кнопок происходит реже (фон обновляется раз в 20 сек),
 -- корректное крафтирование партиями и детальное логирование без повторов.
 
 local component = require("component")
@@ -75,7 +75,7 @@ local buttons = {}           -- Таблица кнопок
 
 -- Флаг для отслеживания фоновых изменений, вызванных автокрафтом
 local bgChanges = false
--- Время последнего полного обновления (в секундах)
+-- Время последнего обновления интерфейса (в секундах)
 local lastMainUpdate = os.time()
 
 ---------------------- ЛОГИРОВАНИЕ ----------------------
@@ -251,35 +251,23 @@ drawDynamicUI = _drawDynamicUI
 
 ---------------------- ПОЛНАЯ ПЕРЕРИСОВКА ----------------------
 local function fullRedraw()
-  if not logsVisible then
+  if logsVisible then
+    -- При показе логов обновляем только оверлей логов, не трогая фон и основные элементы
+    drawFloatingLogs()
+  else
     gpu.setBackground(BG_MAIN)
     gpu.fill(1, 1, WIDTH, HEIGHT, " ")
-  end
-  drawStaticUI()
-  drawDynamicUI()
-  if logsVisible then
-    drawFloatingLogs()
+    drawStaticUI()
+    drawDynamicUI()
   end
 end
 
----------------------- ДЕБАУНС ПЕРЕРИСОВКИ ----------------------
-local redrawScheduled = false
+---------------------- ФУНКЦИЯ ПЕРЕРИСОВКИ (только принудительно) ----------------------
 local function immediateRedraw(force)
   if force then
     fullRedraw()
     lastMainUpdate = os.time()
     bgChanges = false
-    redrawScheduled = false
-  else
-    if not redrawScheduled then
-      redrawScheduled = true
-      event.timer(0.5, function()  -- увеличили интервал до 0.5 сек.
-          drawDynamicUI()
-          lastMainUpdate = os.time()
-          bgChanges = false
-          redrawScheduled = false
-      end)
-    end
   end
 end
 
@@ -454,13 +442,14 @@ local function onTouch(_, _, x, y, _, nick)
       if x >= button.x and x <= (button.x + button.w - 1)
          and y >= button.y and y <= (button.y + button.h - 1) then
           button.action()
+          immediateRedraw(true)
           return true
       end
     end
     if x >= TABLE_X and x <= (TABLE_X + TABLE_WIDTH - 1)
        and y >= TABLE_BODY_START_Y and y < (TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS) then
       posSelect = scroll + (y - TABLE_BODY_START_Y)
-      immediateRedraw()
+      immediateRedraw(true)
     end
   end
 end
@@ -472,7 +461,7 @@ local function onScroll(_, _, _, _, dir, nick)
     elseif dir == -1 and scroll < maxScroll then
       scroll = scroll + 1
     end
-    immediateRedraw()
+    immediateRedraw(true)
   end
 end
 
@@ -565,8 +554,8 @@ end
 
 ---------------------- ТАЙМЕР ДЛЯ ФОНОВОГО ОБНОВЛЕНИЯ (каждые 1 сек.) ----------------------
 local function checkBackgroundUpdate()
-  if bgChanges and (os.time() - lastMainUpdate >= 10) then
-    immediateRedraw()
+  if bgChanges and (os.time() - lastMainUpdate >= 20) then
+    immediateRedraw(true)
   end
 end
 
