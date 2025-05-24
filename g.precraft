@@ -29,7 +29,8 @@ end
 --------------------------------------------------------------------
 -- ГЛОБАЛЫЕ ПЕРЕМЕННЫЕ
 --------------------------------------------------------------------
-local ADM = { ["LiwMorgan"] = true } -- Только LiwMorgan имеет доступ!
+-- Добавляем пользователя "Максим" в список ADM, чтобы события обрабатывались и для него
+local ADM = { ["LiwMorgan"] = true, ["Максим"] = true } 
 local dataItems = {}         -- Список предметов
 local dataQueue = {}         -- Очередь автокрафта (те же данные)
 local scroll = 1             -- Текущая позиция таблицы
@@ -209,6 +210,16 @@ local function drawTableSection()
   for row = TABLE_BODY_START_Y, BUTTONS_Y - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
+  end
+  
+  -- Если список пустой, выводим сообщение
+  if #content == 0 then
+    local msg = "Нет предметов. Нажмите Add для добавления."
+    gpu.setBackground(BG_MAIN)
+    gpu.setForeground(CTEXT)
+    gpu.set(TABLE_X + math.floor((TABLE_WIDTH - unicode.len(msg))/2),
+            TABLE_BODY_START_Y + math.floor(VISIBLE_TABLE_ROWS/2), msg)
+    return
   end
   
   for i = scroll, math.min(#content, scroll + VISIBLE_TABLE_ROWS - 1) do
@@ -628,6 +639,7 @@ local function LoadSystem()
   redrawUI()
   updateCachedCounts()
   lastCountUpdate = os.time()
+  addLog("[System] Система запущена", COLOR_MEDIUM)
   return true
 end
 
