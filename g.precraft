@@ -1,5 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Улучшенный интерфейс с улучшенной верхней областью и упрощёнными логами.
+-- Улучшенный интерфейс для разрешения 120×50. Таблица занимает всю ширину экрана,
+-- а кнопки перераспределены по центру. Обновление экрана производится разом, что минимизирует мерцание.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -48,22 +49,22 @@ local inputActive = false    -- Флаг блокировки обновлени
 local cachedCounts = {}      -- Кэш количественных значений
 
 --------------------------------------------------------------------
--- РАЗМЕРЫ UI
+-- РАЗМЕРЫ UI (В режиме 120×50)
 --------------------------------------------------------------------
-local WIDTH, HEIGHT = 160, 50
+local WIDTH, HEIGHT = 120, 50
 gpu.setResolution(WIDTH, HEIGHT)
 
--- Новые размеры колонок таблицы
-local COL_WIDTH_IDX    = 6
-local COL_WIDTH_NAME   = 40
-local COL_WIDTH_CAT    = 20
-local COL_WIDTH_REQ    = 10
-local COL_WIDTH_ME     = 10
-local COL_WIDTH_CRAFT  = 10
+-- Разрешение уменьшено, поэтому таблица занимает всю ширину:
+local TABLE_X = 1
+local TABLE_WIDTH = WIDTH
 
--- Вычисление общей ширины таблицы и позиционирование по центру
-local TABLE_WIDTH = COL_WIDTH_IDX + COL_WIDTH_NAME + COL_WIDTH_CAT + COL_WIDTH_REQ + COL_WIDTH_ME + COL_WIDTH_CRAFT + 7
-local TABLE_X = math.floor((WIDTH - TABLE_WIDTH) / 2)
+-- Пересчитанные размеры колонок (с учётом 7 разделителей):
+local COL_WIDTH_IDX    = 4
+local COL_WIDTH_NAME   = 60
+local COL_WIDTH_CAT    = 14
+local COL_WIDTH_REQ    = 11
+local COL_WIDTH_ME     = 12
+local COL_WIDTH_CRAFT  = 12
 
 -- Общий заголовок занимает строки 1-3
 local TABLE_HEADER_Y = 4           -- Шапка таблицы (названия столбцов) начинается с 4-й строки
@@ -99,16 +100,6 @@ local function padOrTrim(text, width)
     return unicode.sub(text, 1, width)
   else
     return text .. string.rep(" ", width - len)
-  end
-end
-
-local function padOrTrimRight(text, width)
-  text = tostring(text)
-  local len = unicode.len(text)
-  if len > width then
-    return unicode.sub(text, 1, width)
-  else
-    return string.rep(" ", width - len) .. text
   end
 end
 
@@ -184,7 +175,6 @@ end
 -- РИСОВКА ТЕЛА ТАБЛИЦЫ (начиная с 6-й строки)
 --------------------------------------------------------------------
 local function redrawTable()
-  -- Очищаем область таблицы (строки 6 до BUTTONS_Y-1)
   for row = TABLE_BODY_START_Y, BUTTONS_Y - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
@@ -215,7 +205,6 @@ local function redrawTable()
     else
       textColor = COLOR_MEDIUM
     end
-    -- Чередуем оттенки для строк (градиент)
     local rowBg = ((i - scroll) % 2 == 0) and BG_ROW_1 or BG_ROW_2
     if posSelect and (i == posSelect) then
       rowBg = COLOR_HIGHLIGHT
@@ -230,32 +219,6 @@ local function redrawTable()
                         padOrTrim(item.craftSize or 0, COL_WIDTH_CRAFT) .."|"
     gpu.setForeground(textColor)
     gpu.set(TABLE_X, rowPos, rowStr)
-  end
-  
-  -- Отрисовка скроллбара
-  local x = TABLE_X + TABLE_WIDTH
-  local y = TABLE_BODY_START_Y
-  local height = VISIBLE_TABLE_ROWS
-  local total = #content
-  if total > VISIBLE_TABLE_ROWS then
-    gpu.setBackground(COLOR_BUTTON)
-    for i = y, y + height - 1 do
-      gpu.set(x, i, "│")
-    end
-    local barHeight = math.max(1, math.floor(height * height / total))
-    local pos = math.floor((scroll - 1) * (height - barHeight) / (total - VISIBLE_TABLE_ROWS)) + y
-    gpu.setBackground(COLOR_HIGHLIGHT)
-    for i = pos, pos + barHeight - 1 do
-      if i >= y and i < y + height then
-        gpu.set(x, i, "█")
-      end
-    end
-  else
-    -- Очищаем область скроллбара, если она не нужна
-    gpu.setBackground(BG_MAIN)
-    for i = y, y + height - 1 do
-      gpu.set(x, i, " ")
-    end
   end
 end
 
@@ -279,7 +242,7 @@ local function redrawButtons()
 end
 
 --------------------------------------------------------------------
--- РИСОВКА ЛОГОВОГО ОКНА (не мерцающее, фиксированный цвет)
+-- РИСОВКА ЛОГОВОГО ОКНА (фиксированный фон)
 --------------------------------------------------------------------
 local function redrawLogs()
   local overlayWidth = 70
@@ -452,7 +415,7 @@ local function editItem()
 end
 
 --------------------------------------------------------------------
--- ЛОГИРОВАНИЕ (упрощённое, фиксированный цвет)
+-- ЛОГИРОВАНИЕ (фиксированный цвет)
 --------------------------------------------------------------------
 local function addLog(msg)
   table.insert(craftLogs, { text = msg, color = CTEXT })
@@ -546,13 +509,15 @@ local function onScroll(_, _, _, _, dir, nick)
 end
 
 --------------------------------------------------------------------
--- ИНИЦИАЛИЗАЦИЯ КНОПОК
+-- ИНИЦИАЛИЗАЦИЯ КНОПОК (новые позиции для 120×50)
 --------------------------------------------------------------------
 local function initButtons()
+  local gap = 1
+  -- Расчет позиций: общая группа кнопок занимает 73 символа. Отступ слева ~23.
   buttons = {
     {
       id = "craft", visible = true,
-      x = 16, y = BUTTONS_Y, w = 16, h = BUTTONS_HEIGHT,
+      x = 24, y = BUTTONS_Y, w = 14, h = BUTTONS_HEIGHT,
       text = "Craft: OFF",
       action = function()
         craftingActive = not craftingActive
@@ -566,25 +531,25 @@ local function initButtons()
     },
     {
       id = "add", visible = true,
-      x = 34, y = BUTTONS_Y, w = 10, h = BUTTONS_HEIGHT,
+      x = 39, y = BUTTONS_Y, w = 10, h = BUTTONS_HEIGHT,
       text = "Add",
       action = addItem
     },
     {
       id = "edit", visible = true,
-      x = 46, y = BUTTONS_Y, w = 10, h = BUTTONS_HEIGHT,
+      x = 50, y = BUTTONS_Y, w = 10, h = BUTTONS_HEIGHT,
       text = "Edit",
       action = editItem
     },
     {
       id = "remove", visible = true,
-      x = 58, y = BUTTONS_Y, w = 12, h = BUTTONS_HEIGHT,
+      x = 61, y = BUTTONS_Y, w = 12, h = BUTTONS_HEIGHT,
       text = "Remove",
       action = removeItem
     },
     {
       id = "sort", visible = true,
-      x = 72, y = BUTTONS_Y, w = 10, h = BUTTONS_HEIGHT,
+      x = 74, y = BUTTONS_Y, w = 10, h = BUTTONS_HEIGHT,
       text = "Sort",
       action = function()
         if sortCriteria == "name" then
@@ -601,7 +566,7 @@ local function initButtons()
     },
     {
       id = "logs", visible = true,
-      x = 84, y = BUTTONS_Y, w = 12, h = BUTTONS_HEIGHT,
+      x = 85, y = BUTTONS_Y, w = 12, h = BUTTONS_HEIGHT,
       text = "Logs: OFF",
       action = function()
         logsVisible = not logsVisible
