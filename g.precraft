@@ -1,5 +1,5 @@
 -- precraft.lua
--- Основная программа PreCraft с улучшенным UI и отлаженным функционалом кнопок
+-- Основная программа PreCraft с улучшенным UI, оптимизированными размерами таблицы и отлаженным функционалом кнопок
 
 local component = require("component")
 local fs = require("filesystem")
@@ -26,7 +26,7 @@ end
 
 -------------------- НАСТРОЙКИ --------------------
 local debugMode = true
-local ADM = { ["LiwMorgan"] = true } -- Разрешён только этот пользователь
+local ADM = { ["LiwMorgan"] = true } -- Доступ только для LiwMorgan
 local WIDTH, HEIGHT = 160, 50
 gpu.setResolution(WIDTH, HEIGHT)
 
@@ -35,38 +35,38 @@ local CBUTTON = 0x00ffff
 local CDRAW   = 0x004575
 local CTEXT   = 0xD38FFE
 
--- Цветовая индикация для строк таблицы (условия по количеству)
+-- Цветовая индикация для строк таблицы
 local COLOR_LOW    = 0xff0000  -- Красный – недостаточно
 local COLOR_MEDIUM = 0xffcc00  -- Желтый – промежуточное
 local COLOR_HIGH   = 0x00ff00  -- Зеленый – достаточно
 
 ------------------ РАЗМЕРЫ ЭЛЕМЕНТОВ -----------------
+local TABLE_X = 2
+local TABLE_WIDTH = 128  -- Новая ширина таблицы (растянута до области логов)
+local LOGS_X = TABLE_X + TABLE_WIDTH + 2  -- Логи начинаются с 132-го столбца
 local HEADER_Y = 2
 local TABLE_HEADER_Y = 5
 local TABLE_BODY_START_Y = 7
 local VISIBLE_TABLE_ROWS = 35
-local TABLE_X = 2
-local TABLE_WIDTH = 100
-local LOGS_X = TABLE_X + TABLE_WIDTH + 2
 
 ---------------------------------------------------------
 -- Глобальные переменные
-local dataItems = {}    -- Все объекты из dataFile
+local dataItems = {}    -- Объекты из dataFile
 local dataQueue = {}    -- Копия для автокрафта
-local guiPath = {"start"}  -- Стек состояний ("start", "change")
-local debugLog1, debugLog2 = {}, {}   -- Логи (отладочные сообщения)
+local guiPath = {"start"}  -- Стек состояний ("start" или "change")
+local debugLog1, debugLog2 = {}, {}   -- Логи
 local inputFind = ""   -- Фильтр по имени
 local scroll = 1       -- Позиция прокрутки
 local posSelect = nil  -- Индекс выбранного элемента
-local changeItem = false   -- Режим ввода в редактировании
+local changeItem = false   -- Флаг ввода в режиме редактирования
 
-local craftingActive = false   -- Флаг автокрафта (теперь через ToggleCraft)
-local running = true           -- Флаг работы основного цикла
+local craftingActive = false   -- Флаг автокрафта (ToggleCraft)
+local running = true           -- Флаг работы цикла
 
 local maxScroll = 1     -- Максимальное смещение прокрутки
 local content = {}      -- Отфильтрованный и отсортированный список
 
-local sortCriteria = "name"   -- "name", "category", "count"
+local sortCriteria = "name"   -- Возможные значения: "name", "category", "count"
 local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
 
 local redrawNeeded = true     -- Флаг необходимости перерисовки экрана
@@ -124,7 +124,6 @@ local function addLog(logType, msg)
     if #debugLog2 > 19 then table.remove(debugLog2, 1) end
     table.insert(debugLog2, msg)
   end
-  -- Обновление логов сразу
   local prevBg = gpu.getBackground()
   gpu.setBackground(0x000000)
   gpu.fill(LOGS_X, HEADER_Y, WIDTH - LOGS_X + 1, HEIGHT - HEADER_Y, " ")
@@ -147,13 +146,14 @@ local function drawStatic()
   local header = "PreCraft"
   gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), HEADER_Y, header)
   gpu.set(2, HEADER_Y + 1, "Сортировка: " .. sortCriteriaDisplay[sortCriteria])
-
-  -- Заголовок таблицы (выравнивание слева)
-  local tableHeader = string.format("|%-3s|%-40s|%-6s|%-6s|%-8s|", "Idx", "Name", "Req", "ME", "Craft")
-  gpu.set(TABLE_X, TABLE_HEADER_Y, tableHeader)
-  gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("-", TABLE_WIDTH - 2))
-
-  -- Область для логов
+  
+  -- Заголовок таблицы: расширенный формат
+  local headerStr = string.format("|%-4s|%-50s|%-8s|%-8s|%-10s|", "Idx", "Name", "Req", "ME", "Craft")
+  headerStr = headerStr .. string.rep(" ", TABLE_WIDTH - unicode.len(headerStr))
+  gpu.set(TABLE_X, TABLE_HEADER_Y, headerStr)
+  gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("-", TABLE_WIDTH))
+  
+  -- Зона логов
   gpu.setBackground(0x000000)
   gpu.fill(LOGS_X, HEADER_Y, WIDTH - LOGS_X + 1, HEIGHT - HEADER_Y, " ")
   gpu.setForeground(CTEXT)
@@ -180,14 +180,14 @@ local function drawTableItems()
     else
       colorText = COLOR_MEDIUM
     end
-
     if posSelect and i == posSelect then
       gpu.setBackground(0x1e1e1e)
     else
       gpu.setBackground(0x000000)
     end
+    local line = string.format("|%-4d|%-50s|%-8d|%-8d|%-10d|", i, item.name, item.count, currentQty, item.craftSize)
+    line = line .. string.rep(" ", TABLE_WIDTH - unicode.len(line))
     gpu.setForeground(colorText)
-    local line = string.format("|%-3d|%-40s|%-6d|%-6d|%-8d|", i, item.name, item.count, currentQty, item.craftSize)
     gpu.set(TABLE_X, row, line)
   end
 end
@@ -196,17 +196,19 @@ local function drawScrollBar()
   oc.drawscroll(TABLE_X + TABLE_WIDTH, TABLE_BODY_START_Y, 1, VISIBLE_TABLE_ROWS, scroll, #content, 0x1e1e1e, 0x004575)
 end
 
+-- Отрисовка кнопок – перебор по массиву (по порядку)
 local function drawButtons()
-  for _, button in pairs(buttons) do
-    for _, state in ipairs(button.ButtonIn) do
-      if state == guiPath[#guiPath] and button.visible then
+  for i = 1, #buttons do
+    local button = buttons[i]
+    for j = 1, #button.ButtonIn do
+      if button.ButtonIn[j] == guiPath[#guiPath] and button.visible then
         oc.drawbutton(button.x, button.y, button.w, button.h, button.ctext, button.cbutton or 0x000000, button.text)
       end
     end
   end
 end
 
--- Рисует модальное окно редактирования (режим "change")
+-- В режиме "change" рисуется модальное окно редактирования
 local function drawEditMode()
   local dialogX, dialogY, dialogW, dialogH = 20, 15, 120, 20
   gpu.setBackground(0x1e1e1e)
@@ -225,9 +227,11 @@ local function drawEditMode()
     gpu.set(dialogX + 2, dialogY + 6, "Крафт: " .. item.craftSize)
   end
 
-  for _, button in pairs(buttons) do
-    for _, state in ipairs(button.ButtonIn) do
-      if state == "change" and button.visible then
+  -- Рисуем кнопки режима редактирования
+  for i = 1, #buttons do
+    local button = buttons[i]
+    for j = 1, #button.ButtonIn do
+      if button.ButtonIn[j] == "change" and button.visible then
         oc.drawbutton(button.x, button.y, button.w, button.h, button.ctext, button.cbutton or 0x000000, button.text)
       end
     end
@@ -244,7 +248,6 @@ local function fullRedraw()
     drawScrollBar()
     drawButtons()
   end
-  -- Обновление логов (если необходимо)
   addLog("ore", "")
   addLog("recipe", "")
 end
@@ -387,18 +390,20 @@ end
 
 local function onTouch(_, _, x, y, _, nick)
   if ADM[nick] then
-    for _, button in pairs(buttons) do
+    for i = 1, #buttons do
+      local button = buttons[i]
       if x >= button.x and x <= (button.x + button.w - 1) and
          y >= button.y and y <= (button.y + button.h - 1) then
-        for _, state in ipairs(button.ButtonIn) do
-          if state == guiPath[#guiPath] then
+        for j = 1, #button.ButtonIn do
+          if button.ButtonIn[j] == guiPath[#guiPath] then
             button.action()
             return true
           end
         end
       end
     end
-    if guiPath[#guiPath] == "start" and x >= TABLE_X and x <= (TABLE_X + TABLE_WIDTH - 1) and 
+    if guiPath[#guiPath] == "start" and
+       x >= TABLE_X and x <= (TABLE_X + TABLE_WIDTH - 1) and 
        y >= TABLE_BODY_START_Y and y < (TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS) then
       posSelect = scroll + (y - TABLE_BODY_START_Y)
       requestRedraw()
@@ -439,22 +444,12 @@ local function onKeyDown(_, _, key, code, nick)
   end
 end
 
----------------- ИНИЦИАЛИЗАЦИЯ КНОПОК -----------------
+----------------- ИНИЦИАЛИЗАЦИЯ КНОПОК -----------------
 
-local function initButtons()
-  for _, button in pairs(buttons) do
-    button.endX = button.x + button.w - 1
-    button.endY = button.y + button.h - 1
-  end
-end
-
----------------------- ОПРЕДЕЛЕНИЕ КНОПОК ----------------------
-
-buttons = {
-  -- Кнопки для главного экрана (режим "start")
-  Exit = {
-    ButtonIn = {"start"},
-    visible = true,
+local buttons = {
+  -- Кнопки основного режима ("start")
+  {
+    ButtonIn = {"start"}, visible = true,
     x = 2, y = 47, w = 12, h = 3,
     cbutton = CDRAW, ctext = 0xFFFFFF, text = "Exit",
     action = function()
@@ -465,45 +460,40 @@ buttons = {
       os.exit()
     end
   },
-  ToggleCraft = {
-    ButtonIn = {"start"},
-    visible = true,
+  {
+    ButtonIn = {"start"}, visible = true,
     x = 16, y = 47, w = 24, h = 3,
     cbutton = CDRAW, ctext = 0xFFFFFF, text = "Craft: OFF",
     action = function()
       craftingActive = not craftingActive
       if craftingActive then
-         buttons.ToggleCraft.text = "Craft: ON"
+         buttons[2].text = "Craft: ON"
       else
-         buttons.ToggleCraft.text = "Craft: OFF"
+         buttons[2].text = "Craft: OFF"
       end
       requestRedraw()
     end
   },
-  Add = {
-    ButtonIn = {"start"},
-    visible = true,
+  {
+    ButtonIn = {"start"}, visible = true,
     x = 42, y = 47, w = 12, h = 3,
     cbutton = CDRAW, ctext = 0xFFFFFF, text = "Add",
-    action = function() addItem() end
+    action = addItem
   },
-  Edit = {
-    ButtonIn = {"start"},
-    visible = true,
+  {
+    ButtonIn = {"start"}, visible = true,
     x = 56, y = 47, w = 12, h = 3,
     cbutton = CDRAW, ctext = 0xFFFFFF, text = "Edit",
-    action = function() editItem() end
+    action = editItem
   },
-  Remove = {
-    ButtonIn = {"start"},
-    visible = true,
+  {
+    ButtonIn = {"start"}, visible = true,
     x = 70, y = 47, w = 12, h = 3,
     cbutton = CDRAW, ctext = 0xFFFFFF, text = "Remove",
-    action = function() removeItem() end
+    action = removeItem
   },
-  Sort = {
-    ButtonIn = {"start"},
-    visible = true,
+  {
+    ButtonIn = {"start"}, visible = true,
     x = 84, y = 47, w = 12, h = 3,
     cbutton = CDRAW, ctext = 0xFFFFFF, text = "Sort",
     action = function()
@@ -519,41 +509,36 @@ buttons = {
       requestRedraw()
     end
   },
-  -- Кнопки для режима редактирования (режим "change")
-  changeName = {
-    ButtonIn = {"change"},
-    visible = true,
+  -- Кнопки режима редактирования ("change")
+  {
+    ButtonIn = {"change"}, visible = true,
     x = 25, y = 18, w = 20, h = 3,
     cbutton = CDRAW, ctext = 0xFFFFFF, text = "Изм. имя",
     action = function() changeItemData("changeName") end
   },
-  changeCategory = {
-    ButtonIn = {"change"},
-    visible = true,
+  {
+    ButtonIn = {"change"}, visible = true,
     x = 50, y = 18, w = 20, h = 3,
     cbutton = CDRAW, ctext = 0xFFFFFF, text = "Изм. кат.",
     action = function() changeItemData("changeCategory") end
   },
-  changeCount = {
-    ButtonIn = {"change"},
-    visible = true,
+  {
+    ButtonIn = {"change"}, visible = true,
     x = 75, y = 18, w = 20, h = 3,
     cbutton = CDRAW, ctext = 0xFFFFFF, text = "Изм. треб.",
     action = function() changeItemData("changeCount") end
   },
-  changeCraftSize = {
-    ButtonIn = {"change"},
-    visible = true,
+  {
+    ButtonIn = {"change"}, visible = true,
     x = 100, y = 18, w = 20, h = 3,
     cbutton = CDRAW, ctext = 0xFFFFFF, text = "Изм. крафт",
     action = function() changeItemData("changeCraftSize") end
   },
-  changeBack = {
-    ButtonIn = {"change"},
-    visible = true,
+  {
+    ButtonIn = {"change"}, visible = true,
     x = 60, y = 26, w = 20, h = 3,
     cbutton = CDRAW, ctext = 0xFFFFFF, text = "Назад",
-    action = function() goBack() end
+    action = goBack
   }
 }
 
@@ -564,7 +549,8 @@ local touchEvent, scrollEvent, keyDownEvent
 local function LoadSystem()
   gpu.fill(1, 1, WIDTH, HEIGHT, " ")
   dataItems = oc.loadf(dataFile)
-  initButtons()
+  if not dataItems then dataItems = {} end
+  updateContent()
   touchEvent = event.listen("touch", onTouch)
   scrollEvent = event.listen("scroll", onScroll)
   keyDownEvent = event.listen("key_down", onKeyDown)
