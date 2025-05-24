@@ -1,5 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Улучшенная версия: обновление главного экрана только по действию и с задержкой 10 сек для фоновых обновлений
+-- Улучшенная версия: обновление главного экрана только при действиях пользователя 
+-- и фоновые изменения отображаются не чаще, чем раз в 10 секунд.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -54,38 +55,32 @@ local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2
 local VISIBLE_TABLE_ROWS = 35
 
 ---------------------- ГЛОБАЛЫЕ ПЕРЕМЕННЫЕ ----------------------
-local dataItems = {}           -- Список предметов
-local dataQueue = {}           -- Очередь для автокрафта
-local scroll = 1               -- Текущая позиция в таблице
-local posSelect = nil          -- Выбранная строка таблицы
-local craftingActive = false   -- Состояние автокрафта (ON/OFF)
-local running = true           -- Флаг работы программы
-local maxScroll = 1            -- Максимальное смещение
-local content = {}             -- Отфильтрованный/отсортированный список
+local dataItems = {}        -- Список предметов
+local dataQueue = {}        -- Очередь для автокрафта
+local scroll = 1            -- Текущая позиция в таблице
+local posSelect = nil       -- Выбранная строка таблицы
+local craftingActive = false-- Состояние автокрафта (ON/OFF)
+local running = true        -- Флаг работы программы
+local maxScroll = 1         -- Максимальное смещение
+local content = {}          -- Отфильтрованный/отсортированный список
 
 local sortCriteria = "name"    -- Возможные: "name", "category", "count"
 local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
 
-local craftLogs = {}           -- Массив логов (до 20 записей)
-local logsVisible = false      -- Флаг: активно ли окно логов
-local buttons = {}             -- Таблица кнопок
+local craftLogs = {}        -- Массив логов (до 20 записей)
+local logsVisible = false   -- Флаг: активно ли окно логов
+local buttons = {}          -- Таблица кнопок
 
-local redrawNeeded = false     -- Флаг необходимости обновления (выставляется фоновыми процессами)
-local logTimerId = nil         -- ID таймера для логового окна
-
--- Тайм-аут для фонового обновления основного UI (10 сек)
+-- Флаг для отслеживания фоновых изменений, вызванных автокрафтом
+local bgChanges = false
+-- Время последнего полного обновления (в секундах)
 local lastMainUpdate = os.time()
 
--- Функция мгновенной перерисовки, вызываемая по действию пользователя
+-- Функция немедленной перерисовки (вызывается по действиям пользователя)
 local function immediateRedraw()
   fullRedraw()
   lastMainUpdate = os.time()
-  redrawNeeded = false
-end
-
--- requestRedraw будет только поднимать флаг, а таймер ниже выполнит обновление, если с прошлого обновления прошло 10 сек.
-local function requestRedraw()
-  redrawNeeded = true
+  bgChanges = false
 end
 
 ---------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------------------
@@ -124,14 +119,12 @@ drawCustomButton = function(x, y, w, h, bgColor, textColor, text)
 end
 
 ---------------------- ОТРИСОВКА СТАТИЧЕСКОГО UI ----------------------
-local function drawStaticUI()
+function drawStaticUI()
   if not logsVisible then
-    -- Полная очистка экрана, если окно логов не активно
     gpu.setBackground(BG_MAIN)
     gpu.fill(1, 1, WIDTH, HEIGHT, " ")
   end
 
-  -- Заголовок и параметры сортировки
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.fill(1, 1, WIDTH, 3, " ")
   local header = "PreCraft - Автокрафт предметов"
@@ -180,7 +173,6 @@ end
 
 ---------------------- ОТРИСОВКА ТАБЛИЦЫ ----------------------
 local function drawTableItems()
-  -- Очищаем область таблицы (динамическая часть)
   for row = TABLE_BODY_START_Y, TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
@@ -247,8 +239,8 @@ end
 
 ---------------------- ПОЛНАЯ ПЕРЕРИСОВКА ----------------------
 function fullRedraw()
-  drawStaticUI()      -- Рисуем статические элементы
-  drawTableItems()    -- Рисуем динамическую часть таблицы
+  drawStaticUI()
+  drawTableItems()
   drawScrollBar()
   drawButtons()
 end
@@ -291,7 +283,7 @@ local function inputOverlay(promptMessage)
   term.setCursor(boxX + 2 + unicode.len(promptMessage) + 1, boxY)
   term.setCursorBlink(true)
   local input = term.read()
-  return input:sub(1, -2)  -- удаляем символ перевода строки
+  return input:sub(1, -2)
 end
 
 ---------------------- РАБОТА С ПРЕДМЕТАМИ ----------------------
@@ -365,6 +357,7 @@ end
 
 ---------------------- АВТО-КРАФТ (256К-хранилище) ----------------------
 local function autoCraftCheck()
+  local changed = false
   for i, item in ipairs(dataQueue) do
     if not item.craft or item.craft.isDone() or item.craft.isCanceled() then
       item.craft = nil
@@ -384,9 +377,11 @@ local function autoCraftCheck()
               if craftables.n and craftables.n >= 1 then
                 item.craft = craftables[1].request(delta, false, tostring(item.cpu))
                 table.insert(craftLogs, { text = "[Craft] " .. item.name .. " x" .. delta, color = COLOR_HIGH })
+                changed = true
                 break
               else
                 table.insert(craftLogs, { text = "[Craft] " .. item.name .. " не имеет рецепта", color = COLOR_LOW })
+                changed = true
               end
             end
           end
@@ -394,7 +389,9 @@ local function autoCraftCheck()
       end
     end
   end
-  requestRedraw()  -- фоновый процес – обновление через mainUpdateTimer (не мгновенно)
+  if changed then
+    bgChanges = true
+  end
 end
 
 ---------------------- ОБРАБОТКА СОБЫТИЙ ----------------------
@@ -480,14 +477,14 @@ local function initButtons()
       action = function()
         logsVisible = not logsVisible
         if logsVisible then
-          fullRedraw()  -- сразу показываем окно логов
+          fullRedraw()
           logTimerId = event.timer(1.0, function() drawFloatingLogs() end, math.huge)
         else
           if logTimerId then
             event.cancel(logTimerId)
             logTimerId = nil
           end
-          fullRedraw()  -- восстанавливаем основной UI
+          fullRedraw()
         end
         immediateRedraw()
       end
@@ -508,18 +505,14 @@ local function LoadSystem()
   return true
 end
 
----------------------- ТАЙМЕР ДЛЯ ФОНОВОГО ОБНОВЛЕНИЯ ОСНОВНОГО UI ----------------------
-local function checkMainUpdate()
-  if not logsVisible and redrawNeeded and (os.time() - lastMainUpdate >= 10) then
-    fullRedraw()
-    lastMainUpdate = os.time()
-    redrawNeeded = false
+---------------------- ТАЙМЕР ДЛЯ ФОНОВОГО ОБНОВЛЕНИЯ (каждые 1 сек.) ----------------------
+local function checkBackgroundUpdate()
+  if bgChanges and (os.time() - lastMainUpdate >= 10) then
+    immediateRedraw()
   end
 end
 
-local mainUpdateTimer = event.timer(1.0, checkMainUpdate, math.huge)
-
----------------------- ТАЙМЕР АВТО-КРАФТА ----------------------
+local backgroundUpdateTimer = event.timer(1.0, checkBackgroundUpdate, math.huge)
 local craftTimer = event.timer(1.0, autoCraftCheck, math.huge)
 
 ---------------------- ГЛАВНЫЙ ЦИКЛ ----------------------
