@@ -1,6 +1,7 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Улучшенный интерфейс для разрешения 120×50. Таблица занимает всю ширину экрана,
--- а кнопки перераспределены по центру. Обновление экрана производится разом, что минимизирует мерцание.
+-- Обновлённый интерфейс для разрешения 120×50.
+-- Таблица занимает всю ширину экрана, новые предметы отображаются сразу,
+-- а обновление экрана производится с минимальным мерцанием.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -44,21 +45,21 @@ local MAX_LOGS = 100         -- Максимальное число логов
 local logsVisible = false    -- Флаг отображения логового окна
 local buttons = {}           -- Таблица кнопок
 local lastCountUpdate = 0    -- Время последнего обновления количеств
-local COUNT_UPDATE_INTERVAL = 20  -- Интервал обновления (сек)
+local COUNT_UPDATE_INTERVAL = 8  -- Интервал обновления для ME (изменено с 2 до 8 сек)
 local inputActive = false    -- Флаг блокировки обновлений во время ввода
 local cachedCounts = {}      -- Кэш количественных значений
 
 --------------------------------------------------------------------
--- РАЗМЕРЫ UI (В режиме 120×50)
+-- РАЗМЕРЫ UI (режим 120×50)
 --------------------------------------------------------------------
 local WIDTH, HEIGHT = 120, 50
 gpu.setResolution(WIDTH, HEIGHT)
 
--- Разрешение уменьшено, поэтому таблица занимает всю ширину:
+-- Таблица занимает всю ширину экрана
 local TABLE_X = 1
 local TABLE_WIDTH = WIDTH
 
--- Пересчитанные размеры колонок (с учётом 7 разделителей):
+-- Пересчитанные размеры колонок (учтены 7 разделителей):
 local COL_WIDTH_IDX    = 4
 local COL_WIDTH_NAME   = 60
 local COL_WIDTH_CAT    = 14
@@ -66,12 +67,12 @@ local COL_WIDTH_REQ    = 11
 local COL_WIDTH_ME     = 12
 local COL_WIDTH_CRAFT  = 12
 
--- Общий заголовок занимает строки 1-3
-local TABLE_HEADER_Y = 4           -- Шапка таблицы (названия столбцов) начинается с 4-й строки
+-- Заголовок таблицы занимает строки 1-3
+local TABLE_HEADER_Y = 4           -- Шапка таблицы (Начиная с 4-й строки)
 local TABLE_BODY_START_Y = 6         -- Тело таблицы начинается с 6-й строки
 local BUTTONS_HEIGHT = 3           -- Высота кнопок
-local BUTTONS_Y = HEIGHT - BUTTONS_HEIGHT + 1  -- Строка, где расположены кнопки
-local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Количество строк таблицы
+local BUTTONS_Y = HEIGHT - BUTTONS_HEIGHT + 1  -- Строка для кнопок
+local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Количество видимых строк таблицы
 
 --------------------------------------------------------------------
 -- ПАЛИТРА ЦВЕТОВ и параметры
@@ -223,7 +224,7 @@ local function redrawTable()
 end
 
 --------------------------------------------------------------------
--- РИСОВКА КНОПОК
+-- РИСОВКА КНОПОК (перераспределённые по центру)
 --------------------------------------------------------------------
 local function redrawButtons()
   gpu.setBackground(BG_MAIN)
@@ -365,6 +366,7 @@ local function addItem()
   else
     inputOverlay("Предмет не установлен в 1-й слот! (Нажмите Enter)")
   end
+  updateCachedCounts()  
   dataItems = oc.loadf(dataFile) or {}
   updateContent()
   scroll = 1
@@ -381,6 +383,7 @@ local function removeItem()
     if #craftLogs > MAX_LOGS then table.remove(craftLogs, 1) end
     posSelect = nil
     dataItems = oc.loadf(dataFile) or {}
+    updateCachedCounts()  
     updateContent()
     updateUI()
   end
@@ -409,6 +412,7 @@ local function editItem()
     table.insert(craftLogs, { text = "[Edit] Изменён: " .. item.name, color = CTEXT })
     if #craftLogs > MAX_LOGS then table.remove(craftLogs, 1) end
     posSelect = nil
+    updateCachedCounts()  
     updateContent()
     updateUI()
   end
@@ -424,7 +428,7 @@ local function addLog(msg)
 end
 
 --------------------------------------------------------------------
--- АВТО-КРАФТ
+-- АВТО-КРАФТ (теперь проверяется каждые 8 секунд)
 --------------------------------------------------------------------
 local function autoCraftCheck()
   if not craftingActive then return end
@@ -509,11 +513,9 @@ local function onScroll(_, _, _, _, dir, nick)
 end
 
 --------------------------------------------------------------------
--- ИНИЦИАЛИЗАЦИЯ КНОПОК (новые позиции для 120×50)
+-- ИНИЦИАЛИЗАЦИЯ КНОПОК (перераспределённые для 120×50)
 --------------------------------------------------------------------
 local function initButtons()
-  local gap = 1
-  -- Расчет позиций: общая группа кнопок занимает 73 символа. Отступ слева ~23.
   buttons = {
     {
       id = "craft", visible = true,
@@ -595,7 +597,7 @@ local function LoadSystem()
 end
 
 --------------------------------------------------------------------
--- ФОН. ОБНОВЛЕНИЕ (каждые 20 сек для количеств)
+-- ФОН. ОБНОВЛЕНИЕ (каждые 8 сек для количеств)
 --------------------------------------------------------------------
 local function checkBackgroundUpdate()
   if inputActive then return end
@@ -608,12 +610,12 @@ local function checkBackgroundUpdate()
 end
 
 local backgroundUpdateTimer = event.timer(1.0, checkBackgroundUpdate, math.huge)
-local craftTimer = event.timer(1.0, autoCraftCheck, math.huge)
+local craftTimer = event.timer(8.0, autoCraftCheck, math.huge)  -- Таймер автокрафта теперь 8 секунд
 
 --------------------------------------------------------------------
 -- ГЛАВНЫЙ ЦИКЛ
 --------------------------------------------------------------------
 LoadSystem()
 while running do
-  event.pull(0.01)
+  event.pull(0.05)  -- основной цикл с задержкой 0.05 сек для уменьшения мерцания
 end
