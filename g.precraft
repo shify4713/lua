@@ -1,7 +1,7 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Статичная часть (заголовок, рамки, сортировочная метка) отрисовывается только по событию.
+-- Статичная часть (заголовок, рамки, сортировочная метка) отрисовывается по собыствию.
 -- Обновление таблицы (ячейки, скроллбар) выполняется быстро без мерцаний.
--- Раз в 20 сек обновляются количественные данные и запускается автокрафт при необходимости.
+-- Каждые 20 сек обновляются количественные данные и запускается автокрафт.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -29,9 +29,9 @@ end
 --------------------------------------------------------------------
 -- ГЛОБАЛЫЕ ПЕРЕМЕННЫЕ
 --------------------------------------------------------------------
-local ADM = { ["LiwMorgan"] = true } -- Только LiwMorgan имеет доступ к касаниям!
+local ADM = { ["LiwMorgan"] = true } -- Только LiwMorgan имеет доступ!
 local dataItems = {}         -- Список предметов
-local dataQueue = {}         -- Очередь для автокрафта (те же данные)
+local dataQueue = {}         -- Очередь автокрафта (те же данные)
 local scroll = 1             -- Текущая позиция таблицы
 local posSelect = nil        -- Выбранная строка таблицы
 local craftingActive = false -- Режим автокрафта (ON/OFF)
@@ -51,7 +51,7 @@ local inputActive = false    -- Флаг блокировки обновлени
 local cachedCounts = {}      -- Кэш количественных значений
 
 --------------------------------------------------------------------
--- РАЗМЕРЫ UI. 
+-- РАЗМЕРЫ UI
 --------------------------------------------------------------------
 local WIDTH, HEIGHT = 160, 50
 gpu.setResolution(WIDTH, HEIGHT)
@@ -59,11 +59,11 @@ local TABLE_HEADER_Y = 4                           -- Строка заголо�
 local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2        -- Начало body таблицы
 local BUTTONS_HEIGHT = 3                           -- Высота кнопок
 local BUTTONS_Y = HEIGHT - BUTTONS_HEIGHT + 1        -- Расположение кнопок (нижняя часть)
-local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Количество видимых строк
+local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Кол-во видимых строк
 local TABLE_X = 2                                  -- Начало таблицы слева
 local TABLE_WIDTH = 157                            -- Полная ширина таблицы
 
--- Ширины столбцов (подогнаны под TABLE_WIDTH)
+-- Ширины столбцов
 local COL_WIDTH_IDX    = 5
 local COL_WIDTH_NAME   = 94
 local COL_WIDTH_CAT    = 15
@@ -74,15 +74,16 @@ local COL_WIDTH_CRAFT  = 12
 --------------------------------------------------------------------
 -- ПАЛИТРА ЦВЕТОВ
 --------------------------------------------------------------------
-local BG_MAIN             = 0x1A1A1A   -- Тёмно-серый фон
+local BG_MAIN             = 0x1A1A1A   -- Тёмно-серый
 local CTEXT               = 0xDADADA   -- Светло-серый текст
 local COLOR_BUTTON        = 0x4A90E2   -- Синий для кнопок
-local COLOR_BUTTON_TEXT   = 0xFFFFFF   -- Белый текст кнопок
-local COLOR_HIGHLIGHT     = 0x8A2BE2   -- Фиолетовый для выделения строки
-local COLOR_LOW           = 0xFF4C4C   -- Красный – ошибка/недостаточно
-local COLOR_MEDIUM        = 0xFFCC00   -- Желтый – промежуточное состояние
-local COLOR_HIGH          = 0x00FF66   -- Зелёный – позитивное состояние
-local BG_ALT              = 0x2A2A2A   -- Альтернативный фон для чётных строк
+local COLOR_BUTTON_TEXT   = 0xFFFFFF   -- Белый текст на кнопках
+-- Изменяем цвет выделения на ярко-оранжевый:
+local COLOR_HIGHLIGHT     = 0xFF4500   -- Новый цвет выделенного предмета
+local COLOR_LOW           = 0xFF4C4C   -- Красный для ошибок / недостатка
+local COLOR_MEDIUM        = 0xFFCC00   -- Желтый для промежуточного состояния
+local COLOR_HIGH          = 0x00FF66   -- Зелёный для позитивного состояния
+local BG_ALT              = 0x2A2A2A   -- Альтернативный фон для четных строк
 local COLOR_HEADER_BG     = 0x333333   -- Фон заголовка
 local COLOR_LOG_BG        = 0x3A3A3A   -- Фон логового окна
 local COLOR_BUTTON_BORDER = 0x444444   -- Граница кнопок
@@ -150,7 +151,7 @@ local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
 end
 
 --------------------------------------------------------------------
--- ОТРИСОВКА КНОПОК (динамически обновляемые)
+-- ОТРИСОВКА КНОПОК (динамическая)
 --------------------------------------------------------------------
 local function drawButtons()
   for _, button in ipairs(buttons) do
@@ -247,12 +248,10 @@ local function drawTableSection()
   local total = #content
   local trackColor = COLOR_BUTTON
   local indicatorColor = COLOR_HIGHLIGHT
-  
   gpu.setBackground(trackColor)
   for i = y, y + height - 1 do
     gpu.set(x, i, "│")
   end
-  
   if total > VISIBLE_TABLE_ROWS then
     local barHeight = math.max(1, math.floor(height * height / total))
     local pos = math.floor((scroll - 1) * (height - barHeight) / (total - VISIBLE_TABLE_ROWS)) + y
@@ -278,6 +277,9 @@ end
 
 local function redrawUI()
   if logsVisible then
+    -- При отображении логов очищаем экран полностью
+    gpu.setBackground(BG_MAIN)
+    gpu.fill(1, 1, WIDTH, HEIGHT, " ")
     drawFloatingLogs()
   else
     drawStaticUI()
@@ -421,9 +423,7 @@ end
 --------------------------------------------------------------------
 local function addLog(msg, color)
   table.insert(craftLogs, { text = msg, color = color })
-  if #craftLogs > MAX_LOGS then
-    table.remove(craftLogs, 1)
-  end
+  if #craftLogs > MAX_LOGS then table.remove(craftLogs, 1) end
 end
 
 --------------------------------------------------------------------
@@ -574,12 +574,12 @@ local function initButtons()
       action = function()
         logsVisible = not logsVisible
         if logsVisible then
-          -- Устанавливаем быстрый таймер (0.2 сек) для обновления логового окна
           if logTimerId then event.cancel(logTimerId) end
-          logTimerId = event.timer(0.2, function()
-            if logsVisible then drawFloatingLogs() end
-          end, math.huge)
+          -- Полностью очищаем экран и отображаем логовое окно сразу
+          gpu.setBackground(BG_MAIN)
+          gpu.fill(1, 1, WIDTH, HEIGHT, " ")
           drawFloatingLogs()
+          logTimerId = event.timer(0.2, function() drawFloatingLogs() end, math.huge)
         else
           if logTimerId then event.cancel(logTimerId) logTimerId = nil end
           redrawUI()
@@ -600,7 +600,6 @@ local function drawFloatingLogs()
   drawBorder(overlayX - 1, overlayY - 1, overlayWidth + 2, overlayHeight + 2, COLOR_BUTTON)
   gpu.setBackground(COLOR_LOG_BG)
   gpu.fill(overlayX, overlayY, overlayWidth, overlayHeight, " ")
-  
   local logY = overlayY
   local startIdx = math.max(1, #craftLogs - overlayHeight + 1)
   for i = startIdx, #craftLogs do
