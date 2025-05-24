@@ -1,6 +1,7 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Обновлённый интерфейс для разрешения 120×50.
--- Таблица занимает всю ширину экрана, данные обновляются каждые 8 секунд.
+-- Окончательный вариант для разрешения 120×50.
+-- Таблица занимает всю ширину экрана, обновление и автокрафт проводятся каждые 8 секунд.
+-- Реализован модальный ввод с кнопкой "Cancel", при котором клики вне окошка не влияют на ввод.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -19,7 +20,7 @@ if not fs.exists(libPath) then
 end
 local oc = require("oc")
 
--- Работа с файлом данных
+-- Работа с файлом данных. Если файла нет, создаём его пустым.
 local dataFile = "/home/BD.txt"
 if not fs.exists(dataFile) then
   oc.savef(dataFile, {})
@@ -29,27 +30,27 @@ end
 -- ГЛОБАЛЫЕ ПЕРЕМЕННЫЕ
 --------------------------------------------------------------------
 local ADM = { ["LiwMorgan"] = true, ["Максим"] = true }
-local dataItems = {}         -- Список предметов
-local dataQueue = {}         -- Очередь автокрафта (те же данные)
-local scroll = 1             -- Текущая позиция таблицы
-local posSelect = nil        -- Выбранная строка таблицы
-local craftingActive = false -- Режим автокрафта (ON/OFF)
-local running = true         -- Флаг работы программы
-local maxScroll = 1          -- Максимальное смещение таблицы
-local content = {}           -- Отфильтрованный/отсортированный список
-local sortCriteria = "name"  -- Возможные: "name", "category", "count"
+local dataItems = {}         -- список предметов
+local dataQueue = {}         -- очередь автокрафта (те же данные)
+local scroll = 1             -- текущая позиция таблицы
+local posSelect = nil        -- выбранная строка таблицы
+local craftingActive = false -- режим автокрафта (ON/OFF)
+local running = true         -- флаг работы программы
+local maxScroll = 1          -- максимальное смещение таблицы
+local content = {}           -- отфильтрованный/отсортированный список
+local sortCriteria = "name"  -- возможные: "name", "category", "count"
 local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
-local craftLogs = {}         -- Массив логов
-local MAX_LOGS = 100         -- Максимальное число логов
-local logsVisible = false    -- Флаг отображения логового окна
-local buttons = {}           -- Таблица кнопок
-local lastCountUpdate = 0    -- Время последнего обновления количеств
-local COUNT_UPDATE_INTERVAL = 8  -- Интервал обновления (8 секунд)
-local inputActive = false    -- Флаг блокировки обновлений во время ввода
-local cachedCounts = {}      -- Кэш количественных значений
+local craftLogs = {}         -- массив логов
+local MAX_LOGS = 100         -- максимальное число логов
+local logsVisible = false    -- флаг отображения логового окна
+local buttons = {}           -- таблица кнопок
+local lastCountUpdate = 0    -- время последнего обновления количеств
+local COUNT_UPDATE_INTERVAL = 8  -- интервал обновления (8 секунд)
+local inputActive = false    -- блокировка обновлений во время ввода
+local cachedCounts = {}      -- кэш количественных значений
 
 --------------------------------------------------------------------
--- РАЗМЕРЫ UI (режим 120×50)
+-- РАЗМЕРЫ UI (разрешение 120×50)
 --------------------------------------------------------------------
 local WIDTH, HEIGHT = 120, 50
 gpu.setResolution(WIDTH, HEIGHT)
@@ -58,7 +59,7 @@ gpu.setResolution(WIDTH, HEIGHT)
 local TABLE_X = 1
 local TABLE_WIDTH = WIDTH
 
--- Пересчитанные размеры колонок (учтены 7 разделителей):
+-- Размеры колонок с учётом 7 разделителей
 local COL_WIDTH_IDX    = 4
 local COL_WIDTH_NAME   = 60
 local COL_WIDTH_CAT    = 14
@@ -66,29 +67,29 @@ local COL_WIDTH_REQ    = 11
 local COL_WIDTH_ME     = 12
 local COL_WIDTH_CRAFT  = 12
 
--- Заголовок таблицы занимает строки 1-3
-local TABLE_HEADER_Y = 4           -- Шапка таблицы (с 4-й строки)
-local TABLE_BODY_START_Y = 6         -- Тело таблицы начинается с 6-й строки
-local BUTTONS_HEIGHT = 3           -- Высота кнопок
-local BUTTONS_Y = HEIGHT - BUTTONS_HEIGHT + 1  -- Строка кнопок
-local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Количество видимых строк
+-- Заголовок занимает строки 1-3, тело таблицы начинается с 6-й строки
+local TABLE_HEADER_Y = 4
+local TABLE_BODY_START_Y = 6
+local BUTTONS_HEIGHT = 3
+local BUTTONS_Y = HEIGHT - BUTTONS_HEIGHT + 1
+local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y
 
 --------------------------------------------------------------------
--- ПАЛИТРА ЦВЕТОВ и параметры
+-- ПАЛИТРА ЦВЕТОВ
 --------------------------------------------------------------------
-local BG_MAIN         = 0x1A1A1A    -- Основной фон
-local CTEXT           = 0xDADADA    -- Светло-серый текст
-local COLOR_BUTTON    = 0x4A90E2    -- Синий для кнопок
-local COLOR_BUTTON_TEXT = 0xFFFFFF  -- Белый текст на кнопках
-local COLOR_HIGHLIGHT = 0xFF4500    -- Фон выделенной строки
-local COLOR_HIGHLIGHT_TEXT = 0x000000 -- Текст выделенной строки (чёрный)
-local COLOR_LOW       = 0xFF4C4C    -- Красный (недостаток)
-local COLOR_MEDIUM    = 0xFFCC00    -- Желтый (примерное состояние)
-local COLOR_HIGH      = 0x00FF66    -- Зелёный (хорошее состояние)
-local BG_ROW_1        = 0x1A1A1A    -- Первый оттенок для строк
-local BG_ROW_2        = 0x2A2A2A    -- Второй оттенок для строк
-local COLOR_HEADER_BG = 0x333333    -- Фон шапки таблицы
-local COLOR_LOG_BG    = 0x3A3A3A    -- Фон логового окна
+local BG_MAIN           = 0x1A1A1A    -- основной фон
+local CTEXT             = 0xDADADA    -- светло-серый текст
+local COLOR_BUTTON      = 0x4A90E2    -- синий для кнопок
+local COLOR_BUTTON_TEXT = 0xFFFFFF    -- белый текст на кнопках
+local COLOR_HIGHLIGHT   = 0xFF4500    -- фон выделенной строки
+local COLOR_HIGHLIGHT_TEXT = 0x000000 -- текст выделенной строки (чёрный)
+local COLOR_LOW         = 0xFF4C4C    -- красный (недостаток)
+local COLOR_MEDIUM      = 0xFFCC00    -- жёлтый (примерное состояние)
+local COLOR_HIGH        = 0x00FF66    -- зелёный (хорошее состояние)
+local BG_ROW_1          = 0x1A1A1A    -- первый оттенок для строк
+local BG_ROW_2          = 0x2A2A2A    -- второй оттенок для строк
+local COLOR_HEADER_BG   = 0x333333    -- фон шапки таблицы
+local COLOR_LOG_BG      = 0x3A3A3A    -- фон логового окна
 
 --------------------------------------------------------------------
 -- ФУНКЦИИ ВЫРАВНЕНИЯ ТЕКСТА
@@ -143,7 +144,74 @@ local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
 end
 
 --------------------------------------------------------------------
--- РИСОВКА ЗОНЫ ЗАГОЛОВКА (строки 1-3)
+-- КАСТОМНОЕ МОДАЛЬНОЕ ОКНО ВВОДА С КНОПКОЙ "Cancel"
+--------------------------------------------------------------------
+local function customInputOverlay(promptMessage)
+  inputActive = true
+  local boxW, boxH = 60, 3
+  local boxX = math.floor((WIDTH - boxW) / 2)
+  local boxY = math.floor((HEIGHT - boxH) / 2)
+  drawBorder(boxX - 1, boxY - 1, boxW + 2, boxH + 2, COLOR_BUTTON)
+  gpu.setBackground(BG_MAIN)
+  gpu.fill(boxX, boxY, boxW, boxH, " ")
+  gpu.setForeground(CTEXT)
+  gpu.set(boxX + 2, boxY, promptMessage)
+  -- Рисуем кнопку "Cancel" под окошком
+  local cancelBtnW, cancelBtnH = 8, 1
+  local cancelBtnX = boxX + boxW - cancelBtnW - 1
+  local cancelBtnY = boxY + boxH
+  drawCustomButton(cancelBtnX, cancelBtnY, cancelBtnW, cancelBtnH, COLOR_BUTTON, COLOR_BUTTON_TEXT, "Cancel")
+  
+  local inputStr = ""
+  local inputX = boxX + 2
+  local inputY = boxY + 1
+  gpu.setBackground(BG_MAIN)
+  gpu.fill(inputX, inputY, boxW - 4, 1, " ")
+  gpu.setForeground(CTEXT)
+  gpu.set(inputX, inputY, inputStr)
+  term.setCursor(inputX + unicode.len(inputStr), inputY)
+  term.setCursorBlink(true)
+  
+  -- Кастомный цикл ввода (будет игнорировать клики вне окна ввода)
+  while true do
+    local e = { event.pull(0.1) }
+    if e[1] == "key_down" then
+      local key = e[3]
+      if key == 28 then  -- Enter
+        break
+      elseif key == 14 then  -- Backspace
+        if unicode.len(inputStr) > 0 then
+          inputStr = unicode.sub(inputStr, 1, unicode.len(inputStr)-1)
+        end
+      end
+    elseif e[1] == "text" then
+      local char = e[4]
+      inputStr = inputStr .. char
+    elseif e[1] == "touch" then
+      local tx, ty = e[3], e[4]
+      -- Если нажата кнопка "Cancel"
+      if tx >= cancelBtnX and tx < cancelBtnX + cancelBtnW and ty == cancelBtnY then
+        inputStr = nil
+        break
+      end
+    end
+    -- Обновляем поле ввода
+    gpu.setBackground(BG_MAIN)
+    gpu.fill(inputX, inputY, boxW - 4, 1, " ")
+    gpu.setForeground(CTEXT)
+    gpu.set(inputX, inputY, inputStr or "")
+    term.setCursor(inputX + unicode.len(inputStr or ""), inputY)
+  end
+  
+  term.setCursorBlink(false)
+  term.setCursor(1, HEIGHT)  -- переводим курсор в нижнюю строку
+  inputActive = false
+  updateUI()
+  return inputStr
+end
+
+--------------------------------------------------------------------
+-- РИСОВКА ЗАГОЛОВКА (строки 1-3)
 --------------------------------------------------------------------
 local function redrawHeader()
   gpu.setBackground(COLOR_HEADER_BG)
@@ -223,7 +291,7 @@ local function redrawTable()
 end
 
 --------------------------------------------------------------------
--- РИСОВКА КНОПОК (перераспределённые по центру)
+-- РИСОВКА КНОПОК (по центру)
 --------------------------------------------------------------------
 local function redrawButtons()
   gpu.setBackground(BG_MAIN)
@@ -267,7 +335,7 @@ local function redrawLogs()
 end
 
 --------------------------------------------------------------------
--- ОБЩАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ ЭКРАНА (полный redraw)
+-- ОБЩАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ ЭКРАНА
 --------------------------------------------------------------------
 local function updateUI()
   gpu.setBackground(BG_MAIN)
@@ -319,38 +387,21 @@ local function updateCachedCounts()
 end
 
 --------------------------------------------------------------------
--- ОКНО ВВОДА
---------------------------------------------------------------------
-local function inputOverlay(promptMessage)
-  inputActive = true
-  local boxW, boxH = 60, 3
-  local boxX = math.floor((WIDTH - boxW) / 2)
-  local boxY = math.floor((HEIGHT - boxH) / 2)
-  drawBorder(boxX - 1, boxY - 1, boxW + 2, boxH + 2, COLOR_BUTTON)
-  gpu.setBackground(BG_MAIN)
-  gpu.fill(boxX, boxY, boxW, boxH, " ")
-  gpu.setForeground(CTEXT)
-  gpu.set(boxX + 2, boxY, promptMessage)
-  term.setCursor(boxX + 2 + unicode.len(promptMessage) + 1, boxY)
-  term.setCursorBlink(true)
-  local input = term.read()
-  term.setCursorBlink(false)
-  term.setCursor(1, HEIGHT)  -- Перемещаем курсор в нижнюю строку, чтобы он не висел в окне ввода
-  inputActive = false
-  updateUI()
-  return input:sub(1, -2)
-end
-
---------------------------------------------------------------------
 -- РАБОТА С ПРЕДМЕТАМИ
 --------------------------------------------------------------------
 local function addItem()
   local stack = me.getStackInSlot(1)
   if stack then
-    local name = inputOverlay("Введите название:")
-    local category = inputOverlay("Введите категорию:")
-    local count = tonumber(inputOverlay("Введите требуемое число:"))
-    local craftSize = tonumber(inputOverlay("Введите объём крафта:"))
+    local name = customInputOverlay("Введите название:")
+    if not name then return end
+    local category = customInputOverlay("Введите категорию:")
+    if not category then return end
+    local countStr = customInputOverlay("Введите требуемое число:")
+    if not countStr then return end
+    local count = tonumber(countStr)
+    local craftSizeStr = customInputOverlay("Введите объём крафта:")
+    if not craftSizeStr then return end
+    local craftSize = tonumber(craftSizeStr)
     table.insert(dataItems, {
       name = name,
       category = category,
@@ -364,9 +415,9 @@ local function addItem()
     table.insert(craftLogs, { text = "[Add] Добавлен: " .. name, color = CTEXT })
     if #craftLogs > MAX_LOGS then table.remove(craftLogs, 1) end
   else
-    inputOverlay("Предмет не установлен в 1-й слот! (Нажмите Enter)")
+    customInputOverlay("Предмет не установлен в 1-й слот! (Нажмите Enter)")
   end
-  updateCachedCounts()  
+  updateCachedCounts()
   dataItems = oc.loadf(dataFile) or {}
   updateContent()
   scroll = 1
@@ -383,7 +434,7 @@ local function removeItem()
     if #craftLogs > MAX_LOGS then table.remove(craftLogs, 1) end
     posSelect = nil
     dataItems = oc.loadf(dataFile) or {}
-    updateCachedCounts()  
+    updateCachedCounts()
     updateContent()
     updateUI()
   end
@@ -393,16 +444,20 @@ local function editItem()
   if posSelect then
     local idx = content[posSelect].idx
     local item = dataItems[idx]
-    local name = inputOverlay("Введите новое имя (текущее: " .. item.name .. "):")
+    local name = customInputOverlay("Введите новое имя (текущее: " .. item.name .. "):")
+    if not name then return end
     if name ~= "" then item.name = name end
-    local cat = inputOverlay("Введите новую категорию (текущее: " .. (item.category or "") .. "):")
+    local cat = customInputOverlay("Введите новую категорию (текущее: " .. (item.category or "") .. "):")
+    if not cat then return end
     if cat ~= "" then item.category = cat end
-    local countStr = inputOverlay("Введите требуемое число (текущее: " .. item.count .. "):")
+    local countStr = customInputOverlay("Введите требуемое число (текущее: " .. item.count .. "):")
+    if not countStr then return end
     if countStr ~= "" then
       local count = tonumber(countStr)
       if count then item.count = count end
     end
-    local craftSizeStr = inputOverlay("Введите объём крафта (текущее: " .. item.craftSize .. "):")
+    local craftSizeStr = customInputOverlay("Введите объём крафта (текущее: " .. item.craftSize .. "):")
+    if not craftSizeStr then return end
     if craftSizeStr ~= "" then
       local craftSize = tonumber(craftSizeStr)
       if craftSize then item.craftSize = craftSize end
@@ -412,14 +467,14 @@ local function editItem()
     table.insert(craftLogs, { text = "[Edit] Изменён: " .. item.name, color = CTEXT })
     if #craftLogs > MAX_LOGS then table.remove(craftLogs, 1) end
     posSelect = nil
-    updateCachedCounts()  
+    updateCachedCounts()
     updateContent()
     updateUI()
   end
 end
 
 --------------------------------------------------------------------
--- ЛОГИРОВАНИЕ (фиксированный цвет)
+-- ЛОГИРОВАНИЕ
 --------------------------------------------------------------------
 local function addLog(msg)
   table.insert(craftLogs, { text = msg, color = CTEXT })
@@ -432,14 +487,12 @@ end
 --------------------------------------------------------------------
 local function autoCraftCheck()
   if not craftingActive then return end
-  
   local function logIfChanged(item, newMsg)
     if item.lastMsg ~= newMsg then
       addLog(newMsg)
       item.lastMsg = newMsg
     end
   end
-  
   for i, item in ipairs(dataQueue) do
     if not item.craft or item.craft.isDone() or item.craft.isCanceled() then
       item.craft = nil
@@ -484,6 +537,7 @@ end
 -- ОБРАБОТКА СОБЫТИЙ (касания и скролла)
 --------------------------------------------------------------------
 local function onTouch(_, _, x, y, _, nick)
+  if inputActive then return true end  -- блокируем события, если окно ввода активно
   if ADM[nick] then
     for _, button in ipairs(buttons) do
       if x >= button.x and x <= (button.x + button.w - 1) and
@@ -597,7 +651,7 @@ local function LoadSystem()
 end
 
 --------------------------------------------------------------------
--- ФОН. ОБНОВЛЕНИЕ (каждые 8 сек для количеств)
+-- ФОН. ОБНОВЛЕНИЕ (каждые 8 секунд)
 --------------------------------------------------------------------
 local function checkBackgroundUpdate()
   if inputActive then return end
@@ -610,7 +664,7 @@ local function checkBackgroundUpdate()
 end
 
 local backgroundUpdateTimer = event.timer(1.0, checkBackgroundUpdate, math.huge)
-local craftTimer = event.timer(8.0, autoCraftCheck, math.huge)  -- Автокрафт каждые 8 сек
+local craftTimer = event.timer(8.0, autoCraftCheck, math.huge)  -- Автокрафт каждые 8 секунд
 
 --------------------------------------------------------------------
 -- ГЛАВНЫЙ ЦИКЛ
