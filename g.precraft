@@ -1,5 +1,5 @@
--- Improved PreCraft Auto-Crafting Tool for OpenOS 1.6.1 (Lua 5.2)
--- Загружает необходимые библиотеки и осуществляет автокрафт с улучшенным визуалом
+-- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
+-- Улучшенный визуал, стабильный ввод и обновлённая система логирования
 
 local component = require("component")
 local fs = require("filesystem")
@@ -45,36 +45,54 @@ local COLOR_HIGH   = 0x00FF66  -- Зелёный – достаточно
 
 -- Размеры компонентов интерфейса
 local TABLE_X = 2
-local TABLE_WIDTH = 120          -- Ширина таблицы (левой части интерфейса)
-local LOGS_X = TABLE_X + TABLE_WIDTH + 2  -- Привязка логов справа
+local TABLE_WIDTH = 120          -- Ширина таблицы (левая часть)
+local LOGS_X = TABLE_X + TABLE_WIDTH + 2  -- Лог-область справа
 local HEADER_Y = 2               -- Отступ для заголовка
 local TABLE_HEADER_Y = HEADER_Y + 3
 local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2
 local VISIBLE_TABLE_ROWS = 35
 
 ---------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ----------------------
-local dataItems = {}      -- Объекты, загруженные из файла
+local dataItems = {}      -- Объекты, загруженные из файла данных
 local dataQueue = {}      -- Копия для автокрафта
-local guiPath = {"start"} -- Стек состояний интерфейса ("start", "change")
-local inputFind = ""      -- Фильтр для поиска по имени
-local scroll = 1          -- Текущая позиция прокрутки в таблице
-local posSelect = nil     -- Индекс выбранного элемента (в списке content)
-local changeItem = false  -- Флаг редактирования предмета
-local craftingActive = false  -- Флаг включения автокрафта
-local running = true          -- Главный флаг выполнения программы
-local maxScroll = 1           -- Максимальный сдвиг прокрутки
-local content = {}            -- Отфильтрованный и отсортированный список
+local guiPath = {"start"} -- Стек состояний ("start", "change")
+local inputFind = ""      -- Фильтр поиска по имени
+local scroll = 1          -- Текущая позиция прокрутки
+local posSelect = nil     -- Индекс выбранного элемента в списке
+local changeItem = false  -- Флаг режима редактирования
+local craftingActive = false  -- Флаг автокрафта
+local running = true          -- Главный флаг работы программы
+local maxScroll = 1           -- Максимальное смещение прокрутки
+local content = {}            -- Отфильтрованный список
 
 local sortCriteria = "name"   -- Возможные значения: "name", "category", "count"
 local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
 
 local redrawNeeded = true     -- Флаг необходимости перерисовки экрана
 
--- Система логирования – до 20 последних записей
+-- Логирование (до 20 записей)
 local craftLogs = {}  
 
--- Инициализируем таблицу кнопок (важно, чтобы она никогда не была nil)
+-- Таблица кнопок будет инициализирована ниже
 local buttons = {}
+
+---------------------- ФУНКЦИЯ ДЛЯ ОТРИСОВКИ ВВОДА ----------------------
+local function promptInput(promptMessage)
+  local boxW, boxH = 60, 3
+  local boxX = math.floor((WIDTH - boxW) / 2)
+  local boxY = math.floor((HEIGHT - boxH) / 2)
+  drawBorder(boxX - 1, boxY - 1, boxW + 2, boxH + 2, COLOR_BUTTON)
+  gpu.setBackground(BG_MAIN)
+  gpu.fill(boxX, boxY, boxW, boxH, " ")
+  gpu.setForeground(CTEXT)
+  gpu.set(boxX + 2, boxY, promptMessage)
+  term.setCursor(boxX + 2 + unicode.len(promptMessage) + 1, boxY)
+  local input = io.read()
+  -- Очистка окна ввода без затрагивания остального интерфейса
+  gpu.fill(boxX - 1, boxY - 1, boxW + 2, boxH + 2, " ")
+  requestRedraw()
+  return input
+end
 
 ---------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------------------
 local function updateContent()
@@ -125,19 +143,6 @@ local function goBack()
 end
 
 ---------------------- ЛОГИРОВАНИЕ ----------------------
-local function drawLogsArea()
-  local prevBg = gpu.getBackground()
-  gpu.setBackground(BG_MAIN)
-  gpu.fill(LOGS_X, HEADER_Y, WIDTH - LOGS_X + 1, HEIGHT - HEADER_Y, " ")
-  gpu.setForeground(CTEXT)
-  gpu.set(LOGS_X + 2, HEADER_Y, "Логи:")
-  for i, log in ipairs(craftLogs) do
-    gpu.setForeground(log.color)
-    gpu.set(LOGS_X + 2, HEADER_Y + i, log.text)
-  end
-  gpu.setBackground(prevBg)
-end
-
 local function addLogEvent(eventType, message, status)
   local statusColors = {
     sufficient   = COLOR_HIGH,
@@ -145,9 +150,8 @@ local function addLogEvent(eventType, message, status)
     insufficient = COLOR_LOW
   }
   local color = statusColors[status] or CTEXT
-  local timeStamp = os.date("%H:%M:%S")
-  local fullMessage = timeStamp .. " [" .. eventType .. "] " .. message
-
+  -- Исключаем время – только тип и сообщение
+  local fullMessage = "[" .. eventType .. "] " .. message
   if #craftLogs >= 20 then
     table.remove(craftLogs, 1)
   end
@@ -168,20 +172,21 @@ local function drawBorder(x, y, w, h, fgColor)
 end
 
 local function drawStatic()
+  -- Не очищаем весь экран при каждой перерисовке, чтобы избежать мерцания
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, 1, WIDTH, HEIGHT, " ")
-
+  
   -- Заголовок
   gpu.setForeground(CTEXT)
   local header = "PreCraft - Автокрафт предметов"
   gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), HEADER_Y, header)
   gpu.set(2, HEADER_Y + 1, "Сортировка: " .. sortCriteriaDisplay[sortCriteria])
-
-  -- Рамка для таблицы
+  
+  -- Рамка таблицы
   local tableHeaderWidth = TABLE_WIDTH
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, tableHeaderWidth + 2, tableHeaderHeight)
-
+  
   -- Заголовок таблицы
   local headerStr = string.format("|%-4s|%-40s|%-20s|%-8s|%-8s|%-10s|", "Idx", "Name", "Категория", "Req", "ME", "Craft")
   headerStr = headerStr .. string.rep(" ", TABLE_WIDTH - unicode.len(headerStr))
@@ -189,7 +194,7 @@ local function drawStatic()
   gpu.setForeground(CTEXT)
   gpu.set(TABLE_X, TABLE_HEADER_Y, headerStr)
   gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("─", TABLE_WIDTH))
-
+  
   -- Рамка области логов
   local logsWidth = WIDTH - LOGS_X - 1
   local logsHeight = HEIGHT - HEADER_Y - 1
@@ -197,13 +202,12 @@ local function drawStatic()
 end
 
 local function drawTableItems()
-  -- Очищаем область таблицы
+  -- Очищаем только область таблицы
   for row = TABLE_BODY_START_Y, TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
   end
 
-  -- Отрисовка каждого элемента, видимого в текущей области
   for i = scroll, math.min(#content, scroll + VISIBLE_TABLE_ROWS - 1) do
     local row = TABLE_BODY_START_Y + (i - scroll)
     local item = content[i]
@@ -262,7 +266,7 @@ local function drawEditMode()
   gpu.setForeground(CTEXT)
   local header = "Редактирование предмета"
   gpu.set(dialogX + math.floor((dialogW - unicode.len(header)) / 2), dialogY, header)
-
+  
   local item = dataItems[posSelect]
   if item then
     gpu.set(dialogX + 2, dialogY + 2, "Имя: " .. item.name)
@@ -270,7 +274,7 @@ local function drawEditMode()
     gpu.set(dialogX + 2, dialogY + 4, "Треб: " .. (item.count or ""))
     gpu.set(dialogX + 2, dialogY + 5, "Крафт: " .. (item.craftSize or ""))
   end
-
+  
   for i = 1, #buttons do
     local button = buttons[i]
     for j = 1, #button.ButtonIn do
@@ -307,12 +311,6 @@ local function autoCraftCheck()
         end
         local reqCount = tonumber(item.count) or 0
         local delta = reqCount - currentQty
-        local status = (currentQty >= reqCount) and "sufficient" or 
-                       (delta >= math.floor(reqCount * 0.5)) and "insufficient" or "intermediate"
-        addLogEvent("Craft", item.name .. "  Тек.: " .. currentQty .. "  Треб.: " .. reqCount, status)
-        if delta > (tonumber(item.craftSize) or 0) then
-          delta = tonumber(item.craftSize) or 0
-        end
         if delta > 0 then
           local cpus = me.getCpus()
           for _, cpu in ipairs(cpus) do
@@ -320,7 +318,7 @@ local function autoCraftCheck()
               local craftables = me.getCraftables({name = item.id, damage = item.dmg})
               if craftables.n and craftables.n >= 1 then
                 item.craft = craftables[1].request(delta, false, tostring(item.cpu))
-                addLogEvent("Craft", "Запрошен крафт " .. item.name .. " x" .. delta, status)
+                addLogEvent("Craft", item.name .. " x" .. delta, "sufficient")
                 break
               else
                 addLogEvent("Craft", item.name .. " не имеет рецепта", "insufficient")
@@ -339,25 +337,10 @@ local function addItem()
   changeItem = true
   local stack = me.getStackInSlot(1)
   if stack then
-    gpu.setBackground(BG_MAIN)
-    gpu.fill(1, 43, WIDTH, 1, " ")
-    gpu.setForeground(CTEXT)
-    gpu.set(2, 43, "Введите название:")
-    term.setCursor(20, 43)
-    local name = tostring(io.read())
-    gpu.fill(1, 43, WIDTH, 1, " ")
-    gpu.set(2, 43, "Введите категорию:")
-    term.setCursor(20, 43)
-    local category = tostring(io.read())
-    gpu.fill(1, 43, WIDTH, 1, " ")
-    gpu.set(2, 43, "Введите требуемое число:")
-    term.setCursor(25, 43)
-    local count = tonumber(io.read())
-    gpu.fill(1, 43, WIDTH, 1, " ")
-    gpu.set(2, 43, "Введите объём крафта:")
-    term.setCursor(25, 43)
-    local craftSize = tonumber(io.read())
-    gpu.fill(1, 43, WIDTH, 1, " ")
+    local name = promptInput("Введите название:")
+    local category = promptInput("Введите категорию:")
+    local count = tonumber(promptInput("Введите требуемое число:"))
+    local craftSize = tonumber(promptInput("Введите объём крафта:"))
     table.insert(dataItems, {
       name = name,
       category = category,
@@ -368,11 +351,9 @@ local function addItem()
       cpu = 65536
     })
     oc.savef(dataFile, dataItems)
-    addLogEvent("Add", "Добавлен: " .. name .. " (" .. category .. ")", "intermediate")
+    addLogEvent("Add", "Добавлен: " .. name, "intermediate")
   else
-    gpu.set(2, 43, "Предмет не установлен в 1-й слот!")
-    os.sleep(2)
-    gpu.fill(1, 43, WIDTH, 1, " ")
+    promptInput("Предмет не установлен в 1-й слот! (Нажмите Enter)")
   end
   dataItems = oc.loadf(dataFile) or {}
   updateContent()
@@ -382,25 +363,17 @@ end
 
 local function removeItem()
   if posSelect then
-    -- Запрашиваем подтверждение на удаление
-    gpu.set(2, 43, "Удалить выбранный предмет? (Y/N): ")
-    local answer = string.lower(tostring(io.read()))
-    if answer == "y" then
-      for i = 1, #dataItems do
-        if dataItems[i].name == content[posSelect].name then
-          table.remove(dataItems, i)
-          oc.savef(dataFile, dataItems)
-          addLogEvent("Edit", "Удалён: " .. content[posSelect].name, "insufficient")
-          posSelect = nil
-          dataItems = oc.loadf(dataFile) or {}
-          updateContent()
-          requestRedraw()
-          return true
-        end
+    for i = 1, #dataItems do
+      if dataItems[i].name == content[posSelect].name then
+        table.remove(dataItems, i)
+        oc.savef(dataFile, dataItems)
+        addLogEvent("Edit", "Удалён: " .. content[posSelect].name, "insufficient")
+        posSelect = nil
+        dataItems = oc.loadf(dataFile) or {}
+        updateContent()
+        requestRedraw()
+        return true
       end
-    else
-      gpu.fill(1, 43, WIDTH, 1, " ")
-      return false
     end
   end
 end
@@ -419,35 +392,26 @@ end
 
 local function changeItemData(action)
   if posSelect then
-    gpu.fill(1, 45, WIDTH, 1, " ")
     local oldVal, newVal, fieldName = nil, nil, ""
     if action == "changeName" then
       fieldName = "Имя"
       oldVal = dataItems[posSelect].name
-      gpu.set(2, 45, "Введите новое имя:")
-      term.setCursor(25, 45)
-      newVal = tostring(io.read())
+      newVal = promptInput("Введите новое имя:")
       dataItems[posSelect].name = newVal
     elseif action == "changeCategory" then
       fieldName = "Категория"
       oldVal = dataItems[posSelect].category
-      gpu.set(2, 45, "Введите новую категорию:")
-      term.setCursor(25, 45)
-      newVal = tostring(io.read())
+      newVal = promptInput("Введите новую категорию:")
       dataItems[posSelect].category = newVal
     elseif action == "changeCount" then
       fieldName = "Требуемое число"
       oldVal = dataItems[posSelect].count
-      gpu.set(2, 45, "Введите новое требуемое число:")
-      term.setCursor(30, 45)
-      newVal = tonumber(io.read())
+      newVal = tonumber(promptInput("Введите новое требуемое число:"))
       dataItems[posSelect].count = newVal
     elseif action == "changeCraftSize" then
       fieldName = "Объём крафта"
       oldVal = dataItems[posSelect].craftSize
-      gpu.set(2, 45, "Введите новый объём крафта:")
-      term.setCursor(30, 45)
-      newVal = tonumber(io.read())
+      newVal = tonumber(promptInput("Введите новый объём крафта:"))
       dataItems[posSelect].craftSize = newVal
     end
     oc.savef(dataFile, dataItems)
