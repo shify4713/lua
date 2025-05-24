@@ -1,6 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Улучшенный дизайн: исправлены исчезающие предметы, статус кнопки Craft,
--- устранены визуальные мерцания и проблемы с размещением заголовков.
+-- Исправлено: увеличена таблица (~30%), уменьшена область логов,
+-- исправлена ошибка drawCustomButton (forward declaration) и устранены визуальные артефакты.
 local component = require("component")
 local fs = require("filesystem")
 local shell = require("shell")
@@ -10,7 +10,7 @@ local term = require("term")
 local gpu = component.gpu
 local me = component.me_interface
 
--- Если библиотеки oc.lua нет, загружаем её
+-- Если библиотека oc.lua отсутствует, загружаем её
 local libURL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/g.lib-precraft"
 local libPath = "/lib/oc.lua"
 if not fs.exists(libPath) then
@@ -26,7 +26,7 @@ end
 
 ---------------------- НАСТРОЙКИ ----------------------
 local debugMode = true
-local ADM = { ["LiwMorgan"] = true }  -- Доступ только для LiwMorgan
+local ADM = { ["LiwMorgan"] = true }  -- Доступ только для указанного ниκа
 
 -- Разрешение экрана
 local WIDTH, HEIGHT = 160, 50
@@ -42,37 +42,40 @@ local COLOR_LOW           = 0xFF4C4C  -- Красный – недостаточ
 local COLOR_MEDIUM        = 0xFFCC00  -- Желтый – промежуточно
 local COLOR_HIGH          = 0x00FF66  -- Зелёный – достаточно
 
-local BG_ALT              = 0x2A2A2A  -- Альтернативный фон для четных строк таблицы
-local COLOR_HEADER_BG     = 0x333333  -- Фон заголовка таблицы и шапки
+local BG_ALT              = 0x2A2A2A  -- Альтернативный фон для четных строк
+local COLOR_HEADER_BG     = 0x333333  -- Фон заголовка и шапки таблицы
 local COLOR_LOG_BG        = 0x2D2D2D  -- Фон области логов
 local COLOR_BUTTON_BORDER = 0x000000  -- Граница кнопок
 
 ---------------------- РАЗМЕРЫ UI КОМПОНЕНТОВ ----------------------
 local TABLE_X = 2
-local TABLE_WIDTH = 90   -- Фиксированная ширина таблицы
-local LOGS_X = TABLE_X + TABLE_WIDTH + 2  -- Лог-область справа
-local HEADER_Y = 1       -- Подвинутый верхний отступ для заголовка
+local TABLE_WIDTH = 120   -- увеличено с 90 до 120 (примерно +30%)
+local LOGS_X = TABLE_X + TABLE_WIDTH + 2  -- теперь LOGS_X = 124
+local HEADER_Y = 1
 local HEADER_TEXT_Y = HEADER_Y + 1
-local TABLE_HEADER_Y = HEADER_Y + 3  -- Заголовок таблицы
+local TABLE_HEADER_Y = HEADER_Y + 3
 local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2
 local VISIBLE_TABLE_ROWS = 35
 
 ---------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ----------------------
-local dataItems = {}    -- Список всех предметов
+local dataItems = {}    -- Список предметов
 local dataQueue = {}    -- Для автокрафта (ссылка на dataItems)
-local scroll = 1        -- Позиция прокрутки таблицы
+local scroll = 1        -- Позиция скролла таблицы
 local posSelect = nil   -- Выбранная строка в таблице
 local craftingActive = false  -- Статус автокрафта
 local running = true          -- Флаг работы программы
-local maxScroll = 1           -- Максимальное смещение прокрутки
-local content = {}            -- Отфильтрованная и отсортированная информация
+local maxScroll = 1           -- Максимальное смещение
+local content = {}            -- Отфильтрованая и отсортированная информация
 
-local sortCriteria = "name"   -- Возможные варианты: "name", "category", "count"
+local sortCriteria = "name"   -- Возможные: "name", "category", "count"
 local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
 
-local redrawNeeded = true     -- Флаг для перерисовки
-local craftLogs = {}          -- Логирование (до 10 записей)
+local redrawNeeded = true     -- Флаг необходимости перерисовки
+local craftLogs = {}          -- Логи (до 10 записей)
 local buttons = {}            -- Кнопки интерфейса
+
+-- Forward declaration для предотвращения ошибки вызова nil: drawCustomButton
+local drawCustomButton
 
 ---------------------- ФУНКЦИЯ РИСОВАНИЯ ГРАНИЦЫ ----------------------
 local function drawBorder(x, y, w, h, fgColor)
@@ -86,12 +89,24 @@ local function drawBorder(x, y, w, h, fgColor)
   end
 end
 
+---------------------- ФУНКЦИЯ ОТРИСОВКИ КНОПКИ ----------------------
+drawCustomButton = function(x, y, w, h, bgColor, textColor, text)
+  gpu.setBackground(bgColor)
+  gpu.fill(x, y, w, h, " ")
+  gpu.setForeground(COLOR_BUTTON_BORDER)
+  drawBorder(x, y, w, h, COLOR_BUTTON_BORDER)
+  gpu.setForeground(textColor)
+  local textPosX = x + math.floor((w - unicode.len(text)) / 2)
+  local textPosY = y + math.floor(h / 2)
+  gpu.set(textPosX, textPosY, text)
+end
+
 ---------------------- СТАТИЧЕСКАЯ ОТРИСОВКА UI ----------------------
 local function drawStaticUI()
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, 1, WIDTH, HEIGHT, " ")
   
-  -- Заголовок и информация о сортировке (выводятся на одном ряду)
+  -- Заголовок и информация о сортировке (одна строка)
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.fill(1, HEADER_Y, WIDTH, 3, " ")
   local header = "PreCraft - Автокрафт предметов"
@@ -103,13 +118,13 @@ local function drawStaticUI()
   -- Рисуем рамку таблицы и заголовок
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableHeaderHeight, COLOR_BUTTON)
-  local headerStr = string.format("|%-5s|%-38s|%-18s|%-7s|%-7s|%-8s|", "Idx", "Name", "Категория", "Req", "ME", "Craft")
+  local headerStr = string.format("|%-5s|%-50s|%-18s|%-7s|%-7s|%-8s|", "Idx", "Name", "Категория", "Req", "ME", "Craft")
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.setForeground(CTEXT)
   gpu.set(TABLE_X, TABLE_HEADER_Y, headerStr)
   gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("─", TABLE_WIDTH))
   
-  -- Зона логов справа
+  -- Зона логов (уменьшена)
   local logsWidth = WIDTH - LOGS_X - 1
   local logsHeight = HEIGHT - HEADER_Y - 1
   drawBorder(LOGS_X - 1, HEADER_Y - 1, logsWidth + 2, logsHeight + 2, COLOR_BUTTON)
@@ -150,7 +165,7 @@ local function drawTableItems()
     end
     
     gpu.setBackground(rowBg)
-    local line = string.format("|%-5d|%-38s|%-18s|%-7d|%-7d|%-8d|", i, item.name, (item.category or ""), reqCount, currentQty, item.craftSize or 0)
+    local line = string.format("|%-5d|%-50s|%-18s|%-7d|%-7d|%-8d|", i, item.name, (item.category or ""), reqCount, currentQty, item.craftSize or 0)
     gpu.setForeground(colorText)
     gpu.set(TABLE_X, row, line)
   end
@@ -202,7 +217,6 @@ local function fullRedraw()
   drawLogsArea()
 end
 
----------------------- ОБНОВЛЕНИЕ КОНТЕНТА ----------------------
 local function updateContent()
   content = {}
   for i, item in ipairs(dataItems) do
@@ -231,7 +245,6 @@ local function requestRedraw()
   redrawNeeded = true
 end
 
----------------------- ЛОГИРОВАНИЕ (до 10 записей) ----------------------
 local function addLogEvent(eventType, message, status)
   local statusColors = {
     sufficient   = COLOR_HIGH,
@@ -247,19 +260,6 @@ local function addLogEvent(eventType, message, status)
   drawLogsArea()
 end
 
----------------------- ФУНКЦИЯ ОТРИСОВКИ КНОПКИ ----------------------
-local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
-  gpu.setBackground(bgColor)
-  gpu.fill(x, y, w, h, " ")
-  gpu.setForeground(COLOR_BUTTON_BORDER)
-  drawBorder(x, y, w, h, COLOR_BUTTON_BORDER)
-  gpu.setForeground(textColor)
-  local textPosX = x + math.floor((w - unicode.len(text)) / 2)
-  local textPosY = y + math.floor(h / 2)
-  gpu.set(textPosX, textPosY, text)
-end
-
----------------------- ФУНКЦИЯ ВВОДА С ОВЕРЛЕЕМ ----------------------
 local function inputOverlay(promptMessage)
   local boxW, boxH = 60, 3
   local boxX = math.floor((WIDTH - boxW) / 2)
@@ -291,7 +291,7 @@ local function addItem()
       dmg = stack.dmg,
       count = count,
       craftSize = craftSize,
-      cpu = 262144  -- 256К-хранилище
+      cpu = 262144
     })
     oc.savef(dataFile, dataItems)
     addLogEvent("Add", "Добавлен: " .. name, "intermediate")
