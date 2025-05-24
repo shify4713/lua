@@ -1,6 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
 -- Улучшенная версия: обновление главного экрана только при действиях пользователя,
--- детальное логирование автокрафтера и устранение мерцания.
+-- детальное логирование автокрафтера (без избыточной информации) и устранение мерцания.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -77,7 +77,7 @@ local bgChanges = false
 -- Время последнего полного обновления (в секундах)
 local lastMainUpdate = os.time()
 
----------------------- Логирование ----------------------
+---------------------- ЛОГИРОВАНИЕ ----------------------
 local function addLog(msg, color)
   table.insert(craftLogs, { text = msg, color = color })
   if #craftLogs > MAX_LOGS then
@@ -383,7 +383,6 @@ end
 local function autoCraftCheck()
   if not craftingActive then return end
   
-  local hasCraftedThisCycle = false
   for i, item in ipairs(dataQueue) do
     if not item.craft or item.craft.isDone() or item.craft.isCanceled() then
       item.craft = nil
@@ -400,13 +399,12 @@ local function autoCraftCheck()
               local craftables = me.getCraftables({name = item.id, damage = item.dmg})
               if craftables.n and craftables.n >= 1 then
                 item.craft = craftables[1].request(delta, false, tostring(item.cpu))
-                addLog("[Craft] Запущен крафт " .. item.name .. " x" .. delta, COLOR_HIGH)
-                hasCraftedThisCycle = true
+                addLog("[Craft] Запуск " .. item.name .. " x" .. delta, COLOR_HIGH)
                 foundCPU = true
                 break
               else
-                addLog("[Craft] У " .. item.name .. " отсутствует рецепт", COLOR_LOW)
-                foundCPU = true    -- CPU свободен, но рецепт не найден
+                addLog("[Craft] " .. item.name .. " отсутствует рецепт", COLOR_LOW)
+                foundCPU = true
                 break
               end
             end
@@ -414,16 +412,11 @@ local function autoCraftCheck()
           if not foundCPU then
             addLog("[Craft] Нет свободных CPU для " .. item.name, COLOR_LOW)
           end
-        else
-          addLog("[Craft] " .. item.name .. " - текущее: " .. currentQty .. ", требуется: " .. reqCount, COLOR_MEDIUM)
         end
       else
         addLog("[Craft] Нет данных по " .. item.name, COLOR_LOW)
       end
     end
-  end
-  if not hasCraftedThisCycle then
-    addLog("[AutoCraft] Ни один крафт не запущен", CTEXT)
   end
   bgChanges = true
 end
