@@ -1,6 +1,5 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
 -- Улучшенный интерфейс с улучшенной верхней областью и упрощёнными логами.
--- Общий заголовок (строки 1-3), шапка таблицы (строки 4-5) и тело таблицы (начиная с 6-й строки).
 
 local component = require("component")
 local fs = require("filesystem")
@@ -53,20 +52,25 @@ local cachedCounts = {}      -- Кэш количественных значен
 --------------------------------------------------------------------
 local WIDTH, HEIGHT = 160, 50
 gpu.setResolution(WIDTH, HEIGHT)
+
+-- Новые размеры колонок таблицы
+local COL_WIDTH_IDX    = 6
+local COL_WIDTH_NAME   = 40
+local COL_WIDTH_CAT    = 20
+local COL_WIDTH_REQ    = 10
+local COL_WIDTH_ME     = 10
+local COL_WIDTH_CRAFT  = 10
+
+-- Вычисление общей ширины таблицы и позиционирование по центру
+local TABLE_WIDTH = COL_WIDTH_IDX + COL_WIDTH_NAME + COL_WIDTH_CAT + COL_WIDTH_REQ + COL_WIDTH_ME + COL_WIDTH_CRAFT + 7
+local TABLE_X = math.floor((WIDTH - TABLE_WIDTH) / 2)
+
 -- Общий заголовок занимает строки 1-3
 local TABLE_HEADER_Y = 4           -- Шапка таблицы (названия столбцов) начинается с 4-й строки
 local TABLE_BODY_START_Y = 6         -- Тело таблицы начинается с 6-й строки
 local BUTTONS_HEIGHT = 3           -- Высота кнопок
 local BUTTONS_Y = HEIGHT - BUTTONS_HEIGHT + 1  -- Строка, где расположены кнопки
 local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Количество строк таблицы
-
--- Ширины столбцов
-local COL_WIDTH_IDX    = 5
-local COL_WIDTH_NAME   = 94
-local COL_WIDTH_CAT    = 15
-local COL_WIDTH_REQ    = 12
-local COL_WIDTH_ME     = 12
-local COL_WIDTH_CRAFT  = 12
 
 --------------------------------------------------------------------
 -- ПАЛИТРА ЦВЕТОВ и параметры
@@ -218,12 +222,12 @@ local function redrawTable()
       textColor = COLOR_HIGHLIGHT_TEXT
     end
     gpu.setBackground(rowBg)
-    local rowStr = "|" .. padOrTrimRight(i, COL_WIDTH_IDX) .. "|" ..
+    local rowStr = "|" .. padOrTrim(i, COL_WIDTH_IDX) .. "|" ..
                         padOrTrim(item.name, COL_WIDTH_NAME) .. "|" ..
                         padOrTrim(item.category or "", COL_WIDTH_CAT) .. "|" ..
-                        padOrTrimRight(reqCount, COL_WIDTH_REQ) .. "|" ..
-                        padOrTrimRight(currentQty, COL_WIDTH_ME) .. "|" ..
-                        padOrTrimRight(item.craftSize or 0, COL_WIDTH_CRAFT) .."|"
+                        padOrTrim(reqCount, COL_WIDTH_REQ) .. "|" ..
+                        padOrTrim(currentQty, COL_WIDTH_ME) .. "|" ..
+                        padOrTrim(item.craftSize or 0, COL_WIDTH_CRAFT) .."|"
     gpu.setForeground(textColor)
     gpu.set(TABLE_X, rowPos, rowStr)
   end
@@ -233,11 +237,11 @@ local function redrawTable()
   local y = TABLE_BODY_START_Y
   local height = VISIBLE_TABLE_ROWS
   local total = #content
-  gpu.setBackground(COLOR_BUTTON)
-  for i = y, y + height - 1 do
-    gpu.set(x, i, "│")
-  end
   if total > VISIBLE_TABLE_ROWS then
+    gpu.setBackground(COLOR_BUTTON)
+    for i = y, y + height - 1 do
+      gpu.set(x, i, "│")
+    end
     local barHeight = math.max(1, math.floor(height * height / total))
     local pos = math.floor((scroll - 1) * (height - barHeight) / (total - VISIBLE_TABLE_ROWS)) + y
     gpu.setBackground(COLOR_HIGHLIGHT)
@@ -247,9 +251,10 @@ local function redrawTable()
       end
     end
   else
-    gpu.setBackground(COLOR_HIGHLIGHT)
+    -- Очищаем область скроллбара, если она не нужна
+    gpu.setBackground(BG_MAIN)
     for i = y, y + height - 1 do
-      gpu.set(x, i, "█")
+      gpu.set(x, i, " ")
     end
   end
 end
@@ -286,7 +291,7 @@ local function redrawLogs()
   gpu.fill(overlayX, overlayY, overlayWidth, overlayHeight, " ")
   local logY = overlayY
   local startIdx = math.max(1, #craftLogs - overlayHeight + 1)
-  gpu.setForeground(CTEXT)  -- Фиксированный цвет текста
+  gpu.setForeground(CTEXT)
   for i = startIdx, #craftLogs do
     local log = craftLogs[i]
     local logText = log.text
@@ -392,7 +397,6 @@ local function addItem()
       cpu = 262144
     })
     oc.savef(dataFile, dataItems)
-    -- Обновляем логи сразу после изменения
     table.insert(craftLogs, { text = "[Add] Добавлен: " .. name, color = CTEXT })
     if #craftLogs > MAX_LOGS then table.remove(craftLogs, 1) end
   else
