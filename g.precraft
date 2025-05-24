@@ -1,7 +1,8 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
 -- Окончательный вариант для разрешения 120×50.
--- Таблица занимает всю ширину экрана, обновление и автокрафт проводятся каждые 8 секунд.
--- Реализован модальный ввод с кнопкой "Cancel", при котором клики вне окошка не влияют на ввод.
+-- Обновление (проверка предметов и автокрафт) каждые 8 секунд.
+-- Реализовано модальное окно ввода с кнопкой "Cancel", которое надёжно реагирует на нажатия,
+-- а курсор автоматически остаётся в поле ввода.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -20,7 +21,7 @@ if not fs.exists(libPath) then
 end
 local oc = require("oc")
 
--- Работа с файлом данных. Если файла нет, создаём его пустым.
+-- Работа с файлом данных. Если файла нет, он создаётся пустым.
 local dataFile = "/home/BD.txt"
 if not fs.exists(dataFile) then
   oc.savef(dataFile, {})
@@ -59,7 +60,7 @@ gpu.setResolution(WIDTH, HEIGHT)
 local TABLE_X = 1
 local TABLE_WIDTH = WIDTH
 
--- Размеры колонок с учётом 7 разделителей
+-- Размеры колонок (с учётом 7 разделителей)
 local COL_WIDTH_IDX    = 4
 local COL_WIDTH_NAME   = 60
 local COL_WIDTH_CAT    = 14
@@ -67,7 +68,7 @@ local COL_WIDTH_REQ    = 11
 local COL_WIDTH_ME     = 12
 local COL_WIDTH_CRAFT  = 12
 
--- Заголовок занимает строки 1-3, тело таблицы начинается с 6-й строки
+-- Заголовок таблицы занимает строки 1-3, тело с 6-й строки
 local TABLE_HEADER_Y = 4
 local TABLE_BODY_START_Y = 6
 local BUTTONS_HEIGHT = 3
@@ -156,7 +157,8 @@ local function customInputOverlay(promptMessage)
   gpu.fill(boxX, boxY, boxW, boxH, " ")
   gpu.setForeground(CTEXT)
   gpu.set(boxX + 2, boxY, promptMessage)
-  -- Рисуем кнопку "Cancel" под окошком
+  
+  -- Рисуем кнопку "Cancel" – задаём диапазон координат
   local cancelBtnW, cancelBtnH = 8, 1
   local cancelBtnX = boxX + boxW - cancelBtnW - 1
   local cancelBtnY = boxY + boxH
@@ -172,30 +174,31 @@ local function customInputOverlay(promptMessage)
   term.setCursor(inputX + unicode.len(inputStr), inputY)
   term.setCursorBlink(true)
   
-  -- Кастомный цикл ввода (будет игнорировать клики вне окна ввода)
+  -- Основной цикл ввода
   while true do
     local e = { event.pull(0.1) }
-    if e[1] == "key_down" then
+    local ev = e[1]
+    if ev == "key_down" then
       local key = e[3]
       if key == 28 then  -- Enter
         break
       elseif key == 14 then  -- Backspace
         if unicode.len(inputStr) > 0 then
-          inputStr = unicode.sub(inputStr, 1, unicode.len(inputStr)-1)
+          inputStr = unicode.sub(inputStr, 1, unicode.len(inputStr) - 1)
         end
       end
-    elseif e[1] == "text" then
+    elseif ev == "text" then
       local char = e[4]
       inputStr = inputStr .. char
-    elseif e[1] == "touch" then
+    elseif ev == "touch" then
       local tx, ty = e[3], e[4]
-      -- Если нажата кнопка "Cancel"
-      if tx >= cancelBtnX and tx < cancelBtnX + cancelBtnW and ty == cancelBtnY then
-        inputStr = nil
+      if tx >= cancelBtnX and tx <= cancelBtnX + cancelBtnW - 1 and 
+         ty >= cancelBtnY and ty <= cancelBtnY + cancelBtnH - 1 then
+        inputStr = nil  -- сброс ввода
         break
       end
     end
-    -- Обновляем поле ввода
+    -- Обновляем поле ввода без перерисовки всего экрана
     gpu.setBackground(BG_MAIN)
     gpu.fill(inputX, inputY, boxW - 4, 1, " ")
     gpu.setForeground(CTEXT)
@@ -204,7 +207,7 @@ local function customInputOverlay(promptMessage)
   end
   
   term.setCursorBlink(false)
-  term.setCursor(1, HEIGHT)  -- переводим курсор в нижнюю строку
+  -- Не перемещаем курсор за пределы поля ввода, чтобы он оставался в окошке до закрытия
   inputActive = false
   updateUI()
   return inputStr
@@ -537,7 +540,7 @@ end
 -- ОБРАБОТКА СОБЫТИЙ (касания и скролла)
 --------------------------------------------------------------------
 local function onTouch(_, _, x, y, _, nick)
-  if inputActive then return true end  -- блокируем события, если окно ввода активно
+  if inputActive then return true end  -- во время ввода события не передаются внешнему UI
   if ADM[nick] then
     for _, button in ipairs(buttons) do
       if x >= button.x and x <= (button.x + button.w - 1) and
@@ -567,7 +570,7 @@ local function onScroll(_, _, _, _, dir, nick)
 end
 
 --------------------------------------------------------------------
--- ИНИЦИАЛИЗАЦИЯ КНОПОК (перераспределённые для 120×50)
+-- ИНИЦИАЛИЗАЦИЯ КНОПОК (перераспределённых для 120×50)
 --------------------------------------------------------------------
 local function initButtons()
   buttons = {
@@ -664,7 +667,7 @@ local function checkBackgroundUpdate()
 end
 
 local backgroundUpdateTimer = event.timer(1.0, checkBackgroundUpdate, math.huge)
-local craftTimer = event.timer(8.0, autoCraftCheck, math.huge)  -- Автокрафт каждые 8 секунд
+local craftTimer = event.timer(8.0, autoCraftCheck, math.huge)  -- автокрафт каждые 8 секунд
 
 --------------------------------------------------------------------
 -- ГЛАВНЫЙ ЦИКЛ
