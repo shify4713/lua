@@ -1,6 +1,5 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Исправлено: увеличена таблица (~30%), уменьшена область логов,
--- исправлена ошибка drawCustomButton (forward declaration) и устранены визуальные артефакты.
+-- Исправлено: увеличена таблица, уменьшена область логов, исправлена ошибка drawCustomButton и устранены визуальные артефакты.
 local component = require("component")
 local fs = require("filesystem")
 local shell = require("shell")
@@ -49,8 +48,8 @@ local COLOR_BUTTON_BORDER = 0x000000  -- Граница кнопок
 
 ---------------------- РАЗМЕРЫ UI КОМПОНЕНТОВ ----------------------
 local TABLE_X = 2
-local TABLE_WIDTH = 120   -- увеличено с 90 до 120 (примерно +30%)
-local LOGS_X = TABLE_X + TABLE_WIDTH + 2  -- теперь LOGS_X = 124
+local TABLE_WIDTH = 138   -- увеличено с 120 до 138 для расширения таблицы
+local LOGS_X = TABLE_X + TABLE_WIDTH + 2  -- сдвинули справа: 2 + 138 + 2 = 142
 local HEADER_Y = 1
 local HEADER_TEXT_Y = HEADER_Y + 1
 local TABLE_HEADER_Y = HEADER_Y + 3
@@ -71,11 +70,22 @@ local sortCriteria = "name"   -- Возможные: "name", "category", "count"
 local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
 
 local redrawNeeded = true     -- Флаг необходимости перерисовки
-local craftLogs = {}          -- Логи (до 10 записей)
+local craftLogs = {}          -- Логи (до 20 записей)
 local buttons = {}            -- Кнопки интерфейса
 
 -- Forward declaration для предотвращения ошибки вызова nil: drawCustomButton
-local drawCustomButton
+local drawCustomButton = nil
+
+---------------------- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ----------------------
+local function padOrTrim(text, width)
+  text = tostring(text)
+  local len = unicode.len(text)
+  if len > width then
+    return unicode.sub(text, 1, width)
+  else
+    return text .. string.rep(" ", width - len)
+  end
+end
 
 ---------------------- ФУНКЦИЯ РИСОВАНИЯ ГРАНИЦЫ ----------------------
 local function drawBorder(x, y, w, h, fgColor)
@@ -118,13 +128,14 @@ local function drawStaticUI()
   -- Рисуем рамку таблицы и заголовок
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableHeaderHeight, COLOR_BUTTON)
-  local headerStr = string.format("|%-5s|%-50s|%-18s|%-7s|%-7s|%-8s|", "Idx", "Name", "Категория", "Req", "ME", "Craft")
+  local headerStr = "|" .. padOrTrim("Idx", 5) .. "|" .. padOrTrim("Name", 60) .. "|" .. padOrTrim("Категория", 18) 
+                      .. "|" .. padOrTrim("Req", 16) .. "|" .. padOrTrim("ME", 16) .. "|" .. padOrTrim("Craft", 16) .. "|"
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.setForeground(CTEXT)
   gpu.set(TABLE_X, TABLE_HEADER_Y, headerStr)
   gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("─", TABLE_WIDTH))
   
-  -- Зона логов (уменьшена)
+  -- Зона логов (уменьшена по ширине, чтобы увеличить таблицу)
   local logsWidth = WIDTH - LOGS_X - 1
   local logsHeight = HEIGHT - HEADER_Y - 1
   drawBorder(LOGS_X - 1, HEADER_Y - 1, logsWidth + 2, logsHeight + 2, COLOR_BUTTON)
@@ -165,9 +176,14 @@ local function drawTableItems()
     end
     
     gpu.setBackground(rowBg)
-    local line = string.format("|%-5d|%-50s|%-18s|%-7d|%-7d|%-8d|", i, item.name, (item.category or ""), reqCount, currentQty, item.craftSize or 0)
+    local rowStr = "|" .. padOrTrim(i, 5)
+                   .. "|" .. padOrTrim(item.name, 60)
+                   .. "|" .. padOrTrim(item.category or "", 18)
+                   .. "|" .. padOrTrim(reqCount, 16)
+                   .. "|" .. padOrTrim(currentQty, 16)
+                   .. "|" .. padOrTrim(item.craftSize or 0, 16) .. "|"
     gpu.setForeground(colorText)
-    gpu.set(TABLE_X, row, line)
+    gpu.set(TABLE_X, row, rowStr)
   end
 end
 
@@ -253,7 +269,7 @@ local function addLogEvent(eventType, message, status)
   }
   local color = statusColors[status] or CTEXT
   local fullMessage = "[" .. eventType .. "] " .. message
-  if #craftLogs >= 10 then
+  if #craftLogs >= 20 then
     table.remove(craftLogs, 1)
   end
   table.insert(craftLogs, { text = fullMessage, color = color })
