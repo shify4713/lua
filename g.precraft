@@ -39,16 +39,17 @@ local BG_MAIN             = 0x1A1A1A  -- Тёмно-серый фон
 local CTEXT               = 0xDADADA  -- Светло-серый текст
 local COLOR_BUTTON        = 0x4A90E2  -- Синий для кнопок
 local COLOR_BUTTON_TEXT   = 0xFFFFFF  -- Белый текст на кнопках
--- Новый яркий цвет выделения:
-local COLOR_HIGHLIGHT     = 0xFFFF00  -- Ярко-жёлтый (новый вариант для выделения)
+-- Новый яркий цвет выделения – заменён на мягкий золотой:
+local COLOR_HIGHLIGHT     = 0xFFD700  -- Мягкий золотой для выделения
 local COLOR_LOW           = 0xFF4C4C  -- Красный – ошибка/недостаточно
 local COLOR_MEDIUM        = 0xFFCC00  -- Желтый – промежуточное состояние
 local COLOR_HIGH          = 0x00FF66  -- Зелёный – позитивное состояние
 
 local BG_ALT              = 0x2A2A2A  -- Альтернативный фон для четных строк
 local COLOR_HEADER_BG     = 0x333333  -- Фон заголовка
-local COLOR_LOG_BG        = 0x2D2D2D  -- Фон всплывающей области логов
-local COLOR_BUTTON_BORDER = 0x000000  -- Граница кнопок
+-- Для логов выбран более тёмный фон для контраста:
+local COLOR_LOG_BG        = 0x3A3A3A  -- Фон всплывающей области логов (обновлено)
+local COLOR_BUTTON_BORDER = 0x444444  -- Граница кнопок (обновлён, вместо чистого чёрного)
 
 ---------------------- РАЗМЕРЫ UI ----------------------
 local TABLE_X = 2            -- Начало таблицы слева
@@ -91,15 +92,8 @@ local COUNT_UPDATE_INTERVAL = 20  -- в секундах
 -- Флаг, блокирующий фоновые обновления при активном окне ввода
 local inputActive = false
 
----------------------- ЛОГИРОВАНИЕ ----------------------
-local function addLog(msg, color)
-  table.insert(craftLogs, { text = msg, color = color })
-  if #craftLogs > MAX_LOGS then
-    table.remove(craftLogs, 1)
-  end
-end
-
----------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------------------
+---------------------- ФУНКЦИИ ВЫРАВНЕНИЯ ТЕКСТА ----------------------
+-- Функция для заполнения или обрезки строки слева (для текстовых полей)
 local function padOrTrim(text, width)
   text = tostring(text)
   local len = unicode.len(text)
@@ -110,6 +104,18 @@ local function padOrTrim(text, width)
   end
 end
 
+-- Функция для выравнивания по правому краю (для числовых значений)
+local function padOrTrimRight(text, width)
+  text = tostring(text)
+  local len = unicode.len(text)
+  if len > width then
+    return unicode.sub(text, 1, width)
+  else
+    return string.rep(" ", width - len) .. text
+  end
+end
+
+---------------------- ФУНКЦИЯ ОТОБРАЖЕНИЯ ГРАНИЦЫ ----------------------
 local function drawBorder(x, y, w, h, fgColor)
   fgColor = fgColor or CTEXT
   gpu.setForeground(fgColor)
@@ -148,13 +154,13 @@ local function drawStaticUI()
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableHeaderHeight, COLOR_BUTTON)
   
-  -- Заголовок таблицы
-  local headerStr = "|" .. padOrTrim("Idx", 5) .. "|" ..
+  -- Заголовок таблицы с выравниванием: числовые поля по правому краю
+  local headerStr = "|" .. padOrTrimRight("Idx", 5) .. "|" ..
                           padOrTrim("Name", 94) .. "|" ..
                           padOrTrim("Категория", 15) .. "|" ..
-                          padOrTrim("Req", 12) .. "|" ..
-                          padOrTrim("ME", 12) .. "|" ..
-                          padOrTrim("Craft", 12) .. "|"
+                          padOrTrimRight("Req", 12) .. "|" ..
+                          padOrTrimRight("ME", 12) .. "|" ..
+                          padOrTrimRight("Craft", 12) .. "|"
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.setForeground(CTEXT)
   gpu.set(TABLE_X, TABLE_HEADER_Y, headerStr)
@@ -224,45 +230,51 @@ local function drawTableItems()
     end
 
     gpu.setBackground(rowBg)
-    local rowStr = "|" .. padOrTrim(i, 5) ..
+    local rowStr = "|" .. padOrTrimRight(i, 5) ..
                          "|" .. padOrTrim(item.name, 94) ..
-                         "|" .. padOrTrim(item.category or "", 15) ..
-                         "|" .. padOrTrim(reqCount, 12) ..
-                         "|" .. padOrTrim(currentQty, 12) ..
-                         "|" .. padOrTrim(item.craftSize or 0, 12) .. "|"
+                         "|" .. padOrTrim(item.category or "", 15) .. "|" ..
+                         padOrTrimRight(reqCount, 12) .. "|" ..
+                         padOrTrimRight(currentQty, 12) .. "|" ..
+                         padOrTrimRight(item.craftSize or 0, 12) .."|"
     gpu.setForeground(colorText)
     gpu.set(TABLE_X, rowPos, rowStr)
   end
 end
 
----------------------- Предварительные объявления динамических функций ----------------------
-local drawScrollBar, drawButtons, drawDynamicUI
+---------------------- ПЕРСОНАЛИЗОВАННЫЙ СКРОЛЛБАР ----------------------
+local function drawScrollBar()
+  local x = TABLE_X + TABLE_WIDTH  -- колонка для скроллбара
+  local y = TABLE_BODY_START_Y
+  local height = VISIBLE_TABLE_ROWS
+  local total = #content
+  local trackColor = COLOR_BUTTON  -- фон дорожки – как у кнопок
+  local indicatorColor = COLOR_HIGHLIGHT
 
----------------------- СКРОЛЛБАР ----------------------
-local function _drawScrollBar()
-  oc.drawscroll(TABLE_X + TABLE_WIDTH, TABLE_BODY_START_Y, 1, VISIBLE_TABLE_ROWS,
-                scroll, #content, COLOR_HIGHLIGHT, COLOR_BUTTON)
-end
-drawScrollBar = _drawScrollBar
+  -- Рисуем дорожку скроллбара с символом "│"
+  gpu.setBackground(trackColor)
+  for i = y, y + height - 1 do
+      gpu.set(x, i, "│")
+  end
 
----------------------- КНОПКИ ----------------------
-local function _drawButtons()
-  for _, button in ipairs(buttons) do
-    if button.visible then
-      local btnText = button.text
-      if button.id == "craft" then
-        btnText = "Craft: " .. (craftingActive and "ON" or "OFF")
-      elseif button.id == "logs" then
-        btnText = "Logs: " .. (logsVisible and "ON" or "OFF")
+  if total > VISIBLE_TABLE_ROWS then
+    local barHeight = math.max(1, math.floor(height * height / total))
+    local pos = math.floor((scroll - 1) * (height - barHeight) / (total - VISIBLE_TABLE_ROWS)) + y
+    gpu.setBackground(indicatorColor)
+    for i = pos, pos + barHeight - 1 do
+      if i >= y and i < y + height then
+        gpu.set(x, i, "█")
       end
-      drawCustomButton(button.x, button.y, button.w, button.h,
-                       COLOR_BUTTON, COLOR_BUTTON_TEXT, btnText)
+    end
+  else
+    -- Если элементов меньше или равно видимым строкам, заполняем всю область индикатором
+    gpu.setBackground(indicatorColor)
+    for i = y, y + height - 1 do
+        gpu.set(x, i, "█")
     end
   end
 end
-drawButtons = _drawButtons
 
----------------------- ДИНАМИЧНАЯ ОБЛАСТЬ ----------------------
+---------------------- ОТРИСОВКА ДИНАМИЧНОЙ ОБЛАСТИ ----------------------
 local function drawDynamicUI()
   drawTableItems()
   drawScrollBar()
@@ -420,6 +432,14 @@ local function editItem()
   end
 end
 
+---------------------- ЛОГИРОВАНИЕ ----------------------
+local function addLog(msg, color)
+  table.insert(craftLogs, { text = msg, color = color })
+  if #craftLogs > MAX_LOGS then
+    table.remove(craftLogs, 1)
+  end
+end
+
 ---------------------- АВТО-КРАФТ ----------------------
 local function autoCraftCheck()
   if not craftingActive then return end
@@ -504,10 +524,12 @@ end
 
 ---------------------- ИНИЦИАЛИЗАЦИЯ КНОПОК ----------------------
 local function initButtons()
+  -- Размещаем кнопки сразу под таблицей, чтобы убрать большой промежуток.
+  local buttonY = TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS + 1
   buttons = {
     {
       id = "craft", visible = true,
-      x = 16, y = HEIGHT - 3, w = 16, h = 3,
+      x = 16, y = buttonY, w = 16, h = 3,
       text = "Craft: OFF",
       action = function()
         craftingActive = not craftingActive
@@ -521,25 +543,25 @@ local function initButtons()
     },
     {
       id = "add", visible = true,
-      x = 34, y = HEIGHT - 3, w = 10, h = 3,
+      x = 34, y = buttonY, w = 10, h = 3,
       text = "Add",
       action = addItem
     },
     {
       id = "edit", visible = true,
-      x = 46, y = HEIGHT - 3, w = 10, h = 3,
+      x = 46, y = buttonY, w = 10, h = 3,
       text = "Edit",
       action = editItem
     },
     {
       id = "remove", visible = true,
-      x = 58, y = HEIGHT - 3, w = 12, h = 3,
+      x = 58, y = buttonY, w = 12, h = 3,
       text = "Remove",
       action = removeItem
     },
     {
       id = "sort", visible = true,
-      x = 72, y = HEIGHT - 3, w = 10, h = 3,
+      x = 72, y = buttonY, w = 10, h = 3,
       text = "Sort",
       action = function()
         if sortCriteria == "name" then
@@ -557,7 +579,7 @@ local function initButtons()
     },
     {
       id = "logs", visible = true,
-      x = 84, y = HEIGHT - 3, w = 12, h = 3,
+      x = 84, y = buttonY, w = 12, h = 3,
       text = "Logs: OFF",
       action = function()
         logsVisible = not logsVisible
