@@ -1,23 +1,21 @@
--- oc.lua – Улучшенная библиотека для PreCraft
+-- oc.lua – новая, улучшенная библиотека для PreCraft
 local component = require("component")
 local fs = require("filesystem")
-local term = require("term")
+local shell = require("shell")
 local serialization = require("serialization")
 local unicode = require("unicode")
+local term = require("term")
+local gpu = component.gpu
 
 local oc = {}
-local g = component.gpu
 
--- Сохранение таблицы в файл (например, BD.txt)
 function oc.savef(filename, tbl)
   local file, err = io.open(filename, "w")
-  if not file then error("Ошибка записи файла: " .. err) end
+  if not file then error("Ошибка записи: " .. err) end
   file:write(serialization.serialize(tbl))
   file:close()
-  return true
 end
 
--- Загрузка таблицы из файла
 function oc.loadf(filename)
   if not fs.exists(filename) then return {} end
   local file = io.open(filename, "r")
@@ -26,36 +24,34 @@ function oc.loadf(filename)
   return serialization.unserialize(data) or {}
 end
 
--- Рисование кнопки с центровкой текста
 function oc.drawbutton(x, y, w, h, fg, bg, text)
-  g.setBackground(bg or 0x000000)
-  g.setForeground(fg or 0xFFFFFF)
-  g.fill(x, y, w, h, " ")
-  local tx = x + math.floor((w - unicode.len(text)) / 2)
-  local ty = y + math.floor(h / 2)
-  g.set(tx, ty, text)
+  -- Заполняем фон кнопки и центруем текст
+  gpu.setBackground(bg or 0x000000)
+  gpu.setForeground(fg or 0xFFFFFF)
+  gpu.fill(x, y, w, h, " ")
+  local len = unicode.len(text)
+  local cx = x + math.floor((w - len) / 2)
+  local cy = y + math.floor(h / 2)
+  gpu.set(cx, cy, text)
 end
 
--- Рисование вертикального скроллбара
 function oc.drawscroll(x, y, w, h, scroll, total, colorBack, colorBorder)
-  g.setBackground(colorBack or 0x1e1e1e)
-  g.fill(x, y, w, h, " ")
-  g.setBackground(colorBorder or 0x004575)
-  g.fill(x, y, w, 1, " ")
-  g.fill(x, y + h - 1, w, 1, " ")
+  gpu.setBackground(colorBack or 0x1e1e1e)
+  gpu.fill(x, y, w, h, " ")
+  gpu.setBackground(colorBorder or 0x004575)
+  gpu.fill(x, y, w, 1, " ")
+  gpu.fill(x, y + h - 1, w, 1, " ")
   if total > h then
     local handleHeight = math.max(1, math.floor((h / total) * h))
     local pos = math.floor(((scroll - 1) / (total - h)) * (h - handleHeight)) + y
-    g.setBackground(0x00ffff)
-    g.fill(x, pos, w, handleHeight, " ")
+    gpu.setBackground(0x00ffff)
+    gpu.fill(x, pos, w, handleHeight, " ")
   end
 end
 
--- Вывод текста с выравниванием вправо (на заданной строке)
 function oc.right(x, y, text)
-  local w, _ = g.getResolution()
-  local tx = w - unicode.len(text) + 1
-  g.set(tx, y, text)
+  local w, _ = gpu.getResolution()
+  gpu.set(w - unicode.len(text) + 1, y, text)
 end
 
 return oc
