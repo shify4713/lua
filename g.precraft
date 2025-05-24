@@ -1,6 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Улучшенная версия: обновление главного экрана только при действиях пользователя 
--- и фоновые изменения отображаются не чаще, чем раз в 10 секунд.
+-- Улучшенная версия: обновление главного экрана только при действиях пользователя,
+-- детальное логирование автокрафтера и устранение мерцания.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -67,7 +67,8 @@ local content = {}          -- Отфильтрованный/отсортиро
 local sortCriteria = "name"    -- Возможные: "name", "category", "count"
 local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
 
-local craftLogs = {}        -- Массив логов (до 20 записей)
+local craftLogs = {}        -- Массив логов
+local MAX_LOGS = 100        -- Максимальное число записей в логах
 local logsVisible = false   -- Флаг: активно ли окно логов
 local buttons = {}          -- Таблица кнопок
 
@@ -75,6 +76,14 @@ local buttons = {}          -- Таблица кнопок
 local bgChanges = false
 -- Время последнего полного обновления (в секундах)
 local lastMainUpdate = os.time()
+
+---------------------- Логирование ----------------------
+local function addLog(msg, color)
+  table.insert(craftLogs, { text = msg, color = color })
+  if #craftLogs > MAX_LOGS then
+    table.remove(craftLogs, 1)
+  end
+end
 
 ---------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------------------
 local function padOrTrim(text, width)
@@ -240,8 +249,6 @@ end
 
 ---------------------- ДЕБАУНС ПЕРЕРИСОВКИ ----------------------
 local redrawScheduled = false
--- Функция перерисовки с защитой от чрезмерных вызовов.
--- Если force == true, то перерисовка выполняется сразу.
 function immediateRedraw(force)
   if force then
     fullRedraw()
@@ -321,7 +328,7 @@ local function addItem()
       cpu = 262144
     })
     oc.savef(dataFile, dataItems)
-    table.insert(craftLogs, { text = "[Add] Добавлен: " .. name, color = COLOR_MEDIUM })
+    addLog("[Add] Добавлен: " .. name, COLOR_MEDIUM)
   else
     inputOverlay("Предмет не установлен в 1-й слот! (Нажмите Enter)")
   end
@@ -337,7 +344,7 @@ local function removeItem()
     local orig = content[posSelect].idx
     table.remove(dataItems, orig)
     oc.savef(dataFile, dataItems)
-    table.insert(craftLogs, { text = "[Edit] Удалён: " .. content[posSelect].item.name, color = COLOR_LOW })
+    addLog("[Edit] Удалён: " .. content[posSelect].item.name, COLOR_LOW)
     posSelect = nil
     dataItems = oc.loadf(dataFile) or {}
     updateContent()
@@ -366,7 +373,7 @@ local function editItem()
     dataItems[idx] = item
     oc.savef(dataFile, dataItems)
     updateContent()
-    table.insert(craftLogs, { text = "[Edit] Изменён: " .. item.name, color = COLOR_MEDIUM })
+    addLog("[Edit] Изменён: " .. item.name, COLOR_MEDIUM)
     posSelect = nil
     immediateRedraw(true)
   end
@@ -374,41 +381,51 @@ end
 
 ---------------------- АВТО-КРАФТ (256К-хранилище) ----------------------
 local function autoCraftCheck()
-  local changed = false
+  if not craftingActive then return end
+  
+  local hasCraftedThisCycle = false
   for i, item in ipairs(dataQueue) do
     if not item.craft or item.craft.isDone() or item.craft.isCanceled() then
       item.craft = nil
       local detail = me.getItemDetail({id = item.id, dmg = item.dmg})
       if detail then
-        local currentQty = 0
-        if detail.basic() then 
-          currentQty = detail.basic().qty or 0
-        end
+        local currentQty = (detail.basic() and detail.basic().qty) or 0
         local reqCount = tonumber(item.count) or 0
         local delta = reqCount - currentQty
         if delta > 0 then
           local cpus = me.getCpus()
+          local foundCPU = false
           for _, cpu in ipairs(cpus) do
             if not cpu.busy and cpu.storage == 262144 then
               local craftables = me.getCraftables({name = item.id, damage = item.dmg})
               if craftables.n and craftables.n >= 1 then
                 item.craft = craftables[1].request(delta, false, tostring(item.cpu))
-                table.insert(craftLogs, { text = "[Craft] " .. item.name .. " x" .. delta, color = COLOR_HIGH })
-                changed = true
+                addLog("[Craft] Запущен крафт " .. item.name .. " x" .. delta, COLOR_HIGH)
+                hasCraftedThisCycle = true
+                foundCPU = true
                 break
               else
-                table.insert(craftLogs, { text = "[Craft] " .. item.name .. " не имеет рецепта", color = COLOR_LOW })
-                changed = true
+                addLog("[Craft] У " .. item.name .. " отсутствует рецепт", COLOR_LOW)
+                foundCPU = true    -- CPU свободен, но рецепт не найден
+                break
               end
             end
           end
+          if not foundCPU then
+            addLog("[Craft] Нет свободных CPU для " .. item.name, COLOR_LOW)
+          end
+        else
+          addLog("[Craft] " .. item.name .. " - текущее: " .. currentQty .. ", требуется: " .. reqCount, COLOR_MEDIUM)
         end
+      else
+        addLog("[Craft] Нет данных по " .. item.name, COLOR_LOW)
       end
     end
   end
-  if changed then
-    bgChanges = true
+  if not hasCraftedThisCycle then
+    addLog("[AutoCraft] Ни один крафт не запущен", CTEXT)
   end
+  bgChanges = true
 end
 
 ---------------------- ОБРАБОТКА СОБЫТИЙ ----------------------
@@ -449,6 +466,11 @@ local function initButtons()
       text = "Craft: OFF",
       action = function()
         craftingActive = not craftingActive
+        if craftingActive then
+          addLog("[AutoCraft] Режим автокрафта включён", COLOR_MEDIUM)
+        else
+          addLog("[AutoCraft] Режим автокрафта выключён", COLOR_MEDIUM)
+        end
         immediateRedraw(true)
       end
     },
@@ -482,7 +504,7 @@ local function initButtons()
         else
           sortCriteria = "name"
         end
-        table.insert(craftLogs, { text = "[Edit] Сортировка по " .. sortCriteriaDisplay[sortCriteria], color = COLOR_MEDIUM })
+        addLog("[Edit] Сортировка по " .. sortCriteriaDisplay[sortCriteria], COLOR_MEDIUM)
         updateContent()
         immediateRedraw(true)
       end
