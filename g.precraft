@@ -1,10 +1,5 @@
--- precraft.lua
--- Улучшенная версия PreCraft с переработанным UI,
--- расширенной таблицей (включает колонку "Категория"),
--- сортировкой по имени, категории и количеству, а также
--- исправлением ошибки обращения к переменной "buttons".
--- Логи отображают события крафта, изменений и добавлений с таймстампами
--- и цветовой индикацией состояний запасов.
+-- Improved PreCraft Auto-Crafting Tool for OpenOS 1.6.1 (Lua 5.2)
+-- Загружает необходимые библиотеки и осуществляет автокрафт с улучшенным визуалом
 
 local component = require("component")
 local fs = require("filesystem")
@@ -32,41 +27,42 @@ end
 ---------------------- НАСТРОЙКИ ----------------------
 local debugMode = true
 local ADM = { ["LiwMorgan"] = true }  -- Доступ только для LiwMorgan
+
+-- Разрешение экрана
 local WIDTH, HEIGHT = 160, 50
 gpu.setResolution(WIDTH, HEIGHT)
 
--- Цветовая палитра
+---------------------- ПАЛИТРА ЦВЕТОВ ----------------------
 local BG_MAIN            = 0x1A1A1A  -- Тёмно-серый фон
 local CTEXT              = 0xDADADA  -- Светло-серый текст
 local COLOR_BUTTON       = 0x4A90E2  -- Синий для кнопок
 local COLOR_BUTTON_TEXT  = 0xFFFFFF  -- Белый текст на кнопках
 local COLOR_HIGHLIGHT    = 0x3A3A3A  -- Подсветка выбранной строки
 
--- Цветовая индикация для запасов
 local COLOR_LOW    = 0xFF4C4C  -- Красный – недостаточно
 local COLOR_MEDIUM = 0xFFCC00  -- Желтый – промежуточно
 local COLOR_HIGH   = 0x00FF66  -- Зелёный – достаточно
 
 -- Размеры компонентов интерфейса
 local TABLE_X = 2
-local TABLE_WIDTH = 120          -- Ширина таблицы (остается до логов справа)
-local LOGS_X = TABLE_X + TABLE_WIDTH + 2  -- Логи располагаются справа
-local HEADER_Y = 2               -- Верхний отступ для заголовка
+local TABLE_WIDTH = 120          -- Ширина таблицы (левой части интерфейса)
+local LOGS_X = TABLE_X + TABLE_WIDTH + 2  -- Привязка логов справа
+local HEADER_Y = 2               -- Отступ для заголовка
 local TABLE_HEADER_Y = HEADER_Y + 3
 local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2
 local VISIBLE_TABLE_ROWS = 35
 
--- Глобальные переменные
-local dataItems = {}      -- Объекты из dataFile
+---------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ----------------------
+local dataItems = {}      -- Объекты, загруженные из файла
 local dataQueue = {}      -- Копия для автокрафта
-local guiPath = {"start"} -- Стек состояний ("start", "change")
-local inputFind = ""      -- Фильтр по имени
-local scroll = 1          -- Позиция прокрутки в таблице
-local posSelect = nil     -- Индекс выбранного элемента
-local changeItem = false  -- Флаг режима редактирования
-local craftingActive = false  -- Переключатель автокрафта
-local running = true          -- Флаг работы цикла
-local maxScroll = 1           -- Максимальное смещение прокрутки
+local guiPath = {"start"} -- Стек состояний интерфейса ("start", "change")
+local inputFind = ""      -- Фильтр для поиска по имени
+local scroll = 1          -- Текущая позиция прокрутки в таблице
+local posSelect = nil     -- Индекс выбранного элемента (в списке content)
+local changeItem = false  -- Флаг редактирования предмета
+local craftingActive = false  -- Флаг включения автокрафта
+local running = true          -- Главный флаг выполнения программы
+local maxScroll = 1           -- Максимальный сдвиг прокрутки
 local content = {}            -- Отфильтрованный и отсортированный список
 
 local sortCriteria = "name"   -- Возможные значения: "name", "category", "count"
@@ -74,14 +70,13 @@ local sortCriteriaDisplay = { name = "Имя", category = "Категория", 
 
 local redrawNeeded = true     -- Флаг необходимости перерисовки экрана
 
--- Система логирования (записывает до 20 последних записей)
-local craftLogs = {}  -- Логи для крафтов, изменений и добавлений
+-- Система логирования – до 20 последних записей
+local craftLogs = {}  
 
--- Переменная buttons объявлена заранее, чтобы не возникала ошибка обращения (#buttons)
-local buttons
+-- Инициализируем таблицу кнопок (важно, чтобы она никогда не была nil)
+local buttons = {}
 
------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ------------------
-
+---------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------------------
 local function updateContent()
   content = {}
   for _, item in ipairs(dataItems) do
@@ -95,15 +90,15 @@ local function updateContent()
   end
 
   if sortCriteria == "name" then
-    table.sort(content, function(a, b) 
+    table.sort(content, function(a, b)
       return (a.name or ""):lower() < (b.name or ""):lower()
     end)
   elseif sortCriteria == "category" then
-    table.sort(content, function(a, b) 
+    table.sort(content, function(a, b)
       return (a.category or ""):lower() < (b.category or ""):lower()
     end)
   elseif sortCriteria == "count" then
-    table.sort(content, function(a, b) 
+    table.sort(content, function(a, b)
       return (tonumber(a.count) or 0) < (tonumber(b.count) or 0)
     end)
   end
@@ -129,8 +124,7 @@ local function goBack()
   requestRedraw()
 end
 
--------------------- СИСТЕМА ЛОГИРОВАНИЯ --------------------
-
+---------------------- ЛОГИРОВАНИЕ ----------------------
 local function drawLogsArea()
   local prevBg = gpu.getBackground()
   gpu.setBackground(BG_MAIN)
@@ -144,7 +138,6 @@ local function drawLogsArea()
   gpu.setBackground(prevBg)
 end
 
--- Добавляет лог-событие с таймстампом, типом и индикацией (цвет зависит от status)
 local function addLogEvent(eventType, message, status)
   local statusColors = {
     sufficient   = COLOR_HIGH,
@@ -154,7 +147,7 @@ local function addLogEvent(eventType, message, status)
   local color = statusColors[status] or CTEXT
   local timeStamp = os.date("%H:%M:%S")
   local fullMessage = timeStamp .. " [" .. eventType .. "] " .. message
-  
+
   if #craftLogs >= 20 then
     table.remove(craftLogs, 1)
   end
@@ -162,9 +155,7 @@ local function addLogEvent(eventType, message, status)
   drawLogsArea()
 end
 
---------------------- ФУНКЦИИ ОТРИСОВКИ ---------------------
-
--- Рисует прямоугольную рамку с использованием символов Unicode
+---------------------- ФУНКЦИИ ОТРИСОВКИ ----------------------
 local function drawBorder(x, y, w, h, fgColor)
   fgColor = fgColor or CTEXT
   gpu.setForeground(fgColor)
@@ -176,32 +167,30 @@ local function drawBorder(x, y, w, h, fgColor)
   end
 end
 
--- Рисует статическую часть интерфейса: заголовок, рамки для таблицы и логов
 local function drawStatic()
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, 1, WIDTH, HEIGHT, " ")
-  
+
   -- Заголовок
   gpu.setForeground(CTEXT)
   local header = "PreCraft - Автокрафт предметов"
   gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), HEADER_Y, header)
-  
   gpu.set(2, HEADER_Y + 1, "Сортировка: " .. sortCriteriaDisplay[sortCriteria])
-  
-  -- Рамка таблицы
+
+  -- Рамка для таблицы
   local tableHeaderWidth = TABLE_WIDTH
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, tableHeaderWidth + 2, tableHeaderHeight)
-  
-  -- Заголовок таблицы (с новой колонкой "Категория")
+
+  -- Заголовок таблицы
   local headerStr = string.format("|%-4s|%-40s|%-20s|%-8s|%-8s|%-10s|", "Idx", "Name", "Категория", "Req", "ME", "Craft")
   headerStr = headerStr .. string.rep(" ", TABLE_WIDTH - unicode.len(headerStr))
   gpu.setBackground(BG_MAIN)
   gpu.setForeground(CTEXT)
   gpu.set(TABLE_X, TABLE_HEADER_Y, headerStr)
   gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("─", TABLE_WIDTH))
-  
-  -- Рамка для области логов
+
+  -- Рамка области логов
   local logsWidth = WIDTH - LOGS_X - 1
   local logsHeight = HEIGHT - HEADER_Y - 1
   drawBorder(LOGS_X - 1, HEADER_Y - 1, logsWidth + 2, logsHeight + 2)
@@ -214,7 +203,7 @@ local function drawTableItems()
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
   end
 
-  -- Для каждого отображаемого элемента
+  -- Отрисовка каждого элемента, видимого в текущей области
   for i = scroll, math.min(#content, scroll + VISIBLE_TABLE_ROWS - 1) do
     local row = TABLE_BODY_START_Y + (i - scroll)
     local item = content[i]
@@ -233,7 +222,7 @@ local function drawTableItems()
     else
       colorText = COLOR_MEDIUM
     end
-    
+
     if posSelect and i == posSelect then
       gpu.setBackground(COLOR_HIGHLIGHT)
     else
@@ -252,6 +241,7 @@ local function drawScrollBar()
 end
 
 local function drawButtons()
+  if not buttons then return end
   for i = 1, #buttons do
     local button = buttons[i]
     for j = 1, #button.ButtonIn do
@@ -272,7 +262,7 @@ local function drawEditMode()
   gpu.setForeground(CTEXT)
   local header = "Редактирование предмета"
   gpu.set(dialogX + math.floor((dialogW - unicode.len(header)) / 2), dialogY, header)
-  
+
   local item = dataItems[posSelect]
   if item then
     gpu.set(dialogX + 2, dialogY + 2, "Имя: " .. item.name)
@@ -280,7 +270,7 @@ local function drawEditMode()
     gpu.set(dialogX + 2, dialogY + 4, "Треб: " .. (item.count or ""))
     gpu.set(dialogX + 2, dialogY + 5, "Крафт: " .. (item.craftSize or ""))
   end
-  
+
   for i = 1, #buttons do
     local button = buttons[i]
     for j = 1, #button.ButtonIn do
@@ -304,8 +294,7 @@ local function fullRedraw()
   end
 end
 
---------------------- АВТО-КРАФТ ---------------------
-
+---------------------- АВТО-КРАФТ ----------------------
 local function autoCraftCheck()
   for i, item in ipairs(dataQueue) do
     if not item.craft or item.craft.isDone() or item.craft.isCanceled() then
@@ -321,7 +310,9 @@ local function autoCraftCheck()
         local status = (currentQty >= reqCount) and "sufficient" or 
                        (delta >= math.floor(reqCount * 0.5)) and "insufficient" or "intermediate"
         addLogEvent("Craft", item.name .. "  Тек.: " .. currentQty .. "  Треб.: " .. reqCount, status)
-        if delta > (tonumber(item.craftSize) or 0) then delta = tonumber(item.craftSize) or 0 end
+        if delta > (tonumber(item.craftSize) or 0) then
+          delta = tonumber(item.craftSize) or 0
+        end
         if delta > 0 then
           local cpus = me.getCpus()
           for _, cpu in ipairs(cpus) do
@@ -343,8 +334,7 @@ local function autoCraftCheck()
   os.sleep(1)
 end
 
---------------------- УПРАВЛЕНИЕ ПРЕДМЕТАМИ ---------------------
-
+---------------------- УПРАВЛЕНИЕ ПРЕДМЕТАМИ ----------------------
 local function addItem()
   changeItem = true
   local stack = me.getStackInSlot(1)
@@ -392,17 +382,25 @@ end
 
 local function removeItem()
   if posSelect then
-    for i = 1, #dataItems do
-      if dataItems[i].name == content[posSelect].name then
-        table.remove(dataItems, i)
-        oc.savef(dataFile, dataItems)
-        addLogEvent("Edit", "Удалён: " .. content[posSelect].name, "insufficient")
-        posSelect = nil
-        dataItems = oc.loadf(dataFile) or {}
-        updateContent()
-        requestRedraw()
-        return true
+    -- Запрашиваем подтверждение на удаление
+    gpu.set(2, 43, "Удалить выбранный предмет? (Y/N): ")
+    local answer = string.lower(tostring(io.read()))
+    if answer == "y" then
+      for i = 1, #dataItems do
+        if dataItems[i].name == content[posSelect].name then
+          table.remove(dataItems, i)
+          oc.savef(dataFile, dataItems)
+          addLogEvent("Edit", "Удалён: " .. content[posSelect].name, "insufficient")
+          posSelect = nil
+          dataItems = oc.loadf(dataFile) or {}
+          updateContent()
+          requestRedraw()
+          return true
+        end
       end
+    else
+      gpu.fill(1, 43, WIDTH, 1, " ")
+      return false
     end
   end
 end
@@ -460,8 +458,7 @@ local function changeItemData(action)
   end
 end
 
---------------------- ОБРАБОТЧИКИ СОБЫТИЙ ---------------------
-
+---------------------- ОБРАБОТЧИКИ СОБЫТИЙ ----------------------
 local function onTouch(_, _, x, y, _, nick)
   if ADM[nick] then
     for i = 1, #buttons do
@@ -518,111 +515,112 @@ local function onKeyDown(_, _, key, code, nick)
   end
 end
 
---------------------- ИНИЦИАЛИЗАЦИЯ КНОПОК ---------------------
--- Определяем кнопки, используя предварительно объявленную переменную buttons
-buttons = {
-  {
-    ButtonIn = {"start"}, visible = true,
-    x = 2, y = HEIGHT - 3, w = 12, h = 3,
-    text = "Exit",
-    action = function()
-      gpu.setResolution(160, 50)
-      event.cancel(touchEvent)
-      event.cancel(scrollEvent)
-      event.cancel(keyDownEvent)
-      os.exit()
-    end
-  },
-  {
-    ButtonIn = {"start"}, visible = true,
-    x = 16, y = HEIGHT - 3, w = 16, h = 3,
-    text = "Craft: OFF",
-    action = function()
-      craftingActive = not craftingActive
-      if craftingActive then
-         buttons[2].text = "Craft: ON"
-      else
-         buttons[2].text = "Craft: OFF"
+---------------------- ИНИЦИАЛИЗАЦИЯ КНОПОК ----------------------
+local function initButtons()
+  buttons = {
+    {
+      ButtonIn = {"start"}, visible = true,
+      x = 2, y = HEIGHT - 3, w = 12, h = 3,
+      text = "Exit",
+      action = function()
+        gpu.setResolution(160, 50)
+        if touchEvent then event.cancel(touchEvent) end
+        if scrollEvent then event.cancel(scrollEvent) end
+        if keyDownEvent then event.cancel(keyDownEvent) end
+        os.exit()
       end
-      requestRedraw()
-    end
-  },
-  {
-    ButtonIn = {"start"}, visible = true,
-    x = 34, y = HEIGHT - 3, w = 10, h = 3,
-    text = "Add",
-    action = addItem
-  },
-  {
-    ButtonIn = {"start"}, visible = true,
-    x = 46, y = HEIGHT - 3, w = 10, h = 3,
-    text = "Edit",
-    action = editItem
-  },
-  {
-    ButtonIn = {"start"}, visible = true,
-    x = 58, y = HEIGHT - 3, w = 12, h = 3,
-    text = "Remove",
-    action = removeItem
-  },
-  {
-    ButtonIn = {"start"}, visible = true,
-    x = 72, y = HEIGHT - 3, w = 10, h = 3,
-    text = "Sort",
-    action = function()
-      if sortCriteria == "name" then
-        sortCriteria = "category"
-      elseif sortCriteria == "category" then
-        sortCriteria = "count"
-      else
-        sortCriteria = "name"
+    },
+    {
+      ButtonIn = {"start"}, visible = true,
+      x = 16, y = HEIGHT - 3, w = 16, h = 3,
+      text = "Craft: OFF",
+      action = function()
+        craftingActive = not craftingActive
+        if craftingActive then
+          buttons[2].text = "Craft: ON"
+        else
+          buttons[2].text = "Craft: OFF"
+        end
+        requestRedraw()
       end
-      addLogEvent("Edit", "Сортировка по " .. sortCriteriaDisplay[sortCriteria], "intermediate")
-      updateContent()
-      requestRedraw()
-    end
-  },
-  -- Кнопки для режима редактирования ("change")
-  {
-    ButtonIn = {"change"}, visible = true,
-    x = 25, y = 18, w = 18, h = 3,
-    text = "Изм. имя",
-    action = function() changeItemData("changeName") end
-  },
-  {
-    ButtonIn = {"change"}, visible = true,
-    x = 46, y = 18, w = 18, h = 3,
-    text = "Изм. кат.",
-    action = function() changeItemData("changeCategory") end
-  },
-  {
-    ButtonIn = {"change"}, visible = true,
-    x = 67, y = 18, w = 18, h = 3,
-    text = "Изм. треб.",
-    action = function() changeItemData("changeCount") end
-  },
-  {
-    ButtonIn = {"change"}, visible = true,
-    x = 88, y = 18, w = 18, h = 3,
-    text = "Изм. крафт",
-    action = function() changeItemData("changeCraftSize") end
-  },
-  {
-    ButtonIn = {"change"}, visible = true,
-    x = 55, y = 26, w = 18, h = 3,
-    text = "Назад",
-    action = goBack
+    },
+    {
+      ButtonIn = {"start"}, visible = true,
+      x = 34, y = HEIGHT - 3, w = 10, h = 3,
+      text = "Add",
+      action = addItem
+    },
+    {
+      ButtonIn = {"start"}, visible = true,
+      x = 46, y = HEIGHT - 3, w = 10, h = 3,
+      text = "Edit",
+      action = editItem
+    },
+    {
+      ButtonIn = {"start"}, visible = true,
+      x = 58, y = HEIGHT - 3, w = 12, h = 3,
+      text = "Remove",
+      action = removeItem
+    },
+    {
+      ButtonIn = {"start"}, visible = true,
+      x = 72, y = HEIGHT - 3, w = 10, h = 3,
+      text = "Sort",
+      action = function()
+        if sortCriteria == "name" then
+          sortCriteria = "category"
+        elseif sortCriteria == "category" then
+          sortCriteria = "count"
+        else
+          sortCriteria = "name"
+        end
+        addLogEvent("Edit", "Сортировка по " .. sortCriteriaDisplay[sortCriteria], "intermediate")
+        updateContent()
+        requestRedraw()
+      end
+    },
+    -- Кнопки для режима редактирования ("change")
+    {
+      ButtonIn = {"change"}, visible = true,
+      x = 25, y = 18, w = 18, h = 3,
+      text = "Изм. имя",
+      action = function() changeItemData("changeName") end
+    },
+    {
+      ButtonIn = {"change"}, visible = true,
+      x = 46, y = 18, w = 18, h = 3,
+      text = "Изм. кат.",
+      action = function() changeItemData("changeCategory") end
+    },
+    {
+      ButtonIn = {"change"}, visible = true,
+      x = 67, y = 18, w = 18, h = 3,
+      text = "Изм. треб.",
+      action = function() changeItemData("changeCount") end
+    },
+    {
+      ButtonIn = {"change"}, visible = true,
+      x = 88, y = 18, w = 18, h = 3,
+      text = "Изм. крафт",
+      action = function() changeItemData("changeCraftSize") end
+    },
+    {
+      ButtonIn = {"change"}, visible = true,
+      x = 55, y = 26, w = 18, h = 3,
+      text = "Назад",
+      action = goBack
+    }
   }
-}
+end
 
---------------------- ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ ---------------------
-
+---------------------- ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ ----------------------
 local touchEvent, scrollEvent, keyDownEvent
 
 local function LoadSystem()
   gpu.fill(1, 1, WIDTH, HEIGHT, " ")
   dataItems = oc.loadf(dataFile) or {}
   updateContent()
+  initButtons()
   touchEvent = event.listen("touch", onTouch)
   scrollEvent = event.listen("scroll", onScroll)
   keyDownEvent = event.listen("key_down", onKeyDown)
@@ -654,9 +652,9 @@ end
 
 local ok, err = pcall(mainLoop)
 if not ok then
-  event.cancel(touchEvent)
-  event.cancel(scrollEvent)
-  event.cancel(keyDownEvent)
+  if touchEvent then event.cancel(touchEvent) end
+  if scrollEvent then event.cancel(scrollEvent) end
+  if keyDownEvent then event.cancel(keyDownEvent) end
   gpu.set(2, HEIGHT, "Фатальная ошибка: " .. tostring(err))
   os.sleep(5)
   os.exit()
