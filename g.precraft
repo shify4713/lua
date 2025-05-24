@@ -1,5 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Улучшенный визуал, стабильный ввод и обновлённая система логирования
+-- Обновлённый дизайн, минимальное мерцание, последовательный ввод при Add и Edit,
+-- оптимизированные логи, крафты только на 256К хранилищах
 
 local component = require("component")
 local fs = require("filesystem")
@@ -33,25 +34,24 @@ local WIDTH, HEIGHT = 160, 50
 gpu.setResolution(WIDTH, HEIGHT)
 
 ---------------------- ПАЛИТРА ЦВЕТОВ ----------------------
-local BG_MAIN            = 0x1A1A1A  -- Тёмно-серый фон
-local CTEXT              = 0xDADADA  -- Светло-серый текст
-local COLOR_BUTTON       = 0x4A90E2  -- Синий для кнопок
-local COLOR_BUTTON_TEXT  = 0xFFFFFF  -- Белый текст на кнопках
-local COLOR_HIGHLIGHT    = 0x3A3A3A  -- Подсветка выбранной строки
-local COLOR_LOW          = 0xFF4C4C  -- Красный – недостаточно
-local COLOR_MEDIUM       = 0xFFCC00  -- Желтый – промежуточно
-local COLOR_HIGH         = 0x00FF66  -- Зелёный – достаточно
+local BG_MAIN             = 0x1A1A1A  -- Тёмно-серый фон
+local CTEXT               = 0xDADADA  -- Светло-серый текст
+local COLOR_BUTTON        = 0x4A90E2  -- Синий для кнопок
+local COLOR_BUTTON_TEXT   = 0xFFFFFF  -- Белый текст на кнопках
+local COLOR_HIGHLIGHT     = 0x3A3A3A  -- Подсветка выбранной строки
+local COLOR_LOW           = 0xFF4C4C  -- Красный – недостаточно
+local COLOR_MEDIUM        = 0xFFCC00  -- Желтый – промежуточно
+local COLOR_HIGH          = 0x00FF66  -- Зелёный – достаточно
 
--- Новые цвета:
-local BG_ALT             = 0x2A2A2A  -- Альтернативный фон для четных строк таблицы
-local COLOR_HEADER_BG    = 0x333333  -- Фон заголовка таблицы и шапки
-local COLOR_LOG_BG       = 0x2D2D2D  -- Фон области логов
-local COLOR_BUTTON_BORDER= 0x000000  -- Граница кнопок
-local COLOR_TABLE_BORDER = 0x666666  -- Цвет вертикальных разделителей в таблице
+local BG_ALT              = 0x2A2A2A  -- Альтернативный фон для четных строк таблицы
+local COLOR_HEADER_BG     = 0x333333  -- Фон заголовка таблицы и шапки
+local COLOR_LOG_BG        = 0x2D2D2D  -- Фон области логов
+local COLOR_BUTTON_BORDER = 0x000000  -- Граница кнопок
 
--- Размеры компонентов UI
+---------------------- РАЗМЕРЫ UI КОМПОНЕНТОВ ----------------------
+-- Обновлённая ширина таблицы для улучшенного отображения
 local TABLE_X = 2
-local TABLE_WIDTH = 97   -- Точная ширина таблицы
+local TABLE_WIDTH = 98   -- Новая ширина таблицы согласно форматированию
 local LOGS_X = TABLE_X + TABLE_WIDTH + 2  -- Лог-область справа
 local HEADER_Y = 2       -- Отступ для заголовка
 local TABLE_HEADER_Y = HEADER_Y + 3
@@ -59,16 +59,14 @@ local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2
 local VISIBLE_TABLE_ROWS = 35
 
 ---------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ----------------------
-local dataItems = {}      -- Объекты, загруженные из файла
-local dataQueue = {}      -- Копия для автокрафта
+local dataItems = {}    -- Объекты, загруженные из файла
+local dataQueue = {}    -- Копия для автокрафта
 
--- Стек состояний: "start" (базовый) и "change" (режим редактирования)
+-- Режим всегда "start" – теперь редактирование осуществляется через последовательный ввод
 local guiPath = {"start"}
 local inputFind = ""      -- Фильтр поиска по имени
 local scroll = 1          -- Текущая позиция прокрутки
 local posSelect = nil     -- Выбранный индекс в массиве content (на экране)
-local editIndex = nil     -- Исходный индекс dataItems выбранного элемента
-local changeItem = false  -- Флаг режима редактирования
 local craftingActive = false  -- Флаг автокрафта
 local running = true          -- Главный флаг работы программы
 local maxScroll = 1           -- Максимальное смещение прокрутки
@@ -81,13 +79,12 @@ local sortCriteria = "name"   -- Возможные значения: "name", "c
 local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
 
 local redrawNeeded = true     -- Флаг необходимости перерисовки экрана
-local craftLogs = {}          -- Логирование (до 20 записей)
+local craftLogs = {}          -- Логирование (храним до 10 записей)
 local buttons = {}            -- Таблица кнопок (инициализируется ниже)
 
--- Флаг для статической отрисовки (чтобы не перерисовывать неподвижные элементы каждый раз)
-local staticDrawn = false
+local staticDrawn = false     -- Флаг для статической отрисовки (чтобы не очищать экран каждый раз)
 
----------------------- ФУНКЦИЯ ОТСЛОЕНИЯ РАМКИ ----------------------
+---------------------- ФУНКЦИЯ РИСОВАНИЯ ГРАНИЦЫ ----------------------
 local function drawBorder(x, y, w, h, fgColor)
   fgColor = fgColor or CTEXT
   gpu.setForeground(fgColor)
@@ -99,13 +96,13 @@ local function drawBorder(x, y, w, h, fgColor)
   end
 end
 
----------------------- ОТРИСОВКА СТАТИЧЕСКИХ ЭЛЕМЕНТОВ UI ----------------------
+---------------------- СТАЧНЫЙ ДИЗАЙН UI ----------------------
 local function drawStaticUI()
-  -- Очистка всего экрана (делается лишь один раз при переходе в "start")
+  -- Очищаем экран только один раз
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, 1, WIDTH, HEIGHT, " ")
   
-  -- Заголовок и шапка
+  -- Шапка
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.fill(1, HEADER_Y, WIDTH, 3, " ")
   gpu.setForeground(CTEXT)
@@ -117,8 +114,8 @@ local function drawStaticUI()
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableHeaderHeight, COLOR_BUTTON)
   
-  -- Заголовок таблицы
-  local headerStr = string.format("|%-4s|%-40s|%-20s|%-8s|%-8s|%-10s|", "Idx", "Name", "Категория", "Req", "ME", "Craft")
+  -- Заголовок таблицы (обновлённое форматирование)
+  local headerStr = string.format("|%-5s|%-40s|%-20s|%-8s|%-8s|%-10s|", "Idx", "Name", "Категория", "Req", "ME", "Craft")
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.setForeground(CTEXT)
   gpu.set(TABLE_X, TABLE_HEADER_Y, headerStr)
@@ -138,7 +135,6 @@ local function drawLogsArea()
   local logsWidth = WIDTH - LOGS_X - 1
   local logsHeight = HEIGHT - HEADER_Y - 1
   gpu.setBackground(COLOR_LOG_BG)
-  -- Очищаем только область логов (без краёв)
   gpu.fill(LOGS_X + 1, HEADER_Y + 1, logsWidth - 1, logsHeight - 2, " ")
   local logY = HEADER_Y + 1
   for i, log in ipairs(craftLogs) do
@@ -156,7 +152,7 @@ local function drawLogsArea()
   end
 end
 
----------------------- ФУНКЦИИ ОТРИСОВКИ КНОПОК ----------------------
+---------------------- ФУНКЦИИ РИСОВАНИЯ КНОПОК ----------------------
 local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
   gpu.setBackground(bgColor)
   gpu.fill(x, y, w, h, " ")
@@ -172,23 +168,19 @@ local function drawButtons()
   if not buttons then return end
   for i = 1, #buttons do
     local button = buttons[i]
-    for j = 1, #button.ButtonIn do
-      if button.ButtonIn[j] == guiPath[#guiPath] and button.visible then
-        drawCustomButton(button.x, button.y, button.w, button.h, COLOR_BUTTON, COLOR_BUTTON_TEXT, button.text)
-      end
+    if button.visible then
+      drawCustomButton(button.x, button.y, button.w, button.h, COLOR_BUTTON, COLOR_BUTTON_TEXT, button.text)
     end
   end
 end
 
 ---------------------- ОТРИСОВКА ТАБЛИЦЫ ----------------------
 local function drawTableItems()
+  -- Очищаем область таблицы динамически (без полного очищения всего экрана)
   for row = TABLE_BODY_START_Y, TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
   end
-  
-  -- Вычисляем позиции вертикальных разделителей
-  local gridCols = { TABLE_X, TABLE_X+5, TABLE_X+46, TABLE_X+67, TABLE_X+76, TABLE_X+85, TABLE_X+96 }
   
   for i = scroll, math.min(#content, scroll + VISIBLE_TABLE_ROWS - 1) do
     local row = TABLE_BODY_START_Y + (i - scroll)
@@ -214,16 +206,10 @@ local function drawTableItems()
     if posSelect and i == posSelect then
       rowBg = COLOR_HIGHLIGHT
     end
-
     gpu.setBackground(rowBg)
-    local line = string.format("|%-4d|%-40s|%-20s|%-8d|%-8d|%-10d|", i, item.name, item.category or "", reqCount, currentQty, item.craftSize or 0)
+    local line = string.format("|%-5d|%-40s|%-20s|%-8d|%-8d|%-10d|", i, item.name, (item.category or ""), reqCount, currentQty, item.craftSize or 0)
     gpu.setForeground(colorText)
     gpu.set(TABLE_X, row, line)
-    
-    for _, colX in ipairs(gridCols) do
-      gpu.setForeground(COLOR_TABLE_BORDER)
-      gpu.set(colX, row, "│")
-    end
   end
 end
 
@@ -231,49 +217,14 @@ local function drawScrollBar()
   oc.drawscroll(TABLE_X + TABLE_WIDTH + 1, TABLE_BODY_START_Y, 1, VISIBLE_TABLE_ROWS, scroll, #content, COLOR_HIGHLIGHT, COLOR_BUTTON)
 end
 
----------------------- РЕЖИМ РЕДАКТИРОВАНИЯ ----------------------
-local function drawEditMode()
-  local dialogX, dialogY, dialogW, dialogH = 20, 15, 100, 12
-  drawBorder(dialogX - 1, dialogY - 1, dialogW + 2, dialogH + 2, COLOR_BUTTON)
-  gpu.setBackground(COLOR_HIGHLIGHT)
-  for y = dialogY, dialogY + dialogH - 1 do
-    gpu.fill(dialogX, y, dialogW, 1, " ")
-  end
-  gpu.setForeground(CTEXT)
-  local header = "Редактирование предмета"
-  gpu.set(dialogX + math.floor((dialogW - unicode.len(header)) / 2), dialogY, header)
-  
-  local item = dataItems[editIndex]
-  if item then
-    gpu.set(dialogX + 2, dialogY + 2, "Имя: " .. item.name)
-    gpu.set(dialogX + 2, dialogY + 3, "Категория: " .. (item.category or ""))
-    gpu.set(dialogX + 2, dialogY + 4, "Треб: " .. tostring(item.count))
-    gpu.set(dialogX + 2, dialogY + 5, "Крафт: " .. tostring(item.craftSize))
-  end
-  
-  for i = 1, #buttons do
-    local button = buttons[i]
-    for j = 1, #button.ButtonIn do
-      if button.ButtonIn[j] == "change" and button.visible then
-        drawCustomButton(button.x, button.y, button.w, button.h, COLOR_BUTTON, COLOR_BUTTON_TEXT, button.text)
-      end
-    end
-  end
-end
-
----------------------- ФУНКЦИЯ ПОЛНОЙ ПЕРЕРИСОВКИ ----------------------
+---------------------- ФУНКЦИЯ ПОЛНОГО ОБНОВЛЕНИЯ ЭКРАНА ----------------------
 local function fullRedraw()
-  if guiPath[#guiPath] == "change" then
-    gpu.fill(1, 1, WIDTH, HEIGHT, " ")
-    drawStaticUI()
-    drawEditMode()
-    staticDrawn = false
-  else
+  if guiPath[#guiPath] == "start" then
     if not staticDrawn then
       drawStaticUI()
       staticDrawn = true
     else
-      -- Обновляем только динамические части заголовка
+      -- Обновляем только динамические части (заголовок, таблица, кнопки, логи)
       gpu.setBackground(COLOR_HEADER_BG)
       gpu.fill(2, HEADER_Y + 1, WIDTH - 2, 2, " ")
       gpu.setForeground(CTEXT)
@@ -333,11 +284,10 @@ end
 local function goBack()
   table.remove(guiPath)
   posSelect = nil
-  editIndex = nil
   requestRedraw()
 end
 
----------------------- ЛОГИРОВАНИЕ ----------------------
+---------------------- ЛОГИРОВАНИЕ (до 10 записей) ----------------------
 local function addLogEvent(eventType, message, status)
   local statusColors = {
     sufficient   = COLOR_HIGH,
@@ -346,7 +296,7 @@ local function addLogEvent(eventType, message, status)
   }
   local color = statusColors[status] or CTEXT
   local fullMessage = "[" .. eventType .. "] " .. message
-  if #craftLogs >= 20 then
+  if #craftLogs >= 10 then
     table.remove(craftLogs, 1)
   end
   table.insert(craftLogs, { text = fullMessage, color = color })
@@ -366,15 +316,12 @@ local function inputOverlay(promptMessage)
   term.setCursor(boxX + 2 + unicode.len(promptMessage) + 1, boxY)
   term.setCursorBlink(true)
   local input = term.read()
-  -- После завершения ввода обновляем UI (это убирает окно ввода)
-  fullRedraw()
-  -- Удаляем завершающий символ (как правило, \n)
+  fullRedraw()  -- обновляем динамическую часть экрана (убираем окно ввода)
   return input:sub(1, -2)
 end
 
 ---------------------- УПРАВЛЕНИЕ ПРЕДМЕТАМИ ----------------------
 local function addItem()
-  changeItem = true
   local stack = me.getStackInSlot(1)
   if stack then
     local name = inputOverlay("Введите название:")
@@ -388,7 +335,7 @@ local function addItem()
       dmg = stack.dmg,
       count = count,
       craftSize = craftSize,
-      cpu = 65536
+      cpu = 262144  -- Фиксированное значение для 256К хранилища
     })
     oc.savef(dataFile, dataItems)
     addLogEvent("Add", "Добавлен: " .. name, "intermediate")
@@ -398,7 +345,6 @@ local function addItem()
   dataItems = oc.loadf(dataFile) or {}
   updateContent()
   requestRedraw()
-  changeItem = false
 end
 
 local function removeItem()
@@ -415,47 +361,43 @@ local function removeItem()
   end
 end
 
+-- РЕДАКТИРОВАНИЕ С ПОСЛЕДОВАТЕЛЬНЫМ ВВОДОМ (аналог addItem)
 local function editItem()
   if posSelect then
-    editIndex = content[posSelect].idx
-    toGui("change", false)
-    return true
-  end
-end
-
-local function changeItemData(action)
-  if editIndex then
-    local oldVal, newVal, fieldName = nil, nil, ""
-    if action == "changeName" then
-      fieldName = "Имя"
-      oldVal = dataItems[editIndex].name
-      newVal = inputOverlay("Введите новое имя:")
-      dataItems[editIndex].name = newVal
-    elseif action == "changeCategory" then
-      fieldName = "Категория"
-      oldVal = dataItems[editIndex].category
-      newVal = inputOverlay("Введите новую категорию:")
-      dataItems[editIndex].category = newVal
-    elseif action == "changeCount" then
-      fieldName = "Требуемое число"
-      oldVal = dataItems[editIndex].count
-      newVal = tonumber(inputOverlay("Введите новое требуемое число:"))
-      dataItems[editIndex].count = newVal
-    elseif action == "changeCraftSize" then
-      fieldName = "Объём крафта"
-      oldVal = dataItems[editIndex].craftSize
-      newVal = tonumber(inputOverlay("Введите новый объём крафта:"))
-      dataItems[editIndex].craftSize = newVal
+    local idx = content[posSelect].idx
+    local item = dataItems[idx]
+    local name = inputOverlay("Введите новое имя (текущее: " .. item.name .. "):")
+    if name ~= "" then 
+      item.name = name
     end
+    local cat = inputOverlay("Введите новую категорию (текущее: " .. (item.category or "") .. "):")
+    if cat ~= "" then
+      item.category = cat
+    end
+    local countStr = inputOverlay("Введите требуемое число (текущее: " .. item.count .. "):")
+    if countStr ~= "" then
+      local count = tonumber(countStr)
+      if count then
+        item.count = count
+      end
+    end
+    local craftSizeStr = inputOverlay("Введите объём крафта (текущее: " .. item.craftSize .. "):")
+    if craftSizeStr ~= "" then
+      local craftSize = tonumber(craftSizeStr)
+      if craftSize then
+        item.craftSize = craftSize
+      end
+    end
+    dataItems[idx] = item
     oc.savef(dataFile, dataItems)
-    dataItems = oc.loadf(dataFile) or {}
     updateContent()
+    addLogEvent("Edit", "Изменён: " .. item.name, "intermediate")
     requestRedraw()
-    addLogEvent("Edit", fieldName .. " изменён: '" .. tostring(oldVal) .. "' -> '" .. tostring(newVal) .. "'", "intermediate")
+    posSelect = nil
   end
 end
 
----------------------- АВТО-КРАФТ ----------------------
+---------------------- АВТО-КРАФТ (только на 256К хранилищах) ----------------------
 local function autoCraftCheck()
   for i, item in ipairs(dataQueue) do
     if not item.craft or item.craft.isDone() or item.craft.isCanceled() then
@@ -471,7 +413,8 @@ local function autoCraftCheck()
         if delta > 0 then
           local cpus = me.getCpus()
           for _, cpu in ipairs(cpus) do
-            if not cpu.busy and cpu.storage == item.cpu then
+            -- Фильтруем только CPU с 256К хранилищем
+            if not cpu.busy and cpu.storage == 262144 then
               local craftables = me.getCraftables({name = item.id, damage = item.dmg})
               if craftables.n and craftables.n >= 1 then
                 item.craft = craftables[1].request(delta, false, tostring(item.cpu))
@@ -496,16 +439,11 @@ local function onTouch(_, _, x, y, _, nick)
       local button = buttons[i]
       if x >= button.x and x <= (button.x + button.w - 1) and
          y >= button.y and y <= (button.y + button.h - 1) then
-        for j = 1, #button.ButtonIn do
-          if button.ButtonIn[j] == guiPath[#guiPath] then
-            button.action()
-            return true
-          end
-        end
+          button.action()
+          return true
       end
     end
-    if guiPath[#guiPath] == "start" and
-       x >= TABLE_X and x <= (TABLE_X + TABLE_WIDTH - 1) and 
+    if x >= TABLE_X and x <= (TABLE_X + TABLE_WIDTH - 1) and 
        y >= TABLE_BODY_START_Y and y < (TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS) then
       posSelect = scroll + (y - TABLE_BODY_START_Y)
       requestRedraw()
@@ -515,19 +453,17 @@ end
 
 local function onScroll(_, _, _, _, dir, nick)
   if ADM[nick] then
-    if guiPath[#guiPath] == "start" then
-      if dir == 1 and scroll > 1 then
-        scroll = scroll - 1
-      elseif dir == -1 and scroll < maxScroll then
-        scroll = scroll + 1
-      end
-      requestRedraw()
+    if dir == 1 and scroll > 1 then
+      scroll = scroll - 1
+    elseif dir == -1 and scroll < maxScroll then
+      scroll = scroll + 1
     end
+    requestRedraw()
   end
 end
 
 local function onKeyDown(_, _, key, code, nick)
-  if ADM[nick] and not changeItem then
+  if ADM[nick] then
     if guiPath[#guiPath] == "start" then
       if key == 8 then
         inputFind = unicode.sub(inputFind, 1, -2)
@@ -550,39 +486,35 @@ end
 local function initButtons()
   buttons = {
     {
-      ButtonIn = {"start"}, visible = true,
+      visible = true,
       x = 16, y = HEIGHT - 3, w = 16, h = 3,
       text = "Craft: OFF",
       action = function()
         craftingActive = not craftingActive
-        if craftingActive then
-          buttons[1].text = "Craft: ON"
-        else
-          buttons[1].text = "Craft: OFF"
-        end
+        buttons[1].text = craftingActive and "Craft: ON" or "Craft: OFF"
         requestRedraw()
       end
     },
     {
-      ButtonIn = {"start"}, visible = true,
+      visible = true,
       x = 34, y = HEIGHT - 3, w = 10, h = 3,
       text = "Add",
       action = addItem
     },
     {
-      ButtonIn = {"start"}, visible = true,
+      visible = true,
       x = 46, y = HEIGHT - 3, w = 10, h = 3,
       text = "Edit",
       action = editItem
     },
     {
-      ButtonIn = {"start"}, visible = true,
+      visible = true,
       x = 58, y = HEIGHT - 3, w = 12, h = 3,
       text = "Remove",
       action = removeItem
     },
     {
-      ButtonIn = {"start"}, visible = true,
+      visible = true,
       x = 72, y = HEIGHT - 3, w = 10, h = 3,
       text = "Sort",
       action = function()
@@ -597,37 +529,6 @@ local function initButtons()
         updateContent()
         requestRedraw()
       end
-    },
-    -- Кнопки для режима редактирования ("change")
-    {
-      ButtonIn = {"change"}, visible = true,
-      x = 25, y = 18, w = 18, h = 3,
-      text = "Изм. имя",
-      action = function() changeItemData("changeName") end
-    },
-    {
-      ButtonIn = {"change"}, visible = true,
-      x = 46, y = 18, w = 18, h = 3,
-      text = "Изм. кат.",
-      action = function() changeItemData("changeCategory") end
-    },
-    {
-      ButtonIn = {"change"}, visible = true,
-      x = 67, y = 18, w = 18, h = 3,
-      text = "Изм. треб.",
-      action = function() changeItemData("changeCount") end
-    },
-    {
-      ButtonIn = {"change"}, visible = true,
-      x = 88, y = 18, w = 18, h = 3,
-      text = "Изм. крафт",
-      action = function() changeItemData("changeCraftSize") end
-    },
-    {
-      ButtonIn = {"change"}, visible = true,
-      x = 55, y = 26, w = 18, h = 3,
-      text = "Назад",
-      action = goBack
     }
   }
 end
