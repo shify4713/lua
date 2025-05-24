@@ -1,8 +1,7 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Окончательный вариант для разрешения 120×50.
--- Обновление (проверка предметов и автокрафт) каждые 8 секунд.
--- Реализовано модальное окно ввода с кнопкой "Cancel", которое надёжно реагирует на нажатия,
--- а курсор автоматически остаётся в поле ввода.
+-- Обновлённая и оптимизированная версия для разрешения 120×50.
+-- Авто-проверка предметов и автокрафт каждые 8 секунд.
+-- Улучшенная асинхронная обработка событий.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -68,7 +67,7 @@ local COL_WIDTH_REQ    = 11
 local COL_WIDTH_ME     = 12
 local COL_WIDTH_CRAFT  = 12
 
--- Заголовок таблицы занимает строки 1-3, тело с 6-й строки
+-- Заголовок таблицы занимает строки 1-3, тело – с 6-й строки
 local TABLE_HEADER_Y = 4
 local TABLE_BODY_START_Y = 6
 local BUTTONS_HEIGHT = 3
@@ -174,9 +173,9 @@ local function customInputOverlay(promptMessage)
   term.setCursor(inputX + unicode.len(inputStr), inputY)
   term.setCursorBlink(true)
   
-  -- Основной цикл ввода
+  -- Основной цикл ввода (с меньшей задержкой для большей отзывчивости)
   while true do
-    local e = { event.pull(0.1) }
+    local e = { event.pull(0.01) }
     local ev = e[1]
     if ev == "key_down" then
       local key = e[3]
@@ -194,11 +193,11 @@ local function customInputOverlay(promptMessage)
       local tx, ty = e[3], e[4]
       if tx >= cancelBtnX and tx <= cancelBtnX + cancelBtnW - 1 and 
          ty >= cancelBtnY and ty <= cancelBtnY + cancelBtnH - 1 then
-        inputStr = nil  -- сброс ввода
+        inputStr = nil  -- сброс ввода по нажатию Cancel
         break
       end
     end
-    -- Обновляем поле ввода без перерисовки всего экрана
+    -- Обновление текстового поля без полной перерисовки экрана
     gpu.setBackground(BG_MAIN)
     gpu.fill(inputX, inputY, boxW - 4, 1, " ")
     gpu.setForeground(CTEXT)
@@ -207,7 +206,6 @@ local function customInputOverlay(promptMessage)
   end
   
   term.setCursorBlink(false)
-  -- Не перемещаем курсор за пределы поля ввода, чтобы он оставался в окошке до закрытия
   inputActive = false
   updateUI()
   return inputStr
@@ -340,7 +338,7 @@ end
 --------------------------------------------------------------------
 -- ОБЩАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ ЭКРАНА
 --------------------------------------------------------------------
-local function updateUI()
+function updateUI()
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, 1, WIDTH, HEIGHT, " ")
   redrawHeader()
@@ -537,40 +535,42 @@ local function autoCraftCheck()
 end
 
 --------------------------------------------------------------------
--- ОБРАБОТКА СОБЫТИЙ (касания и скролла)
+-- ОБРАБОТКА СОБЫТИЙ (ОБЪЕДИНЁННЫЙ ОБРАБОТЧИК)
 --------------------------------------------------------------------
-local function onTouch(_, _, x, y, _, nick)
-  if inputActive then return true end  -- во время ввода события не передаются внешнему UI
-  if ADM[nick] then
-    for _, button in ipairs(buttons) do
-      if x >= button.x and x <= (button.x + button.w - 1) and
-         y >= button.y and y <= (button.y + button.h - 1) then
-        button.action()
-        updateUI()
-        return true
+local function onUIEvent(eventName, ...)
+  if inputActive then return end  -- во время ввода игнорируем UI-события
+  if eventName == "touch" then
+    local _, _, x, y, _, nick = ...
+    if ADM[nick] then
+      for _, button in ipairs(buttons) do
+        if x >= button.x and x <= (button.x + button.w - 1) and
+           y >= button.y and y <= (button.y + button.h - 1) then
+          button.action()
+          updateUI()
+          return
+        end
+      end
+      if x >= TABLE_X and x <= (TABLE_X + TABLE_WIDTH - 1) and
+         y >= TABLE_BODY_START_Y and y < BUTTONS_Y then
+         posSelect = scroll + (y - TABLE_BODY_START_Y)
+         updateUI()
       end
     end
-    if x >= TABLE_X and x <= (TABLE_X + TABLE_WIDTH - 1) and
-       y >= TABLE_BODY_START_Y and y < BUTTONS_Y then
-      posSelect = scroll + (y - TABLE_BODY_START_Y)
+  elseif eventName == "scroll" then
+    local _, _, _, _, dir, nick = ...
+    if ADM[nick] then
+      if dir == 1 and scroll > 1 then
+        scroll = scroll - 1
+      elseif dir == -1 and scroll < maxScroll then
+        scroll = scroll + 1
+      end
       updateUI()
     end
   end
 end
 
-local function onScroll(_, _, _, _, dir, nick)
-  if ADM[nick] then
-    if dir == 1 and scroll > 1 then
-      scroll = scroll - 1
-    elseif dir == -1 and scroll < maxScroll then
-      scroll = scroll + 1
-    end
-    updateUI()
-  end
-end
-
 --------------------------------------------------------------------
--- ИНИЦИАЛИЗАЦИЯ КНОПОК (перераспределённых для 120×50)
+-- ИНИЦИАЛИЗАЦИЯ КНОПОК (оптимизировано для 120×50)
 --------------------------------------------------------------------
 local function initButtons()
   buttons = {
@@ -638,13 +638,13 @@ end
 --------------------------------------------------------------------
 -- ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ
 --------------------------------------------------------------------
-local touchEvent, scrollEvent
+local uiListener, scrollListener
 local function LoadSystem()
   dataItems = oc.loadf(dataFile) or {}
   updateContent()
   initButtons()
-  touchEvent = event.listen("touch", onTouch)
-  scrollEvent = event.listen("scroll", onScroll)
+  uiListener = event.listen("touch", onUIEvent)
+  scrollListener = event.listen("scroll", onUIEvent)
   dataQueue = dataItems
   updateCachedCounts()
   lastCountUpdate = os.time()
@@ -674,5 +674,5 @@ local craftTimer = event.timer(8.0, autoCraftCheck, math.huge)  -- автокр�
 --------------------------------------------------------------------
 LoadSystem()
 while running do
-  event.pull(0.05)
+  event.pull(0.01)  -- уменьшенная задержка для повышения отзывчивости
 end
