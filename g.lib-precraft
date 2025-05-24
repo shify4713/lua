@@ -1,8 +1,9 @@
--- oc.lua – улучшенная библиотека для PreCraft
+-- oc.lua – Улучшенная библиотека для PreCraft
 local component = require("component")
 local fs = require("filesystem")
 local term = require("term")
 local serialization = require("serialization")
+local unicode = require("unicode")
 
 local oc = {}
 local g = component.gpu
