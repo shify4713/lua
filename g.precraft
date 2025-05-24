@@ -1,4 +1,5 @@
--- precraft.lua – основная программа с обновлённой GUI, автокрафтом и функционалом управления
+-- precraft.lua – Основная программа с идеальным GUI, автокрафтом и всем функционалом
+
 local component = require("component")
 local fs = require("filesystem")
 local shell = require("shell")
@@ -8,20 +9,20 @@ local term = require("term")
 local g = component.gpu
 local me = component.me_interface
 
--- Если библиотеки нет – скачать её
+-- Если библиотеки нет – скачать её (при необходимости)
 if not fs.exists("/lib/oc.lua") then
   shell.execute("wget https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/g.lib-precraft /lib/oc.lua")
 end
 local oc = require("oc")
 
--- Если файл данных не существует – создать его
+-- Если файла данных не существует – создать его
 if not fs.exists("/home/BD.txt") then
   oc.savef("/home/BD.txt", {})
 end
 
 --------------------Настройки--------------------
-local debugMode = true               -- режим отладки
-local ADM = {['KReaTlVNuY']=true, ['4ertik_']=true}  -- допуск пользователей
+local debugMode = true               -- Режим отладки
+local ADM = {['KReaTlVNuY']=true, ['4ertik_']=true}  -- Доступ к управлению (администраторы)
 local WIDTH, HEIGHT = 80, 50
 if debugMode then WIDTH, HEIGHT = 160, 50 end
 g.setResolution(WIDTH, HEIGHT)
@@ -33,32 +34,32 @@ g.setForeground(CTEXT)
 --------------------------------------------------
 
 -- Глобальные переменные
-local dataItems = {}          -- список крафтов (загружается из BD.txt)
-local dataq = {}              -- копия для автокрафта
-local guiPath = {"start"}     -- стек состояний интерфейса
-local debugLog1, debugLog2 = {}, {}   -- отладочные логи
-local inputFind = ""          -- строка фильтра
-local scroll = 1              -- положение скролла (начинается с 1)
-local posSelect = nil         -- выбранный элемент
-local changeItem = false      -- флаг ввода (редактирования/добавления)
-local go = true               -- автокрафт включен
-local precraft = true         -- главный цикл работы программы
+local dataItems = {}          -- Список предметов (крафтов), загружается из BD.txt
+local dataq = {}              -- Копия для автокрафта
+local guiPath = {"start"}     -- Стек состояний GUI
+local debugLog1, debugLog2 = {}, {}  -- Отладочные логи
+local inputFind = ""          -- Строка для фильтра
+local scroll = 1              -- Текущее положение скролла (начинается с 1)
+local posSelect = nil         -- Выбранный элемент (относительно списка content)
+local changeItem = false      -- Флаг ввода (при редактировании/добавлении)
+local go = true               -- Флаг автокрафта (включен/выключен)
+local precraft = true         -- Флаг работы основной программы
 
-local maxScroll = 1           -- максимальное смещение скролла
-local content = {}            -- отфильтрованный список элементов
-local yTouch = 0              -- сохранённое положение касания
+local maxScroll = 1           -- Максимальное значение скролла
+local content = {}            -- Отфильтрованный список предметов
+local yTouch = 0              -- Запоминаем положение касания для выбора элемента
 
--- Новая переменная сортировки
-local sortCriteria = "name"   -- возможные значения: "name", "category", "count"
+-- Переменная сортировки
+local sortCriteria = "name"   -- Возможные значения: "name", "category", "count"
 local sortCriteriaDisplay = {name = "Имя", category = "Категория", count = "Количество"}
 
--- Цветовая индикация
-local COLOR_LOW = 0xff0000    -- недостаточно – красный
-local COLOR_MEDIUM = 0xffcc00 -- среднее – жёлтый
-local COLOR_HIGH = 0x00ff00   -- достаточно – зелёный
+-- Цветовая индикация для списка
+local COLOR_LOW = 0xff0000    -- Красный – резко не хватает
+local COLOR_MEDIUM = 0xffcc00 -- Жёлтый – разница не велика
+local COLOR_HIGH = 0x00ff00   -- Зелёный – запас удовлетворительный
 
 --------------------------------------------------
--- Функции отрисовки интерфейса
+-- Функции отрисовки
 
 local function ClearScreen()
   g.setBackground(0x000000)
@@ -69,7 +70,8 @@ local function DrawHeader()
   g.setBackground(0x000000)
   g.setForeground(CTEXT)
   g.fill(1, 1, WIDTH, 3, " ")
-  g.set(math.floor((WIDTH - unicode.len("PreCraft"))/2), 2, "PreCraft")
+  local header = "PreCraft"
+  g.set(math.floor((WIDTH - unicode.len(header)) / 2), 2, header)
   g.set(2, 3, "Сортировка: " .. sortCriteriaDisplay[sortCriteria])
 end
 
@@ -85,7 +87,7 @@ local function DrawDebugLogs()
   end
 end
 
--- Отрисовка списка предметов, с фильтрацией и сортировкой
+-- Отрисовка списка предметов с фильтрацией и сортировкой
 local function DrawScrollContent()
   if guiPath[#guiPath] == "start" or guiPath[#guiPath] == "stop" or guiPath[#guiPath] == "go" then
     g.set(13, 5, "Название предмета:")
@@ -107,7 +109,7 @@ local function DrawScrollContent()
       for i, item in ipairs(dataItems) do table.insert(content, item) end
     end
     
-    -- Сортировка списка по выбранному критерию
+    -- Сортировка по выбранному критерию
     if sortCriteria == "name" then
       table.sort(content, function(a, b) return a.name:lower() < b.name:lower() end)
     elseif sortCriteria == "category" then
@@ -118,7 +120,7 @@ local function DrawScrollContent()
     
     maxScroll = math.max(1, #content - 35 + 1)
     
-    -- Отрисовка видимых строк (с 7-й по 41-ю)
+    -- Отрисовка видимых строк (с 7-й по 41-ю строку)
     for i = scroll, math.min(#content, scroll + 35 - 1) do
       local k = i - scroll
       local item = content[i]
@@ -170,7 +172,7 @@ end
 local function MainDraw()
   DrawHeader()
   ClearScreen()
-  Main()  -- отрисовка специфичных элементов (например, в режиме "change")
+  Main()  -- специфичная отрисовка (например, в режиме "change")
   DrawButtons()
   DrawScrollContent()
   DrawScrollBar()
@@ -195,7 +197,7 @@ function Main()
   end
 end
 
--- Переход в другое состояние GUI
+-- Переход в новое состояние GUI
 local function toGui(state, clear)
   if clear then guiPath[#guiPath] = nil end
   if guiPath[#guiPath] ~= state then table.insert(guiPath, state) end
@@ -203,7 +205,7 @@ local function toGui(state, clear)
   MainDraw()
 end
 
--- Возврат назад в стек GUI
+-- Возврат назад по стеку GUI
 local function Back(to)
   if to then
     while #guiPath > to do table.remove(guiPath) end
@@ -214,9 +216,9 @@ local function Back(to)
   MainDraw()
 end
 
--- Добавление строки в отладочные логи
-local function AddLog(type, msg)
-  if type == "ore" then
+-- Добавляет строку в отладочные логи
+local function AddLog(logType, msg)
+  if logType == "ore" then
     if #debugLog1 > 19 then table.remove(debugLog1, 1) end
     table.insert(debugLog1, msg)
   else
@@ -227,7 +229,7 @@ local function AddLog(type, msg)
 end
 
 --------------------------------------------------
--- Функция автокрафта (по оригинальной логике)
+-- Функция автокрафта (оригинальная логика)
 local function Check()
   for i = 1, #dataq do
     if not go then break end
@@ -276,7 +278,7 @@ local function Check()
 end
 
 --------------------------------------------------
--- Управление списком предметов: Добавление, Удаление, Редактирование
+-- Управление списком предметов (Добавление, Удаление, Редактирование)
 
 local function AddItem()
   changeItem = true
@@ -587,7 +589,8 @@ scrolls = {
 }
 
 --------------------------------------------------
--- Инициализация системы
+-- Инициализация системы и главный цикл
+
 local function LoadSystem()
   g.fill(1, 1, WIDTH, HEIGHT, " ")
   dataItems = oc.loadf("/home/BD.txt")
@@ -601,12 +604,17 @@ local function LoadSystem()
   return true
 end
 
+-- Основной цикл – теперь обернут в защитный цикл: при ошибках выводится сообщение, а цикл не закрывается
 local function mainLoop()
   if LoadSystem() then
     while precraft do
       if go then
         g.set(1, 1, "check")
-        Check()
+        local status, err = pcall(Check)
+        if not status then
+          g.set(2, HEIGHT, "Ошибка: " .. tostring(err))
+          os.sleep(2)
+        end
       else
         g.set(1, 1, "sleep")
       end
@@ -620,5 +628,7 @@ if not ok then
   event.cancel(etouch)
   event.cancel(escroll)
   event.cancel(ekeydown)
-  -- При необходимости можно вызвать computer.shutdown(true)
+  g.set(2, HEIGHT, "Фатальная ошибка: " .. tostring(err))
+  os.sleep(5)
+  -- Не вызываем computer.shutdown(true) – остаёмся в оболочке, чтобы можно было диагностировать проблему.
 end
