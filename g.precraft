@@ -18,7 +18,7 @@ if not fs.exists(LIB_PATH) then
 end
 local ok, uoc = pcall(require, "ultimateOC")
 if not ok then
-    io.stderr:write("Не удалось загрузить ultimateOC.lua: ", tostring(uoc), "\n")
+    io.stderr:write("Не удалось загрузить ultimateOC.lua: " .. tostring(uoc) .. "\n")
     os.exit(1)
 end
 
@@ -26,26 +26,41 @@ if not fs.exists(DATA_FILE) then
     uoc.savef(DATA_FILE, {})
 end
 
--------------------- Константы расположения элементов экрана --------------------
+--------------------------------------------------------------------------------
+-- Новая компоновка интерфейса (размер экрана 110х40)
+--------------------------------------------------------------------------------
 local WIDTH, HEIGHT = 110, 40
 
-local CATEGORY_Y = 2      -- строка для навигации по категориям
-local HEADER_Y = 3        -- строка заголовка
-local TABLE_Y = 6         -- верхняя строка таблицы
-local ITEMS_PER_PAGE = 10 -- количество строк с данными (без учета рамок)
+-- Зоны по вертикали:
+local HEADER_HEIGHT = 3           -- строки 1–3: заголовок
+local CATEGORY_Y = 4              -- строка 4: навигация по категориям
 
-local SEARCH_Y = 20       -- область поиска (3 строки)
+local TABLE_TOP_Y = 5             -- таблица начинается с 5-й строки
+local TABLE_HEIGHT = 13           -- таблица занимает строки 5–17; из них 1 строка – верхняя рамка, 1 – заголовок, 1 – разделитель, 1 – нижняя рамка; т.е. 9 строк для данных.
+local DATA_ROWS = TABLE_HEIGHT - 4 -- 13-4 = 9 строк данных
+
+local SEARCH_Y = TABLE_TOP_Y + TABLE_HEIGHT  -- строки 18–20
 local SEARCH_HEIGHT = 3
 
-local LOGS_Y = 23         -- область логов (6 строк)
-local LOGS_HEIGHT = 6
+local PAGE_NAV_Y = SEARCH_Y + SEARCH_HEIGHT    -- строка 21
 
-local BUTTONS_Y = 30      -- область кнопок (3 строки)
-local BUTTONS_HEIGHT = 3
+local LOGS_Y = PAGE_NAV_Y + 1       -- строки 22–37 (16 строк) для логов
 
-local PAGE_NAV_Y = 34     -- строка навигации по страницам
+local BUTTONS_Y = LOGS_Y + 16       -- строки 38–40 для кнопок (3 строки)
 
--------------------- Настройки цветов --------------------
+-- Расчет рабочих зон по горизонтали для таблицы:
+-- Всего имеется WIDTH-4 = 106 символов внутри рамок.
+-- Зададим жёсткую ширину для столбцов:
+local col_name = 40   -- Название
+local col_cat  = 20   -- Категория
+local col_now  = 10   -- В наличии
+local col_hold = 20   -- Держать
+local col_once = 16   -- За раз
+-- Сумма: 40 + 20 + 10 + 20 + 16 = 106
+
+--------------------------------------------------------------------------------
+-- Настройки цветов
+--------------------------------------------------------------------------------
 local COLORS = {
     button = 0x00BFFF,
     buttonActive = 0x1E90FF,
@@ -67,7 +82,9 @@ local COLORS = {
     bar_shadow = 0x181920,
 }
 
--------------------- Глобальные переменные --------------------
+--------------------------------------------------------------------------------
+-- Глобальные переменные
+--------------------------------------------------------------------------------
 local craftStatus = "Ожидание..."
 local nextCraftUpdate = 0
 local isCrafting = false
@@ -83,10 +100,12 @@ local search = ""
 local selectedItem = nil
 local changeitem = false
 
--- Для работы автокрафта: будем использовать только CPU с 256К хранилищем
+-- Для автокрафта используем только CPU с 256К хранилищем
 local CPU_STORAGE = 65536
 
--------------------- Логгирование --------------------
+--------------------------------------------------------------------------------
+-- Функция логирования (без отметок времени)
+--------------------------------------------------------------------------------
 local function addLog(logs, text, lvl)
     lvl = lvl or "INFO"
     local t = string.format("[%s] %s", lvl, text)
@@ -94,7 +113,9 @@ local function addLog(logs, text, lvl)
     while #logs > 50 do table.remove(logs, 1) end
 end
 
--------------------- Функции работы с данными --------------------
+--------------------------------------------------------------------------------
+-- Функции работы с данными
+--------------------------------------------------------------------------------
 local function updateCategories()
     local catSet = {}
     for _, item in ipairs(dataItems) do
@@ -167,7 +188,9 @@ local function resetSelection()
     selectedItem = nil
 end
 
--------------------- Визуальные функции --------------------
+--------------------------------------------------------------------------------
+-- Визуальные функции
+--------------------------------------------------------------------------------
 local function clear()
     g.setBackground(COLORS.bg)
     g.fill(1, 1, WIDTH, HEIGHT, " ")
@@ -181,6 +204,7 @@ local function shadowRect(x, y, w, h)
     g.setBackground(COLORS.bg)
 end
 
+-- Отрисовка навигации по категориям (строка 4)
 local function drawCategoryNavigation()
     local prefix = "Категория: "
     local leftArrow = "<"
@@ -192,37 +216,32 @@ local function drawCategoryNavigation()
     g.set(x, CATEGORY_Y, navString)
 end
 
+-- Отрисовка заголовка и состояния (строки 1–3)
 local function drawHeader()
-    uoc.drawText(3, HEADER_Y, "Ultimate AutoCraft", COLORS.ok, true)
+    uoc.drawText(3, 1, "Ultimate AutoCraft", COLORS.ok, true)
     g.setBackground(COLORS.progress_fg)
-    g.fill(2, HEADER_Y+1, WIDTH-2, 1, " ")
-    shadowRect(2, HEADER_Y+1, WIDTH-2, 1)
+    g.fill(2, 2, WIDTH-2, 1, " ")
+    shadowRect(2, 2, WIDTH-2, 1)
     g.setBackground(COLORS.bg)
-    uoc.drawText(WIDTH-34, HEADER_Y, "Статус: " .. craftStatus,
+    uoc.drawText(WIDTH-34, 1, "Статус: " .. craftStatus,
         (craftStatus:find("Ошибка") and COLORS.error) or COLORS.ok)
-    uoc.progressBar(3, HEADER_Y+2, WIDTH-6, isCrafting and 0.9 or 0)
+    uoc.progressBar(3, 3, WIDTH-6, isCrafting and 0.9 or 0)
 end
 
--- Отрисовка таблицы (без столбца CPU):
--- Столбцы: Название (~35%), Категория (~20%), В наличии (~15%), Держать (~20%), За раз (~10%)
+-- Отрисовка таблицы предметов (строки 5–17)
 local function drawItems()
     local x = 2
-    local y = TABLE_Y
-    local totalWidth = WIDTH - 4
-    local col_name = math.floor(totalWidth * 0.35)
-    local col_cat  = math.floor(totalWidth * 0.20)
-    local col_now  = math.floor(totalWidth * 0.15)
-    local col_hold = math.floor(totalWidth * 0.20)
-    local col_once = totalWidth - (col_name + col_cat + col_now + col_hold)
-
+    local y = TABLE_TOP_Y
     -- Верхняя рамка
     g.setForeground(COLORS.select_active)
-    local topLine = "┌" .. string.rep("─", col_name) .. "┬" 
-         .. string.rep("─", col_cat) .. "┬" .. string.rep("─", col_now) .. "┬" 
-         .. string.rep("─", col_hold) .. "┬" .. string.rep("─", col_once) .. "┐"
+    local topLine = "┌" .. string.rep("─", col_name) .. "┬" ..
+                    string.rep("─", col_cat)  .. "┬" ..
+                    string.rep("─", col_now)  .. "┬" ..
+                    string.rep("─", col_hold) .. "┬" ..
+                    string.rep("─", col_once) .. "┐"
     g.set(x, y, topLine)
-
-    -- Заголовки
+    
+    -- Заголовок столбцов
     local headerY = y + 1
     g.set(x, headerY, "│")
     g.setForeground(COLORS.ok)
@@ -234,32 +253,35 @@ local function drawItems()
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_cat+1, headerY, "│")
     g.setForeground(COLORS.ok)
-    g.set(x+col_name+col_cat+2, headerY, string.format("%" .. col_now .. "s", " В наличии"))
+    g.set(x+col_name+col_cat+2, headerY, string.format("%-" .. col_now .. "s", " В наличии"))
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_cat+col_now+1, headerY, "│")
     g.setForeground(COLORS.ok)
-    g.set(x+col_name+col_cat+col_now+2, headerY, string.format("%" .. col_hold .. "s", " Держать"))
+    g.set(x+col_name+col_cat+col_now+2, headerY, string.format("%-" .. col_hold .. "s", " Держать"))
     g.setForeground(COLORS.select_active)
     g.set(x+col_name+col_cat+col_now+col_hold+1, headerY, "│")
     g.setForeground(COLORS.ok)
-    g.set(x+col_name+col_cat+col_now+col_hold+2, headerY, string.format("%" .. col_once .. "s", " За раз"))
+    g.set(x+col_name+col_cat+col_now+col_hold+2, headerY, string.format("%-" .. col_once .. "s", " За раз"))
     g.setForeground(COLORS.select_active)
-    g.set(x+col_name+col_cat+col_now+col_hold+col_once+2, headerY, "│")
-
+    g.set(x+col_name+col_cat+col_now+col_hold+col_once+1, headerY, "│")
+    
     -- Разделитель
-    local divider = "├" .. string.rep("─", col_name) .. "┼" 
-         .. string.rep("─", col_cat) .. "┼" .. string.rep("─", col_now) .. "┼" 
-         .. string.rep("─", col_hold) .. "┼" .. string.rep("─", col_once) .. "┤"
+    local divider = "├" .. string.rep("─", col_name) .. "┼" ..
+                    string.rep("─", col_cat)  .. "┼" ..
+                    string.rep("─", col_now)  .. "┼" ..
+                    string.rep("─", col_hold) .. "┼" ..
+                    string.rep("─", col_once) .. "┤"
     g.set(x, y+2, divider)
-
-    -- Вывод данных
+    
+    -- Получаем отфильтрованные предметы и вычисляем страницы
     local filteredItems = getFilteredItems()
     local totalItems = #filteredItems
-    local totalPages = math.max(1, math.ceil(totalItems / ITEMS_PER_PAGE))
+    local totalPages = math.max(1, math.ceil(totalItems / DATA_ROWS))
     if currentPage > totalPages then currentPage = totalPages end
-    local startIndex = (currentPage - 1) * ITEMS_PER_PAGE + 1
-    local endIndex = math.min(startIndex + ITEMS_PER_PAGE - 1, totalItems)
-
+    local startIndex = (currentPage - 1) * DATA_ROWS + 1
+    local endIndex = math.min(startIndex + DATA_ROWS - 1, totalItems)
+    
+    -- Вывод данных (начинаем с y+3)
     for i = startIndex, endIndex do
         local it = filteredItems[i]
         local row = y + 2 + (i - startIndex) + 1
@@ -267,10 +289,10 @@ local function drawItems()
         g.setBackground(isSel and COLORS.select_active or COLORS.bg)
         g.setForeground(COLORS.text)
         local nameStr = unicode.sub((it.name or "<??>"), 1, col_name)
-        local catStr = unicode.sub((it.category or "all"), 1, col_cat)
-        local inStock = string.format("%" .. col_now .. "s", tostring(tonumber(it.current) or 0))
-        local holdStr  = string.format("%" .. col_hold .. "s", tostring(tonumber(it.count) or 0))
-        local onceStr  = string.format("%" .. col_once .. "s", tostring(tonumber(it.craftSize) or 0))
+        local catStr  = unicode.sub((it.category or "all"), 1, col_cat)
+        local inStock = string.format("%-" .. col_now .. "s", tostring(tonumber(it.current) or 0))
+        local holdStr = string.format("%-" .. col_hold .. "s", tostring(tonumber(it.count) or 0))
+        local onceStr = string.format("%-" .. col_once .. "s", tostring(tonumber(it.craftSize) or 0))
         g.set(x, row, "│")
         g.set(x+1, row, string.format("%-" .. col_name .. "s", nameStr))
         g.set(x+col_name+1, row, "│")
@@ -281,59 +303,46 @@ local function drawItems()
         g.set(x+col_name+col_cat+col_now+2, row, holdStr)
         g.set(x+col_name+col_cat+col_now+col_hold+1, row, "│")
         g.set(x+col_name+col_cat+col_now+col_hold+2, row, onceStr)
-        g.set(x+col_name+col_cat+col_now+col_hold+col_once+2, row, "│")
+        g.set(x+col_name+col_cat+col_now+col_hold+col_once+1, row, "│")
         g.setBackground(COLORS.bg)
     end
 
     -- Нижняя рамка
-    local lastRow = y + ITEMS_PER_PAGE + 3
-    local bottomLine = "└" .. string.rep("─", col_name) .. "┴" 
-         .. string.rep("─", col_cat) .. "┴" .. string.rep("─", col_now) .. "┴" 
-         .. string.rep("─", col_hold) .. "┴" .. string.rep("─", col_once) .. "┘"
+    local lastRow = y + TABLE_HEIGHT - 1
+    local bottomLine = "└" .. string.rep("─", col_name) .. "┴" ..
+                       string.rep("─", col_cat)  .. "┴" ..
+                       string.rep("─", col_now)  .. "┴" ..
+                       string.rep("─", col_hold) .. "┴" ..
+                       string.rep("─", col_once) .. "┘"
     g.set(x, lastRow, bottomLine)
 end
 
+-- Отрисовка панели поиска (строки 18–20)
 local function drawSearchBar()
-    local x, y, w, h = 3, SEARCH_Y, WIDTH-6, SEARCH_HEIGHT
+    local x, y, w, h = 3, SEARCH_Y, WIDTH - 6, SEARCH_HEIGHT
     uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
     g.setBackground(COLORS.search_bg)
-    g.fill(x+1, y+1, w-2, h-2, " ")
+    g.fill(x + 1, y + 1, w - 2, h - 2, " ")
     g.setForeground(COLORS.search_cross)
-    g.set(x+w-3, y+1, (search ~= "" and "×" or " "))
-    g.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
+    g.set(x + w - 3, y + 1, (search ~= "" and "×" or " "))
+    g.setForeground(search ~= "" and COLORS.ok or COLORS.search_hint)
     local display = search
     if display == "" then display = "Поиск: введите часть названия..." end
     if searchActive then display = display .. "_" end
-    local maxlen = w-7
+    local maxlen = w - 7
     if unicode.len(display) > maxlen then
-        display = unicode.sub(display, unicode.len(display)-maxlen+2)
+        display = unicode.sub(display, unicode.len(display) - maxlen + 2)
     end
-    g.set(x+2, y+1, display)
+    g.set(x + 2, y + 1, display)
     g.setBackground(COLORS.bg)
     g.setForeground(COLORS.text)
 end
 
-local function drawLogs()
-    uoc.drawLogs(3, LOGS_Y, logs, LOGS_HEIGHT, COLORS.log)
-end
-
-local function drawButtons()
-    -- Изменяем размеры кнопок (фиксированные 12 символов по ширине)
-    local btns = {
-        {name = "Удалить", x = WIDTH-60, tip = "Удаляет выбранный предмет"},
-        {name = "Изменить", x = WIDTH-45, tip = "Изменяет параметры предмета"},
-        {name = isCrafting and "Остановить" or "Автокрафт", x = WIDTH-30, tip = isCrafting and "Останавливает автокрафт" or "Запускает автокрафт"},
-        {name = "Добавить", x = WIDTH-15, tip = "Добавить предмет (слот 1 ME)"},
-    }
-    for i, v in ipairs(btns) do
-        uoc.animatedButton(v.x, BUTTONS_Y, 12, BUTTONS_HEIGHT, v.name, false, COLORS.button, COLORS.buttonActive, COLORS.text)
-    end
-end
-
+-- Отрисовка навигации по страницам (строка 21)
 local function drawPageNavigation()
     local filtered = getFilteredItems()
     local totalItems = #filtered
-    local totalPages = math.max(1, math.ceil(totalItems / ITEMS_PER_PAGE))
+    local totalPages = math.max(1, math.ceil(totalItems / DATA_ROWS))
     local navText = "Страница: " .. currentPage .. "/" .. totalPages .. "  [<]  [>]"
     local x = math.floor((WIDTH - unicode.len(navText)) / 2) + 1
     g.setBackground(COLORS.bg)
@@ -341,33 +350,61 @@ local function drawPageNavigation()
     g.set(x, PAGE_NAV_Y, navText)
 end
 
-local function draw()
-    clear()
-    drawCategoryNavigation()
-    drawHeader()
-    drawItems()
-    drawSearchBar()
-    drawLogs()
-    drawButtons()
-    drawPageNavigation()
+-- Отрисовка логов (строки 22–37)
+local function drawLogs()
+    uoc.drawLogs(3, LOGS_Y, logs, LOGS_HEIGHT, COLORS.log)
 end
 
--------------------- Функции изменения списка --------------------
+-- Отрисовка кнопок (строки 38–40) – кнопки отрисовываются по центру этой зоны
+local function drawButtons()
+    local btnWidth = 12
+    local btnCount = 4
+    local totalBtnWidth = btnWidth * btnCount
+    local startX = math.floor((WIDTH - totalBtnWidth) / 2) + 1
+    local centerY = BUTTONS_Y + math.floor(BUTTONS_HEIGHT / 2)
+    local btns = {
+        {name = "Удалить", action = "remove"},
+        {name = "Изменить", action = "edit"},
+        {name = isCrafting and "Остановить" or "Автокрафт", action = "craft"},
+        {name = "Добавить", action = "add"}
+    }
+    for i, v in ipairs(btns) do
+        local x = startX + (i - 1) * btnWidth
+        uoc.animatedButton(x, BUTTONS_Y, btnWidth, BUTTONS_HEIGHT, v.name, false, COLORS.button, COLORS.buttonActive, COLORS.text)
+    end
+end
+
+-- Полное обновление экрана
+local function draw()
+    clear()
+    drawHeader()
+    drawCategoryNavigation()
+    drawItems()
+    drawSearchBar()
+    drawPageNavigation()
+    drawLogs()
+    drawButtons()
+end
+
+--------------------------------------------------------------------------------
+-- Функции изменения списка (модальные окна ввода)
+--------------------------------------------------------------------------------
 local function addItem()
     changeitem = true
     clear()
-    uoc.drawText(10, HEIGHT-7, "Вставьте предмет в 1-й слот ME и введите параметры.", COLORS.ok)
-    uoc.drawText(10, HEIGHT-6, "Название: ", COLORS.text)
-    term.setCursor(20, HEIGHT-6)
+    local startY = math.floor(HEIGHT/2) - 2
+    uoc.drawText(10, startY, "Вставьте предмет в 1-й слот ME и введите параметры.", COLORS.ok)
+    uoc.drawText(10, startY + 1, "Название: ", COLORS.text)
+    term.setCursor(22, startY + 1)
     local name = tostring(io.read())
-    uoc.drawText(10, HEIGHT-5, "Держать (число): ", COLORS.text)
-    term.setCursor(29, HEIGHT-5)
+    uoc.drawText(10, startY + 2, "Держать (число): ", COLORS.text)
+    term.setCursor(29, startY + 2)
     local count = tonumber(io.read()) or 0
-    uoc.drawText(10, HEIGHT-4, "Крафт за раз (число): ", COLORS.text)
-    term.setCursor(32, HEIGHT-4)
+    uoc.drawText(10, startY + 3, "Крафт за раз (число): ", COLORS.text)
+    term.setCursor(32, startY + 3)
     local craftSize = tonumber(io.read()) or 1
-    uoc.drawText(10, HEIGHT-3, "Категория: ", COLORS.text)
-    term.setCursor(22, HEIGHT-3)
+    uoc.drawText(10, startY + 4, "Категория: ", COLORS.text)
+    term.setCursor(22, startY + 4)
     local category = tostring(io.read())
     if category == "" then category = "all" end
     local stack = nil
@@ -399,29 +436,30 @@ local function editItem()
     local item = dataItems[selectedItem]
     changeitem = true
     clear()
-    uoc.drawText(10, HEIGHT-7, "Изменение: " .. (item.name or "<??>"), COLORS.ok)
-    uoc.drawText(10, HEIGHT-6, "Новое имя (Enter пропустить): ", COLORS.text)
-    term.setCursor(40, HEIGHT-6)
+    local startY = math.floor(HEIGHT/2) - 2
+    uoc.drawText(10, startY, "Изменение: " .. (item.name or "<??>"), COLORS.ok)
+    uoc.drawText(10, startY + 1, "Новое имя (Enter пропустить): ", COLORS.text)
+    term.setCursor(42, startY + 1)
     local name = tostring(io.read())
     if name and name ~= "" then
         item.name = name
     end
-    uoc.drawText(10, HEIGHT-5, "Новое держать (число, Enter пропустить): ", COLORS.text)
-    term.setCursor(54, HEIGHT-5)
+    uoc.drawText(10, startY + 2, "Новое держать (число, Enter пропустить): ", COLORS.text)
+    term.setCursor(54, startY + 2)
     local countstr = tostring(io.read())
     local count = tonumber(countstr)
     if countstr ~= "" and count then
         item.count = count
     end
-    uoc.drawText(10, HEIGHT-4, "Новый крафт за раз (число, Enter пропустить): ", COLORS.text)
-    term.setCursor(55, HEIGHT-4)
+    uoc.drawText(10, startY + 3, "Новый крафт за раз (число, Enter пропустить): ", COLORS.text)
+    term.setCursor(56, startY + 3)
     local csstr = tostring(io.read())
     local cs = tonumber(csstr)
     if csstr ~= "" and cs then
         item.craftSize = cs
     end
-    uoc.drawText(10, HEIGHT-3, "Новая категория (Enter пропустить): ", COLORS.text)
-    term.setCursor(42, HEIGHT-3)
+    uoc.drawText(10, startY + 4, "Новая категория (Enter пропустить): ", COLORS.text)
+    term.setCursor(42, startY + 4)
     local category = tostring(io.read())
     if category ~= "" then
         item.category = category
@@ -459,7 +497,9 @@ local function stopCraft()
     draw()
 end
 
--------------------- Основной цикл автокрафта --------------------
+--------------------------------------------------------------------------------
+-- Основной цикл автокрафта
+--------------------------------------------------------------------------------
 local function autoCraftLoop()
     while true do
         if isCrafting then
@@ -514,11 +554,13 @@ local function autoCraftLoop()
     end
 end
 
--------------------- Обработка событий (без показа подсказок) --------------------
+--------------------------------------------------------------------------------
+-- Обработка событий (без показа подсказок)
+--------------------------------------------------------------------------------
 event.listen("touch", function(_, _, x, y, _, _)
     if changeitem then return end
 
-    -- Навигация по категориям (строка CATEGORY_Y)
+    -- Навигация по категориям (строка 4)
     if y == CATEGORY_Y then
         local prefix = "Категория: "
         local leftArrow = "<"
@@ -546,11 +588,11 @@ event.listen("touch", function(_, _, x, y, _, _)
         end
     end
 
-    -- Навигация по страницам (строка PAGE_NAV_Y)
+    -- Навигация по страницам (строка 21)
     if y == PAGE_NAV_Y then
         local filtered = getFilteredItems()
         local totalItems = #filtered
-        local totalPages = math.max(1, math.ceil(totalItems / ITEMS_PER_PAGE))
+        local totalPages = math.max(1, math.ceil(totalItems / DATA_ROWS))
         local navText = "Страница: " .. currentPage .. "/" .. totalPages .. "  [<]  [>]"
         local startX = math.floor((WIDTH - unicode.len(navText)) / 2) + 1
         local leftArrowStart, leftArrowEnd = string.find(navText, "%[%<%]")
@@ -579,57 +621,66 @@ event.listen("touch", function(_, _, x, y, _, _)
         end
     end
 
-    -- Обработка нажатия по кнопкам (область BUTTONS_Y)
-    local btns = {
-        {x = WIDTH-60, y = BUTTONS_Y, w = 12, h = BUTTONS_HEIGHT},
-        {x = WIDTH-45, y = BUTTONS_Y, w = 12, h = BUTTONS_HEIGHT},
-        {x = WIDTH-30, y = BUTTONS_Y, w = 12, h = BUTTONS_HEIGHT},
-        {x = WIDTH-15, y = BUTTONS_Y, w = 12, h = BUTTONS_HEIGHT},
-    }
-    for i, btn in ipairs(btns) do
-        if x >= btn.x and x <= btn.x + btn.w - 1 and y >= btn.y and y <= btn.y + btn.h - 1 then
-            if i == 1 then removeItem()
-            elseif i == 2 then editItem()
-            elseif i == 3 then
-                if isCrafting then stopCraft() else doCraft() end
-            elseif i == 4 then addItem() end
-            draw()
-            return
+    -- Обработка нажатия по кнопкам (зона строк 38–40)
+    if y >= BUTTONS_Y and y < BUTTONS_Y + BUTTONS_HEIGHT then
+        local btnWidth = 12
+        local btnCount = 4
+        local totalBtnWidth = btnWidth * btnCount
+        local startX = math.floor((WIDTH - totalBtnWidth) / 2) + 1
+        for i = 1, btnCount do
+            local bx = startX + (i - 1) * btnWidth
+            if x >= bx and x < bx + btnWidth then
+                if i == 1 then
+                    removeItem()
+                elseif i == 2 then
+                    editItem()
+                elseif i == 3 then
+                    if isCrafting then stopCraft() else doCraft() end
+                elseif i == 4 then
+                    addItem()
+                end
+                draw()
+                return
+            end
         end
     end
 
-    -- Обработка клика по поисковой области (SEARCH_Y)
+    -- Клик по области поиска (строки 18–20)
     if y >= SEARCH_Y and y < SEARCH_Y + SEARCH_HEIGHT then
-        if x >= 3 + (WIDTH-6) - 3 and x <= 3 + (WIDTH-6) - 1 and search ~= "" then
+        if x >= 3 + (WIDTH - 6) - 3 and x <= 3 + (WIDTH - 6) - 1 and search ~= "" then
             search = ""
             draw()
             return
         end
-        if x >= 3 + 1 and x <= 3 + (WIDTH-6) - 4 then
+        if x >= 3 and x < 3 + (WIDTH - 6) - 4 then
             searchActive = true
             draw()
             return
         end
     end
 
-    -- Выбор предмета в таблице
-    local tableStartY = TABLE_Y + 3
-    local tableEndY = tableStartY + ITEMS_PER_PAGE - 1
+    -- Выбор предмета в таблице (строки данных: TABLE_TOP_Y+3 до TABLE_TOP_Y+2+DATA_ROWS)
+    local tableStartY = TABLE_TOP_Y + 3
+    local tableEndY = tableStartY + DATA_ROWS - 1
     if y >= tableStartY and y <= tableEndY then
-        local idx = (currentPage - 1) * ITEMS_PER_PAGE + (y - tableStartY + 1)
+        local idx = (currentPage - 1) * DATA_ROWS + (y - tableStartY + 1)
         local filteredItems = getFilteredItems()
         if filteredItems[idx] then
             for k, v in ipairs(dataItems) do
-                if v == filteredItems[idx] then selectedItem = k break end
+                if v == filteredItems[idx] then
+                    selectedItem = k
+                    break
+                end
             end
             draw()
             return
         end
     end
+
     draw()
 end)
 
--- Обработка ввода с клавиатуры (теперь поддерживается кириллица)
+-- Обработка ввода с клавиатуры (поддержка кириллицы)
 event.listen("key_down", function(_, _, key, _, _)
     if changeitem then return end
     if searchActive then
@@ -646,7 +697,7 @@ event.listen("key_down", function(_, _, key, _, _)
         end
     else
         local filtered = getFilteredItems()
-        local totalPages = math.max(1, math.ceil(#filtered / ITEMS_PER_PAGE))
+        local totalPages = math.max(1, math.ceil(#filtered / DATA_ROWS))
         if key == 200 then -- up
             currentPage = math.max(1, currentPage - 1)
         elseif key == 208 then -- down
@@ -656,7 +707,9 @@ event.listen("key_down", function(_, _, key, _, _)
     draw()
 end)
 
--------------------- Старт программы --------------------
+--------------------------------------------------------------------------------
+-- Старт программы
+--------------------------------------------------------------------------------
 g.setResolution(WIDTH, HEIGHT)
 reload()
 draw()
