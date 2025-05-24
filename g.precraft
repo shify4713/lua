@@ -109,8 +109,7 @@ local function drawBorder(x, y, w, h, fgColor)
 end
 
 ---------------------- ОТРИСОВКА КНОПКИ ----------------------
-local drawCustomButton
-drawCustomButton = function(x, y, w, h, bgColor, textColor, text)
+local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
   gpu.setBackground(bgColor)
   gpu.fill(x, y, w, h, " ")
   gpu.setForeground(COLOR_BUTTON_BORDER)
@@ -122,7 +121,6 @@ drawCustomButton = function(x, y, w, h, bgColor, textColor, text)
 end
 
 ---------------------- ОТРИСОВКА СТАТИЧНОГО UI ----------------------
--- Рисуем заголовок экрана, рамки и статические элементы таблицы (без динамических данных)
 local function drawStaticUI()
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.fill(1, 1, WIDTH, 3, " ")
@@ -145,16 +143,6 @@ local function drawStaticUI()
   gpu.setForeground(CTEXT)
   gpu.set(TABLE_X, TABLE_HEADER_Y, headerStr)
   gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("─", TABLE_WIDTH))
-end
-
----------------------- ОТРИСОВКА ДИНАМИЧНОГО UI ----------------------
--- Рисуем только динамичные области: содержимое таблицы, скроллбар и область кнопок.
-local function drawDynamicUI()
-  drawTableItems()
-  drawScrollBar()
-  gpu.setBackground(BG_MAIN)
-  gpu.fill(1, HEIGHT - 3, WIDTH, 3, " ")
-  drawButtons()
 end
 
 ---------------------- ОТРИСОВКА ЛОГОВ ----------------------
@@ -181,7 +169,7 @@ local function drawFloatingLogs()
 end
 
 ---------------------- ОТРИСОВКА ТАБЛИЦЫ ----------------------
-function drawTableItems()
+local function drawTableItems()
   for row = TABLE_BODY_START_Y, TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
@@ -224,14 +212,18 @@ function drawTableItems()
   end
 end
 
+---------------------- Предварительные объявления динамических функций ----------------------
+local drawScrollBar, drawButtons, drawDynamicUI
+
 ---------------------- ОТРИСОВКА СКРОЛЛБАРА ----------------------
-local function drawScrollBar()
+local function _drawScrollBar()
   oc.drawscroll(TABLE_X + TABLE_WIDTH, TABLE_BODY_START_Y, 1, VISIBLE_TABLE_ROWS,
                 scroll, #content, COLOR_HIGHLIGHT, COLOR_BUTTON)
 end
+drawScrollBar = _drawScrollBar
 
 ---------------------- ОТРИСОВКА КНОПОК ----------------------
-local function drawButtons()
+local function _drawButtons()
   for _, button in ipairs(buttons) do
     if button.visible then
       local btnText = button.text
@@ -245,9 +237,20 @@ local function drawButtons()
     end
   end
 end
+drawButtons = _drawButtons
+
+---------------------- ОТРИСОВКА ДИНАМИЧНОГО UI ----------------------
+local function _drawDynamicUI()
+  drawTableItems()
+  drawScrollBar()
+  gpu.setBackground(BG_MAIN)
+  gpu.fill(1, HEIGHT - 3, WIDTH, 3, " ")
+  drawButtons()
+end
+drawDynamicUI = _drawDynamicUI
 
 ---------------------- ПОЛНАЯ ПЕРЕРИСОВКА ----------------------
-function fullRedraw()
+local function fullRedraw()
   if not logsVisible then
     gpu.setBackground(BG_MAIN)
     gpu.fill(1, 1, WIDTH, HEIGHT, " ")
@@ -261,7 +264,7 @@ end
 
 ---------------------- ДЕБАУНС ПЕРЕРИСОВКИ ----------------------
 local redrawScheduled = false
-function immediateRedraw(force)
+local function immediateRedraw(force)
   if force then
     fullRedraw()
     lastMainUpdate = os.time()
