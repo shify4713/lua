@@ -44,13 +44,20 @@ local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Таблица р�
 local TABLE_X = 2                                  -- Начало таблицы слева
 local TABLE_WIDTH = 157                            -- Полная ширина таблицы
 
+-- Определения ширины столбцов (точно подобрано для TABLE_WIDTH)
+local COL_WIDTH_IDX    = 5
+local COL_WIDTH_NAME   = 94
+local COL_WIDTH_CAT    = 15
+local COL_WIDTH_REQ    = 12
+local COL_WIDTH_ME     = 12
+local COL_WIDTH_CRAFT  = 12
+
 ---------------------- ПАЛИТРА ЦВЕТОВ ----------------------
 local BG_MAIN             = 0x1A1A1A   -- Тёмно-серый фон
 local CTEXT               = 0xDADADA   -- Светло-серый текст
 local COLOR_BUTTON        = 0x4A90E2   -- Синий для кнопок
 local COLOR_BUTTON_TEXT   = 0xFFFFFF   -- Белый текст на кнопках
--- Новый цвет выделения – насыщенный фиолетовый:
-local COLOR_HIGHLIGHT     = 0x8A2BE2   -- Фиолетовый для выделения строки
+local COLOR_HIGHLIGHT     = 0x8A2BE2   -- Насыщенный фиолетовый – выделение строки
 local COLOR_LOW           = 0xFF4C4C   -- Красный – ошибка/недостаточно
 local COLOR_MEDIUM        = 0xFFCC00   -- Желтый – промежуточное состояние
 local COLOR_HIGH          = 0x00FF66   -- Зелёный – позитивное состояние
@@ -111,6 +118,17 @@ local function padOrTrimRight(text, width)
   end
 end
 
+local function padCenter(text, width)
+  text = tostring(text)
+  local len = unicode.len(text)
+  if len >= width then
+    return unicode.sub(text, 1, width)
+  end
+  local left = math.floor((width - len) / 2)
+  local right = width - len - left
+  return string.rep(" ", left) .. text .. string.rep(" ", right)
+end
+
 ---------------------- РИСОВАНИЕ ГРАНИЦЫ ----------------------
 local function drawBorder(x, y, w, h, fgColor)
   fgColor = fgColor or CTEXT
@@ -135,7 +153,7 @@ local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
   gpu.set(textPosX, textPosY, text)
 end
 
----------------------- ФУНКЦИЯ ОТРИСОВКИ КНОПОК ----------------------
+---------------------- ОТРИСОВКА КНОПОК ----------------------
 local function drawButtons()
   for _, button in ipairs(buttons) do
     if button.visible then
@@ -161,19 +179,17 @@ local function drawStaticUI()
   gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), 1, header)
   gpu.set(2, 2, sortText)
   
-  -- Рисуем рамку таблицы.
-  -- Верхняя рамка начинается с (TABLE_HEADER_Y - 1).
-  -- Нижняя граница должна прилегать к области, где расположены кнопки (BUTTONS_Y).
+  -- Рисуем рамку таблицы. Верхняя рамка начинается с (TABLE_HEADER_Y - 1).
   local tableBorderHeight = BUTTONS_Y - (TABLE_HEADER_Y - 1)
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableBorderHeight, COLOR_BUTTON)
   
-  -- Отрисовка заголовка таблицы. Числовые столбцы выравниваются по правому краю.
-  local headerStr = "|" .. padOrTrimRight("Idx", 5) .. "|" ..
-                          padOrTrim("Name", 94) .. "|" ..
-                          padOrTrim("Категория", 15) .. "|" ..
-                          padOrTrimRight("Req", 12) .. "|" ..
-                          padOrTrimRight("ME", 12) .. "|" ..
-                          padOrTrimRight("Craft", 12) .. "|"
+  -- Заголовок таблицы (центровка названий столбцов)
+  local headerStr = "|" .. padCenter("Idx", COL_WIDTH_IDX) .. "|" ..
+                            padCenter("Name", COL_WIDTH_NAME) .. "|" ..
+                            padCenter("Категория", COL_WIDTH_CAT) .. "|" ..
+                            padCenter("Req", COL_WIDTH_REQ) .. "|" ..
+                            padCenter("ME", COL_WIDTH_ME) .. "|" ..
+                            padCenter("Craft", COL_WIDTH_CRAFT) .. "|"
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.setForeground(CTEXT)
   gpu.set(TABLE_X, TABLE_HEADER_Y, headerStr)
@@ -214,7 +230,7 @@ end
 
 ---------------------- ТАБЛИЦА ----------------------
 local function drawTableItems()
-  -- Очищаем область таблицы от TABLE_BODY_START_Y до BUTTONS_Y - 1
+  -- Очищаем область таблицы (с TABLE_BODY_START_Y до BUTTONS_Y - 1)
   for row = TABLE_BODY_START_Y, BUTTONS_Y - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
@@ -244,12 +260,12 @@ local function drawTableItems()
     end
 
     gpu.setBackground(rowBg)
-    local rowStr = "|" .. padOrTrimRight(i, 5) ..
-                         "|" .. padOrTrim(item.name, 94) ..
-                         "|" .. padOrTrim(item.category or "", 15) .. "|" ..
-                         padOrTrimRight(reqCount, 12) .. "|" ..
-                         padOrTrimRight(currentQty, 12) .. "|" ..
-                         padOrTrimRight(item.craftSize or 0, 12) .."|"
+    local rowStr = "|" .. padOrTrimRight(i, COL_WIDTH_IDX) .. "|" ..
+                         padOrTrim(item.name, COL_WIDTH_NAME) .. "|" ..
+                         padOrTrim(item.category or "", COL_WIDTH_CAT) .. "|" ..
+                         padOrTrimRight(reqCount, COL_WIDTH_REQ) .. "|" ..
+                         padOrTrimRight(currentQty, COL_WIDTH_ME) .. "|" ..
+                         padOrTrimRight(item.craftSize or 0, COL_WIDTH_CRAFT) .."|"
     gpu.setForeground(colorText)
     gpu.set(TABLE_X, rowPos, rowStr)
   end
@@ -536,7 +552,6 @@ end
 
 ---------------------- ИНИЦИАЛИЗАЦИЯ КНОПОК ----------------------
 local function initButtons()
-  -- Кнопки располагаются в зоне BUTTONS_Y
   buttons = {
     {
       id = "craft", visible = true,
