@@ -1,13 +1,5 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Полностью переписанный вариант с новой логикой обработки событий,
--- обновлением UI и исправлением работы кнопок.
---
--- Основные моменты:
---   • Все проверки на админа убраны.
---   • Обработчики событий "touch" и "scroll" регистрируются через event.listen.
---   • Главный цикл ожидает события с event.pull(0.1) для минимальной задержки.
---   • Функция updateUI вызывается после каждого события, а UI рисуется последовательно.
---   • Логика добавления/редактирования/удаления предметов осталась прежней.
+-- Полностью переписанный с улучшенным UI, переработанными кнопками и выделением.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -18,7 +10,7 @@ local term = require("term")
 local gpu = component.gpu
 local me = component.me_interface
 
--- Загрузка библиотеки oc.lua (если отсутствует)
+-- Загружаем библиотеку oc.lua (если отсутствует)
 local libURL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/g.lib-precraft"
 local libPath = "/lib/oc.lua"
 if not fs.exists(libPath) then
@@ -26,7 +18,7 @@ if not fs.exists(libPath) then
 end
 local oc = require("oc")
 
--- Файл данных: если отсутствует, создаём пустой файл
+-- Файл данных
 local dataFile = "/home/BD.txt"
 if not fs.exists(dataFile) then
   oc.savef(dataFile, {})
@@ -77,23 +69,22 @@ local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y
 --------------------------------------------------------------------
 -- ПАЛИТРА ЦВЕТОВ
 --------------------------------------------------------------------
-local BG_MAIN             = 0x1A1A1A
-local CTEXT               = 0xDADADA
-local COLOR_BUTTON        = 0x4A90E2
-local COLOR_BUTTON_TEXT   = 0xFFFFFF
-local COLOR_HIGHLIGHT     = 0xFF4500
-local COLOR_HIGHLIGHT_TEXT= 0x000000
+local BG_MAIN              = 0x1A1A1A
+local CTEXT                = 0xDADADA
+local COLOR_BUTTON         = 0x4A90E2
+local COLOR_BUTTON_TEXT    = 0xFFFFFF
+local COLOR_HIGHLIGHT      = 0xFF4500
+local COLOR_HIGHLIGHT_TEXT = 0x000000
 
--- Градация для отображения количества:
-local COLOR_NONE          = 0xFF0000   -- Красный – предметов нет
-local COLOR_ORANGE        = 0xFFA500   -- Оранжевый – меньше 25%
-local COLOR_YELLOW        = 0xFFFF00   -- Жёлтый – меньше 50%
-local COLOR_GREEN         = 0x00FF66   -- Зелёный – требуемое количество или больше
+local COLOR_NONE           = 0xFF0000   -- Красный – предметов нет
+local COLOR_ORANGE         = 0xFFA500   -- Оранжевый – меньше 25%
+local COLOR_YELLOW         = 0xFFFF00   -- Жёлтый – меньше 50%
+local COLOR_GREEN          = 0x00FF66   -- Зелёный – требуемое количество или больше
 
-local BG_ROW_1            = 0x1A1A1A
-local BG_ROW_2            = 0x2A2A2A
-local COLOR_HEADER_BG     = 0x333333
-local COLOR_LOG_BG        = 0x3A3A3A
+local BG_ROW_1             = 0x1A1A1A
+local BG_ROW_2             = 0x2A2A2A
+local COLOR_HEADER_BG      = 0x333333
+local COLOR_LOG_BG         = 0x3A3A3A
 
 --------------------------------------------------------------------
 -- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ РАВНЕНИЯ ТЕКСТА
@@ -139,10 +130,10 @@ end
 local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
   gpu.setBackground(bgColor)
   gpu.fill(x, y, w, h, " ")
-  gpu.setForeground(COLOR_BUTTON)
   drawBorder(x, y, w, h, COLOR_BUTTON)
   gpu.setForeground(textColor)
-  local textPosX = x + math.floor((w - unicode.len(text)) / 2)
+  local txtLen = unicode.len(text)
+  local textPosX = x + math.floor((w - txtLen) / 2)
   local textPosY = y + math.floor(h / 2)
   gpu.set(textPosX, textPosY, text)
 end
@@ -174,11 +165,12 @@ local function redrawTableHeader()
 end
 
 local function redrawTable()
+  -- Очищаем область таблицы
   for row = TABLE_BODY_START_Y, BUTTONS_Y - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
   end
-  
+
   if #content == 0 then
     local msg = "Нет предметов. Нажмите Add для добавления."
     gpu.setBackground(BG_MAIN)
@@ -187,7 +179,7 @@ local function redrawTable()
             math.floor((TABLE_BODY_START_Y + BUTTONS_Y) / 2), msg)
     return
   end
-  
+
   for i = scroll, math.min(#content, scroll + VISIBLE_TABLE_ROWS - 1) do
     local rowPos = TABLE_BODY_START_Y + (i - scroll)
     local record = content[i]
@@ -262,8 +254,8 @@ local function redrawLogs()
   end
 end
 
--- Главная функция обновления экрана:
 local function updateUI()
+  if inputActive then return end
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, 1, WIDTH, HEIGHT, " ")
   redrawHeader()
@@ -279,7 +271,7 @@ end
 -- ФУНКЦИИ ОБНОВЛЕНИЯ ДАННЫХ
 --------------------------------------------------------------------
 local function updateContent()
-  content = {}
+  content = {}  
   for i, item in ipairs(dataItems) do
     table.insert(content, { idx = i, item = item })
   end
@@ -301,7 +293,7 @@ local function updateContent()
 end
 
 local function updateCachedCounts()
-  cachedCounts = {}  -- очищаем кэш перед обновлением
+  cachedCounts = {}
   for i, item in ipairs(dataItems) do
     local key = item.id .. ":" .. item.dmg
     local detail = me.getItemDetail({ id = item.id, dmg = item.dmg })
@@ -311,6 +303,30 @@ local function updateCachedCounts()
       cachedCounts[key] = 0
     end
   end
+end
+
+--------------------------------------------------------------------
+-- customInputOverlay: Оверлей для ввода с блокировкой фоновых обновлений
+--------------------------------------------------------------------
+local function customInputOverlay(promptText)
+  inputActive = true
+  -- Рисуем затемнённую область на всю ширину и небольшую высоту по центру
+  local overlayHeight = 5
+  local overlayWidth = 40
+  local overlayX = math.floor((WIDTH - overlayWidth) / 2)
+  local overlayY = math.floor((HEIGHT - overlayHeight) / 2)
+  gpu.setBackground(BG_MAIN)
+  gpu.fill(overlayX - 2, overlayY - 2, overlayWidth + 4, overlayHeight + 4, " ")
+  drawBorder(overlayX - 2, overlayY - 2, overlayWidth + 4, overlayHeight + 4, CTEXT)
+  gpu.setBackground(BG_MAIN)
+  gpu.fill(overlayX, overlayY, overlayWidth, overlayHeight, " ")
+  gpu.setForeground(CTEXT)
+  gpu.set(overlayX + math.floor((overlayWidth - unicode.len(promptText)) / 2), overlayY + 1, promptText)
+  term.setCursor(overlayX + 2, overlayY + 3)
+  local input = io.read()
+  inputActive = false
+  updateUI()
+  return input
 end
 
 --------------------------------------------------------------------
@@ -337,15 +353,15 @@ local function addItem()
       count = count,
       craftSize = craftSize,
       cpu = 262144,
-      state = "waiting",  -- начальное состояние для крафта
+      state = "waiting",
       craft = nil,
       lastMsg = nil
     })
     oc.savef(dataFile, dataItems)
-    table.insert(craftLogs, { text = "[Add] Добавлен: " .. name, color = CTEXT })
+    table.insert(craftLogs, { text = "[Add] Добавлен: " .. name })
     if #craftLogs > MAX_LOGS then table.remove(craftLogs, 1) end
   else
-    customInputOverlay("Предмет не установлен в 1-й слот! (Нажмите Enter)")
+    customInputOverlay("Нет предмета в 1-м слоте! (Enter)")
   end
   updateCachedCounts()
   dataItems = oc.loadf(dataFile) or {}
@@ -359,27 +375,23 @@ local function editItem()
   if posSelect then
     local idx = content[posSelect].idx
     local item = dataItems[idx]
-    local name = customInputOverlay("Введите новое имя (текущее: " .. item.name .. "):")
-    if not name then return end
-    if name ~= "" then item.name = name end
-    local cat = customInputOverlay("Введите новую категорию (текущее: " .. (item.category or "") .. "):")
-    if not cat then return end
-    if cat ~= "" then item.category = cat end
-    local countStr = customInputOverlay("Введите требуемое число (текущее: " .. item.count .. "):")
-    if not countStr then return end
-    if countStr ~= "" then
+    local name = customInputOverlay("Новое имя (" .. item.name .. "):")
+    if name and name ~= "" then item.name = name end
+    local cat = customInputOverlay("Новая категория (" .. (item.category or "") .. "):")
+    if cat and cat ~= "" then item.category = cat end
+    local countStr = customInputOverlay("Новое число (" .. item.count .. "):")
+    if countStr and countStr ~= "" then
       local count = tonumber(countStr)
       if count then item.count = count end
     end
-    local craftSizeStr = customInputOverlay("Введите объём крафта (текущее: " .. item.craftSize .. "):")
-    if not craftSizeStr then return end
-    if craftSizeStr ~= "" then
+    local craftSizeStr = customInputOverlay("Новый объём крафта (" .. item.craftSize .. "):")
+    if craftSizeStr and craftSizeStr ~= "" then
       local craftSize = tonumber(craftSizeStr)
       if craftSize then item.craftSize = craftSize end
     end
     dataItems[idx] = item
     oc.savef(dataFile, dataItems)
-    table.insert(craftLogs, { text = "[Edit] Изменён: " .. item.name, color = CTEXT })
+    table.insert(craftLogs, { text = "[Edit] Изменён: " .. item.name })
     if #craftLogs > MAX_LOGS then table.remove(craftLogs, 1) end
     posSelect = nil
     updateCachedCounts()
@@ -393,7 +405,7 @@ local function removeItem()
     local orig = content[posSelect].idx
     table.remove(dataItems, orig)
     oc.savef(dataFile, dataItems)
-    table.insert(craftLogs, { text = "[Edit] Удалён: " .. content[posSelect].item.name, color = CTEXT })
+    table.insert(craftLogs, { text = "[Remove] Удалён: " .. content[posSelect].item.name })
     if #craftLogs > MAX_LOGS then table.remove(craftLogs, 1) end
     posSelect = nil
     dataItems = oc.loadf(dataFile) or {}
@@ -407,13 +419,13 @@ end
 -- ДОБАВЛЕНИЕ ЗАПИСЕЙ В ЛОГ
 --------------------------------------------------------------------
 local function addLog(msg)
-  table.insert(craftLogs, { text = msg, color = CTEXT })
+  table.insert(craftLogs, { text = msg })
   if #craftLogs > MAX_LOGS then table.remove(craftLogs, 1) end
   updateUI()
 end
 
 --------------------------------------------------------------------
--- ЛОГИКА АВТО-КРАФТА (состояния: waiting, processing, finished)
+-- ЛОГИКА АВТО-КРАФТА
 --------------------------------------------------------------------
 local function autoCraftCheck()
   if not craftingActive then return end
@@ -432,7 +444,6 @@ local function autoCraftCheck()
         item.state = "waiting"
       end
     end
-
     if not item.craft then
       local detail = me.getItemDetail({ id = item.id, dmg = item.dmg })
       local currentQty = detail and (detail.basic() and detail.basic().qty) or 0
@@ -452,14 +463,14 @@ local function autoCraftCheck()
               foundCPU = true
               break
             else
-              logIfChanged(item, "[Craft] " .. item.name .. " отсутствует рецепт")
+              logIfChanged(item, "[Craft] Рецепт отсутствует для " .. item.name)
               foundCPU = true
               break
             end
           end
         end
         if not foundCPU then
-          logIfChanged(item, "[Craft] Нет свободных CPU для " .. item.name)
+          logIfChanged(item, "[Craft] Нет свободного CPU для " .. item.name)
         end
       else
         item.state = "finished"
@@ -470,10 +481,10 @@ local function autoCraftCheck()
 end
 
 --------------------------------------------------------------------
--- ОБРАБОТКА СОБЫТИЙ: TOUCH И SCROLL 
+-- ОБРАБОТКА СОБЫТИЙ (TOUCH и SCROLL)
 --------------------------------------------------------------------
 local function handleTouch(x, y)
-  -- Первым делом проверяем, не нажата ли кнопка:
+  -- Проверяем, нажата ли кнопка
   for _, button in ipairs(buttons) do
     if x >= button.x and x <= (button.x + button.w - 1) and
        y >= button.y and y <= (button.y + button.h - 1) then
@@ -481,10 +492,11 @@ local function handleTouch(x, y)
       return true
     end
   end
-  -- Если не кнопка, то проверяем область таблицы (выбор строки)
+  -- Если не кнопка – проверяем область таблицы
   if x >= TABLE_X and x <= (TABLE_X + TABLE_WIDTH - 1) and
      y >= TABLE_BODY_START_Y and y < BUTTONS_Y then
     posSelect = scroll + (y - TABLE_BODY_START_Y)
+    updateUI()
     return true
   end
   return false
@@ -498,12 +510,11 @@ local function handleScroll(dir)
   end
 end
 
--- Единый обработчик событий, вызываемый через event.listen:
 local function onUIEvent(eventName, ...)
   if inputActive then return end
   if eventName == "touch" then
     local _, _, x, y = ...
-    if handleTouch(x, y) then updateUI() end
+    if handleTouch(x,y) then updateUI() end
   elseif eventName == "scroll" then
     local _, _, _, _, dir = ...
     handleScroll(dir)
@@ -560,7 +571,7 @@ local function initButtons()
         else
           sortCriteria = "name"
         end
-        addLog("[Edit] Сортировка по " .. sortCriteriaDisplay[sortCriteria])
+        addLog("[Sort] Сортировка по " .. sortCriteriaDisplay[sortCriteria])
         updateContent()
         updateUI()
       end
@@ -578,24 +589,8 @@ local function initButtons()
 end
 
 --------------------------------------------------------------------
--- ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ И ЗАПУСК
+-- ФУНКЦИЯ ОБНОВЛЕНИЯ В ФОНЕ
 --------------------------------------------------------------------
-local function LoadSystem()
-  dataItems = oc.loadf(dataFile) or {}
-  updateContent()
-  initButtons()
-  -- Регистрируем обработчики событий
-  event.listen("touch", onUIEvent)
-  event.listen("scroll", onUIEvent)
-  dataQueue = dataItems  -- Используем dataItems в качестве очереди автокрафта
-  updateCachedCounts()
-  lastCountUpdate = os.time()
-  addLog("[System] Система запущена")
-  updateUI()
-  return true
-end
-
--- Функция фонового обновления (каждую секунду):
 local function checkBackgroundUpdate()
   if inputActive then return end
   local now = os.time()
@@ -606,13 +601,35 @@ local function checkBackgroundUpdate()
   end
 end
 
--- Запускаем таймеры:
-local backgroundUpdateTimer = event.timer(1.0, checkBackgroundUpdate, math.huge)
-local craftTimer = event.timer(8.0, autoCraftCheck, math.huge)
+--------------------------------------------------------------------
+-- ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ И ЗАПУСК
+--------------------------------------------------------------------
+local function LoadSystem()
+  dataItems = oc.loadf(dataFile) or {}
+  updateContent()
+  initButtons()
+  event.listen("touch", onUIEvent)
+  event.listen("scroll", onUIEvent)
+  dataQueue = dataItems  -- Используем dataItems как очередь автокрафта
+  updateCachedCounts()
+  lastCountUpdate = os.time()
+  addLog("[System] Система запущена")
+  updateUI()
+end
 
 LoadSystem()
 
--- Главный цикл: ждем событий с небольшой задержкой (обработка происходит через event.listen)
+-- Устанавливаем фоновые таймеры
+local backgroundUpdateTimer = event.timer(1.0, checkBackgroundUpdate, math.huge)
+local craftTimer = event.timer(8.0, autoCraftCheck, math.huge)
+
+-- Главный цикл обработки событий
 while running do
   event.pull(0.1)
 end
+
+-- При завершении можно убрать слушатели и таймеры
+event.cancel(backgroundUpdateTimer)
+event.cancel(craftTimer)
+event.ignore("touch", onUIEvent)
+event.ignore("scroll", onUIEvent)
