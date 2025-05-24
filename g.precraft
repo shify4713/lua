@@ -1,6 +1,7 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Улучшенная версия: обновление главного экрана только при действиях пользователя,
--- детальное логирование автокрафтера (без избыточной информации) и устранение мерцания.
+-- Улучшенная версия: разделение статичных и динамичных частей интерфейса,
+-- обновление таблицы и кнопок только в динамичной области для уменьшения мерцания,
+-- корректное крафтирование партиями и детальное логирование без повторов.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -38,9 +39,9 @@ local CTEXT               = 0xDADADA  -- Светло-серый текст
 local COLOR_BUTTON        = 0x4A90E2  -- Синий для кнопок
 local COLOR_BUTTON_TEXT   = 0xFFFFFF  -- Белый текст на кнопках
 local COLOR_HIGHLIGHT     = 0x3A3A3A  -- Подсветка выбранной строки
-local COLOR_LOW           = 0xFF4C4C  -- Красный – недостаточно
-local COLOR_MEDIUM        = 0xFFCC00  -- Желтый – промежуточно
-local COLOR_HIGH          = 0x00FF66  -- Зелёный – достаточно
+local COLOR_LOW           = 0xFF4C4C  -- Красный – ошибка/недостаточно
+local COLOR_MEDIUM        = 0xFFCC00  -- Желтый – промежуточное состояние
+local COLOR_HIGH          = 0x00FF66  -- Зелёный – позитивное состояние
 
 local BG_ALT              = 0x2A2A2A  -- Альтернативный фон для четных строк
 local COLOR_HEADER_BG     = 0x333333  -- Фон заголовка
@@ -48,29 +49,29 @@ local COLOR_LOG_BG        = 0x2D2D2D  -- Фон всплывающей обла�
 local COLOR_BUTTON_BORDER = 0x000000  -- Граница кнопок
 
 ---------------------- РАЗМЕРЫ UI ----------------------
-local TABLE_X = 2  -- Начало таблицы слева
-local TABLE_WIDTH = 157  -- Полная ширина таблицы
-local TABLE_HEADER_Y = 4      -- Заголовок таблицы
+local TABLE_X = 2            -- Начало таблицы слева
+local TABLE_WIDTH = 157      -- Полная ширина таблицы
+local TABLE_HEADER_Y = 4     -- Заголовок таблицы
 local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2
 local VISIBLE_TABLE_ROWS = 35
 
 ---------------------- ГЛОБАЛЫЕ ПЕРЕМЕННЫЕ ----------------------
-local dataItems = {}        -- Список предметов
-local dataQueue = {}        -- Очередь для автокрафта
-local scroll = 1            -- Текущая позиция в таблице
-local posSelect = nil       -- Выбранная строка таблицы
-local craftingActive = false-- Состояние автокрафта (ON/OFF)
-local running = true        -- Флаг работы программы
-local maxScroll = 1         -- Максимальное смещение
-local content = {}          -- Отфильтрованный/отсортированный список
+local dataItems = {}         -- Список предметов
+local dataQueue = {}         -- Очередь для автокрафта
+local scroll = 1             -- Текущая позиция в таблице
+local posSelect = nil        -- Выбранная строка таблицы
+local craftingActive = false -- Режим автокрафта (ON/OFF)
+local running = true         -- Флаг работы программы
+local maxScroll = 1          -- Максимальное смещение
+local content = {}           -- Отфильтрованный/отсортированный список
 
-local sortCriteria = "name"    -- Возможные: "name", "category", "count"
+local sortCriteria = "name"  -- Возможные: "name", "category", "count"
 local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
 
-local craftLogs = {}        -- Массив логов
-local MAX_LOGS = 100        -- Максимальное число записей в логах
-local logsVisible = false   -- Флаг: активно ли окно логов
-local buttons = {}          -- Таблица кнопок
+local craftLogs = {}         -- Массив логов
+local MAX_LOGS = 100         -- Максимальное число записей в логах
+local logsVisible = false    -- Флаг: активно ли окно логов
+local buttons = {}           -- Таблица кнопок
 
 -- Флаг для отслеживания фоновых изменений, вызванных автокрафтом
 local bgChanges = false
@@ -108,7 +109,7 @@ local function drawBorder(x, y, w, h, fgColor)
 end
 
 ---------------------- ОТРИСОВКА КНОПКИ ----------------------
-local drawCustomButton = nil
+local drawCustomButton
 drawCustomButton = function(x, y, w, h, bgColor, textColor, text)
   gpu.setBackground(bgColor)
   gpu.fill(x, y, w, h, " ")
@@ -120,13 +121,10 @@ drawCustomButton = function(x, y, w, h, bgColor, textColor, text)
   gpu.set(textPosX, textPosY, text)
 end
 
----------------------- ОТРИСОВКА СТАТИЧЕСКОГО UI ----------------------
-function drawStaticUI()
-  if not logsVisible then
-    gpu.setBackground(BG_MAIN)
-    gpu.fill(1, 1, WIDTH, HEIGHT, " ")
-  end
-
+---------------------- ОТРИСОВКА СТАТИЧНОГО UI ----------------------
+-- Рисуем заголовок экрана, рамки и статические элементы таблицы (без динамических данных)
+local function drawStaticUI()
+  -- Рисуем заголовок и строку сортировки
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.fill(1, 1, WIDTH, 3, " ")
   local header = "PreCraft - Автокрафт предметов"
@@ -135,9 +133,11 @@ function drawStaticUI()
   gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), 1, header)
   gpu.set(2, 2, sortText)
 
+  -- Рисуем рамку для таблицы
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableHeaderHeight, COLOR_BUTTON)
 
+  -- Рисуем статическую строку заголовка таблицы
   local headerStr = "|" .. padOrTrim("Idx", 5) .. "|" ..
                            padOrTrim("Name", 94) .. "|" ..
                            padOrTrim("Категория", 15) .. "|" ..
@@ -148,6 +148,17 @@ function drawStaticUI()
   gpu.setForeground(CTEXT)
   gpu.set(TABLE_X, TABLE_HEADER_Y, headerStr)
   gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("─", TABLE_WIDTH))
+end
+
+---------------------- ОТРИСОВКА ДИНАМИЧНОГО UI ----------------------
+-- Рисуем только динамичные области: содержимое таблицы, скроллбар и область кнопок.
+local function drawDynamicUI()
+  drawTableItems()
+  drawScrollBar()
+  -- Область кнопок (нижняя часть экрана): очищаем и отрисовываем кнопки
+  gpu.setBackground(BG_MAIN)
+  gpu.fill(1, HEIGHT - 3, WIDTH, 3, " ")
+  drawButtons()
 end
 
 ---------------------- ОТРИСОВКА ЛОГОВ ----------------------
@@ -174,7 +185,8 @@ local function drawFloatingLogs()
 end
 
 ---------------------- ОТРИСОВКА ТАБЛИЦЫ ----------------------
-local function drawTableItems()
+-- Функция полностью перерисовывает динамичную область таблицы.
+function drawTableItems()
   for row = TABLE_BODY_START_Y, TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
@@ -240,11 +252,17 @@ local function drawButtons()
 end
 
 ---------------------- ПОЛНАЯ ПЕРЕРИСОВКА ----------------------
+-- Полное обновление всей области (статичный и динамичный UI)
 function fullRedraw()
+  if not logsVisible then
+    gpu.setBackground(BG_MAIN)
+    gpu.fill(1, 1, WIDTH, HEIGHT, " ")
+  end
   drawStaticUI()
-  drawTableItems()
-  drawScrollBar()
-  drawButtons()
+  drawDynamicUI()
+  if logsVisible then
+    drawFloatingLogs()
+  end
 end
 
 ---------------------- ДЕБАУНС ПЕРЕРИСОВКИ ----------------------
@@ -258,8 +276,8 @@ function immediateRedraw(force)
   else
     if not redrawScheduled then
       redrawScheduled = true
-      event.timer(0.1, function()
-          fullRedraw()
+      event.timer(0.2, function()  -- увеличен интервал, чтобы динамичная область обновлялась реже.
+          drawDynamicUI()
           lastMainUpdate = os.time()
           bgChanges = false
           redrawScheduled = false
@@ -383,6 +401,14 @@ end
 local function autoCraftCheck()
   if not craftingActive then return end
   
+  -- Функция для дедупликации сообщений по элементу
+  local function logIfChanged(item, newMsg, newColor)
+    if item.lastMsg ~= newMsg then
+      addLog(newMsg, newColor)
+      item.lastMsg = newMsg
+    end
+  end
+  
   for i, item in ipairs(dataQueue) do
     if not item.craft or item.craft.isDone() or item.craft.isCanceled() then
       item.craft = nil
@@ -392,29 +418,32 @@ local function autoCraftCheck()
         local reqCount = tonumber(item.count) or 0
         local delta = reqCount - currentQty
         if delta > 0 then
+          local batch = math.min(delta, tonumber(item.craftSize) or delta)
           local cpus = me.getCpus()
           local foundCPU = false
           for _, cpu in ipairs(cpus) do
             if not cpu.busy and cpu.storage == 262144 then
               local craftables = me.getCraftables({name = item.id, damage = item.dmg})
               if craftables.n and craftables.n >= 1 then
-                item.craft = craftables[1].request(delta, false, tostring(item.cpu))
-                addLog("[Craft] Запуск " .. item.name .. " x" .. delta, COLOR_HIGH)
+                item.craft = craftables[1].request(batch, false, tostring(item.cpu))
+                logIfChanged(item, "[Craft] Запуск " .. item.name .. " x" .. batch, COLOR_HIGH)
                 foundCPU = true
                 break
               else
-                addLog("[Craft] " .. item.name .. " отсутствует рецепт", COLOR_LOW)
+                logIfChanged(item, "[Craft] " .. item.name .. " отсутствует рецепт", COLOR_LOW)
                 foundCPU = true
                 break
               end
             end
           end
           if not foundCPU then
-            addLog("[Craft] Нет свободных CPU для " .. item.name, COLOR_LOW)
+            logIfChanged(item, "[Craft] Нет свободных CPU для " .. item.name, COLOR_LOW)
           end
+        else
+          item.lastMsg = nil
         end
       else
-        addLog("[Craft] Нет данных по " .. item.name, COLOR_LOW)
+        logIfChanged(item, "[Craft] Нет данных по " .. item.name, COLOR_LOW)
       end
     end
   end
