@@ -1,7 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
 -- Улучшенный дизайн: исправлены исчезающие предметы, статус кнопки Craft,
--- визуальные артефакты в таблице и логах, устранено мерцание.
-
+-- устранены визуальные мерцания и проблемы с размещением заголовков.
 local component = require("component")
 local fs = require("filesystem")
 local shell = require("shell")
@@ -50,28 +49,28 @@ local COLOR_BUTTON_BORDER = 0x000000  -- Граница кнопок
 
 ---------------------- РАЗМЕРЫ UI КОМПОНЕНТОВ ----------------------
 local TABLE_X = 2
-local TABLE_WIDTH = 90   -- Фиксированная ширина таблицы для корректного форматирования
+local TABLE_WIDTH = 90   -- Фиксированная ширина таблицы
 local LOGS_X = TABLE_X + TABLE_WIDTH + 2  -- Лог-область справа
-local HEADER_Y = 2       -- Отступ для заголовка
+local HEADER_Y = 1       -- Подвинутый верхний отступ для заголовка
+local HEADER_TEXT_Y = HEADER_Y + 1
 local TABLE_HEADER_Y = HEADER_Y + 3  -- Заголовок таблицы
 local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2
 local VISIBLE_TABLE_ROWS = 35
 
 ---------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ----------------------
-local dataItems = {}    -- Список предметов
+local dataItems = {}    -- Список всех предметов
 local dataQueue = {}    -- Для автокрафта (ссылка на dataItems)
-local inputFind = ""    -- Фильтр поиска по имени
 local scroll = 1        -- Позиция прокрутки таблицы
-local posSelect = nil   -- Выбранная строка таблицы
+local posSelect = nil   -- Выбранная строка в таблице
 local craftingActive = false  -- Статус автокрафта
 local running = true          -- Флаг работы программы
 local maxScroll = 1           -- Максимальное смещение прокрутки
 local content = {}            -- Отфильтрованная и отсортированная информация
 
-local sortCriteria = "name"   -- Возможные: "name", "category", "count"
+local sortCriteria = "name"   -- Возможные варианты: "name", "category", "count"
 local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
 
-local redrawNeeded = true     -- Флаг перерисовки
+local redrawNeeded = true     -- Флаг для перерисовки
 local craftLogs = {}          -- Логирование (до 10 записей)
 local buttons = {}            -- Кнопки интерфейса
 
@@ -92,15 +91,16 @@ local function drawStaticUI()
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, 1, WIDTH, HEIGHT, " ")
   
-  -- Заголовок и шапка таблицы
+  -- Заголовок и информация о сортировке (выводятся на одном ряду)
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.fill(1, HEADER_Y, WIDTH, 3, " ")
-  gpu.setForeground(CTEXT)
   local header = "PreCraft - Автокрафт предметов"
-  gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), HEADER_Y + 1, header)
-  gpu.set(2, HEADER_Y + 2, "Сортировка: " .. sortCriteriaDisplay[sortCriteria])
+  local sortText = "Сортировка: " .. sortCriteriaDisplay[sortCriteria]
+  gpu.setForeground(CTEXT)
+  gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), HEADER_TEXT_Y, header)
+  gpu.set(WIDTH - unicode.len(sortText) - 2, HEADER_TEXT_Y, sortText)
   
-  -- Таблица
+  -- Рисуем рамку таблицы и заголовок
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableHeaderHeight, COLOR_BUTTON)
   local headerStr = string.format("|%-5s|%-38s|%-18s|%-7s|%-7s|%-8s|", "Idx", "Name", "Категория", "Req", "ME", "Craft")
@@ -109,7 +109,7 @@ local function drawStaticUI()
   gpu.set(TABLE_X, TABLE_HEADER_Y, headerStr)
   gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("─", TABLE_WIDTH))
   
-  -- Область логов
+  -- Зона логов справа
   local logsWidth = WIDTH - LOGS_X - 1
   local logsHeight = HEIGHT - HEADER_Y - 1
   drawBorder(LOGS_X - 1, HEADER_Y - 1, logsWidth + 2, logsHeight + 2, COLOR_BUTTON)
@@ -157,7 +157,8 @@ local function drawTableItems()
 end
 
 local function drawScrollBar()
-  oc.drawscroll(TABLE_X + TABLE_WIDTH + 1, TABLE_BODY_START_Y, 1, VISIBLE_TABLE_ROWS, scroll, #content, COLOR_HIGHLIGHT, COLOR_BUTTON)
+  oc.drawscroll(TABLE_X + TABLE_WIDTH + 1, TABLE_BODY_START_Y, 1, VISIBLE_TABLE_ROWS,
+                  scroll, #content, COLOR_HIGHLIGHT, COLOR_BUTTON)
 end
 
 local function drawButtons()
@@ -205,13 +206,7 @@ end
 local function updateContent()
   content = {}
   for i, item in ipairs(dataItems) do
-    if inputFind ~= "" then
-      if unicode.lower(item.name):find(unicode.lower(inputFind)) then
-        table.insert(content, { idx = i, item = item })
-      end
-    else
-      table.insert(content, { idx = i, item = item })
-    end
+    table.insert(content, { idx = i, item = item })
   end
 
   if sortCriteria == "name" then
@@ -306,6 +301,7 @@ local function addItem()
   dataItems = oc.loadf(dataFile) or {}
   updateContent()
   scroll = 1
+  posSelect = nil
   requestRedraw()
 end
 
@@ -420,24 +416,6 @@ local function onScroll(_, _, _, _, dir, nick)
   end
 end
 
-local function onKeyDown(_, _, key, code, nick)
-  if ADM[nick] then
-    if key == 8 then
-      inputFind = unicode.sub(inputFind, 1, -2)
-    elseif key == 0 and code == 211 then
-      inputFind = ""
-    elseif key ~= 0 then
-      if inputFind == "" then
-        inputFind = unicode.char(key)
-      elseif unicode.len(inputFind) < 49 then
-        inputFind = inputFind .. unicode.char(key)
-      end
-    end
-    updateContent()
-    requestRedraw()
-  end
-end
-
 ---------------------- ИНИЦИАЛИЗАЦИЯ КНОПОК ----------------------
 local function initButtons()
   buttons = {
@@ -489,7 +467,7 @@ local function initButtons()
 end
 
 ---------------------- ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ ----------------------
-local touchEvent, scrollEvent, keyDownEvent
+local touchEvent, scrollEvent
 
 local function LoadSystem()
   dataItems = oc.loadf(dataFile) or {}
@@ -497,7 +475,6 @@ local function LoadSystem()
   initButtons()
   touchEvent = event.listen("touch", onTouch)
   scrollEvent = event.listen("scroll", onScroll)
-  keyDownEvent = event.listen("key_down", onKeyDown)
   dataQueue = dataItems
   fullRedraw()
   return true
@@ -527,7 +504,6 @@ local ok, err = pcall(mainLoop)
 if not ok then
   if touchEvent then event.cancel(touchEvent) end
   if scrollEvent then event.cancel(scrollEvent) end
-  if keyDownEvent then event.cancel(keyDownEvent) end
   gpu.set(2, HEIGHT, "Фатальная ошибка: " .. tostring(err))
   os.sleep(5)
   os.exit()
