@@ -10,83 +10,63 @@ local gpu = component.gpu
 local oc = {}
 
 --- Загружает данные из файла с использованием сериализации.
--- @param path Путь к файлу.
--- @return Десериализованные данные или пустую таблицу, если файл не существует.
 function oc.loadf(path)
-    if fs.exists(path) then
-        local file, reason = io.open(path, "r")
-        if not file then return {} end
-        local content = file:read("*a")
-        file:close()
-        if content and content ~= "" then
-            local success, data = pcall(serialization.unserialize, content)
-            if success then
-                return data
-            end
-        end
+  if fs.exists(path) then
+    local file, reason = io.open(path, "r")
+    if not file then return {} end
+    local content = file:read("*a")
+    file:close()
+    if content and content ~= "" then
+      local success, data = pcall(serialization.unserialize, content)
+      if success then
+        return data
+      end
     end
-    return {}
+  end
+  return {}
 end
 
 --- Сохраняет данные в файл с использованием сериализации.
--- @param path Путь к файлу.
--- @param data Данные для сохранения.
--- @return true при успехе, false при неудаче.
 function oc.savef(path, data)
-    local file, reason = io.open(path, "w")
-    if not file then
-        return false, "Невозможно открыть файл: " .. reason
-    end
-    file:write(serialization.serialize(data))
-    file:close()
-    return true
+  local file, reason = io.open(path, "w")
+  if not file then
+    return false, "Невозможно открыть файл: " .. reason
+  end
+  file:write(serialization.serialize(data))
+  file:close()
+  return true
 end
 
 --- Отрисовывает кнопку с центрированным текстом.
--- @param x Координата X.
--- @param y Координата Y.
--- @param width Ширина кнопки.
--- @param height Высота кнопки.
--- @param textColor Цвет текста.
--- @param buttonColor Цвет фона кнопки.
--- @param text Текст кнопки.
 function oc.drawbutton(x, y, width, height, textColor, buttonColor, text)
-    local prevBg = gpu.getBackground()
-    local prevFg = gpu.getForeground()
-    gpu.setBackground(buttonColor)
-    gpu.fill(x, y, width, height, " ")
+  local prevBg = gpu.getBackground()
+  local prevFg = gpu.getForeground()
+  gpu.setBackground(buttonColor)
+  gpu.fill(x, y, width, height, " ")
 
-    local textLength = unicode.len(text)
-    local textX = x + math.floor((width - textLength) / 2)
-    local textY = y + math.floor(height / 2)
-    gpu.setForeground(textColor)
-    gpu.set(textX, textY, text)
+  local textLength = unicode.len(text)
+  local textX = x + math.floor((width - textLength) / 2)
+  local textY = y + math.floor(height / 2)
+  gpu.setForeground(textColor)
+  gpu.set(textX, textY, text)
 
-    gpu.setBackground(prevBg)
-    gpu.setForeground(prevFg)
+  gpu.setBackground(prevBg)
+  gpu.setForeground(prevFg)
 end
 
 --- Отрисовывает вертикальный скролл-бар.
--- @param x Координата X скроллбара.
--- @param y Координата Y скроллбара.
--- @param width Ширина области скроллбара.
--- @param height Высота области скроллбара.
--- @param currentScroll Текущая позиция прокрутки.
--- @param totalItems Общее число элементов.
--- @param backColor Цвет фона области.
--- @param barColor Цвет скроллбара.
 function oc.drawscroll(x, y, width, height, currentScroll, totalItems, backColor, barColor)
-    local prevBg = gpu.getBackground()
-    gpu.setBackground(backColor)
-    gpu.fill(x, y, width, height, " ")
+  local prevBg = gpu.getBackground()
+  gpu.setBackground(backColor)
+  gpu.fill(x, y, width, height, " ")
 
-    if totalItems > height then
-        local barHeight = math.max(1, math.floor(height * height / totalItems))
-        local pos = math.floor((currentScroll - 1) / (totalItems - height) * (height - barHeight)) + y
-        gpu.setBackground(barColor)
-        gpu.fill(x, pos, width, barHeight, " ")
-    end
-    gpu.setBackground(prevBg)
+  if totalItems > height then
+    local barHeight = math.max(1, math.floor(height * height / totalItems))
+    local pos = math.floor((currentScroll - 1) / (totalItems - height) * (height - barHeight)) + y
+    gpu.setBackground(barColor)
+    gpu.fill(x, pos, width, barHeight, " ")
+  end
+  gpu.setBackground(prevBg)
 end
 
 return oc
