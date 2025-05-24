@@ -1,6 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
 -- Улучшенная версия: разделение статичных и динамичных частей интерфейса,
--- обновление таблицы и кнопок только в динамичной области для уменьшения мерцания,
+-- обновление таблицы и кнопок происходит реже (интервал обновления 0.5 сек),
 -- корректное крафтирование партиями и детальное логирование без повторов.
 
 local component = require("component")
@@ -124,7 +124,6 @@ end
 ---------------------- ОТРИСОВКА СТАТИЧНОГО UI ----------------------
 -- Рисуем заголовок экрана, рамки и статические элементы таблицы (без динамических данных)
 local function drawStaticUI()
-  -- Рисуем заголовок и строку сортировки
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.fill(1, 1, WIDTH, 3, " ")
   local header = "PreCraft - Автокрафт предметов"
@@ -133,11 +132,9 @@ local function drawStaticUI()
   gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), 1, header)
   gpu.set(2, 2, sortText)
 
-  -- Рисуем рамку для таблицы
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableHeaderHeight, COLOR_BUTTON)
 
-  -- Рисуем статическую строку заголовка таблицы
   local headerStr = "|" .. padOrTrim("Idx", 5) .. "|" ..
                            padOrTrim("Name", 94) .. "|" ..
                            padOrTrim("Категория", 15) .. "|" ..
@@ -155,7 +152,6 @@ end
 local function drawDynamicUI()
   drawTableItems()
   drawScrollBar()
-  -- Область кнопок (нижняя часть экрана): очищаем и отрисовываем кнопки
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, HEIGHT - 3, WIDTH, 3, " ")
   drawButtons()
@@ -185,7 +181,6 @@ local function drawFloatingLogs()
 end
 
 ---------------------- ОТРИСОВКА ТАБЛИЦЫ ----------------------
--- Функция полностью перерисовывает динамичную область таблицы.
 function drawTableItems()
   for row = TABLE_BODY_START_Y, TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS - 1 do
     gpu.setBackground(BG_MAIN)
@@ -252,7 +247,6 @@ local function drawButtons()
 end
 
 ---------------------- ПОЛНАЯ ПЕРЕРИСОВКА ----------------------
--- Полное обновление всей области (статичный и динамичный UI)
 function fullRedraw()
   if not logsVisible then
     gpu.setBackground(BG_MAIN)
@@ -276,7 +270,7 @@ function immediateRedraw(force)
   else
     if not redrawScheduled then
       redrawScheduled = true
-      event.timer(0.2, function()  -- увеличен интервал, чтобы динамичная область обновлялась реже.
+      event.timer(0.5, function()  -- увеличили интервал до 0.5 сек.
           drawDynamicUI()
           lastMainUpdate = os.time()
           bgChanges = false
