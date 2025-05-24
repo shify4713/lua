@@ -1,4 +1,4 @@
--- precraft.lua – Идеальный PreCraft с автокрафтом, новым аккуратным GUI и встроенной загрузкой библиотеки
+-- precraft.lua – Основная программа PreCraft с новым аккуратным GUI и автокрафтом
 
 local component = require("component")
 local fs = require("filesystem")
@@ -6,128 +6,128 @@ local shell = require("shell")
 local event = require("event")
 local unicode = require("unicode")
 local term = require("term")
-local g = component.gpu
+local gpu = component.gpu
 local me = component.me_interface
 
--- Встроенная загрузка библиотеки
+-- Встроенная загрузка библиотеки: если нет файла /lib/oc.lua, скачиваем его
 local libURL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/g.lib-precraft"
 if not fs.exists("/lib/oc.lua") then
   shell.execute("wget " .. libURL .. " /lib/oc.lua")
 end
 local oc = require("oc")
 
--- Если BD.txt не существует, создаём его
+-- Если файла данных не существует, создаём BD.txt
 if not fs.exists("/home/BD.txt") then
   oc.savef("/home/BD.txt", {})
 end
 
 -------------------- Настройки --------------------
-local debugMode = true                   -- Режим отладки
-local ADM = { ["LiwMorgan"] = true }     -- Только LiwMorgan имеет права администрации
-local WIDTH, HEIGHT = 80, 50
-if debugMode then WIDTH, HEIGHT = 160, 50 end
-g.setResolution(WIDTH, HEIGHT)
-
+local debugMode = true                      -- Режим отладки
+local ADM = { ["LiwMorgan"] = true }        -- Только LiwMorgan является администратором
+local WIDTH, HEIGHT = 160, 50               -- Рабочее разрешение
+gpu.setResolution(WIDTH, HEIGHT)
+  
 local CBUTTON = 0x00ffff
 local CDRAW   = 0x004575
 local CTEXT   = 0xD38FFE
-g.setForeground(CTEXT)
+gpu.setForeground(CTEXT)
 -----------------------------------------------------
 
 -- Глобальные переменные
-local dataItems = {}        -- Данные (крафты) из BD.txt
+local dataItems = {}        -- Загружаемые данные из BD.txt
 local dataq = {}            -- Копия для автокрафта
-local guiPath = {"start"}   -- Стек состояний GUI – "start", "change", "go", "stop", и т.п.
+local guiPath = {"start"}   -- Стек состояний ("start", "change", "go", "stop")
 local debugLog1, debugLog2 = {}, {}  -- Логи (отладочные сообщения)
-local inputFind = ""        -- Поле для поиска по имени
-local scroll = 1            -- Номер первой отображаемой записи (начинается с 1)
-local posSelect = nil       -- Индекс выбранного элемента в списке content
-local changeItem = false    -- Режим ввода (при добавлении/редактировании)
-local go = true             -- Флаг автокрафта (включён/выключён)
-local precraft = true       -- Флаг работы программы
+local inputFind = ""        -- Фильтр для поиска по имени
+local scroll = 1            -- Первая отображаемая запись (начинается с 1)
+local posSelect = nil       -- Индекс выбранного элемента (из списка content)
+local changeItem = false    -- Режим ввода (при редактировании или добавлении)
+local go = true             -- Флаг автокрафта (включён, если true)
+local precraft = true       -- Флаг работы основной программы
 
-local maxScroll = 1         -- Максимальное значение скролла (рассчитывается динамически)
-local content = {}          -- Отфильтрованный и отсортированный список записей
-local yTouch = 0            -- Координата касания (для выбора строки)
+local maxScroll = 1         -- Максимальное значение скролла (вычисляется)
+local content = {}          -- Отфильтрованный и отсортированный список товаров
+local yTouch = 0            -- Координата касания (для выбора элемента)
 
 -- Параметры сортировки
-local sortCriteria = "name"   -- "name", "category", "count"
+local sortCriteria = "name"      -- "name", "category", "count"
 local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
 
--- Цветовая разметка: если в ME хватает – зелёный; если не хватает существенно – красный; иначе – жёлтый.
-local COLOR_LOW    = 0xff0000
-local COLOR_MEDIUM = 0xffcc00
-local COLOR_HIGH   = 0x00ff00
+-- Цветовая индикация строк:
+local COLOR_LOW    = 0xff0000    -- Красный – если в ME недостаточно
+local COLOR_MEDIUM = 0xffcc00    -- Жёлтый – если разница невелика
+local COLOR_HIGH   = 0x00ff00    -- Зеленый – если хватает
 
--- Флаг, который сигнализирует, что нужна полная перерисовка экрана
+-- Флаг, сигнализирующий, что обновление экрана требуется
 local redrawNeeded = true
+
+-- Положение таблицы: от левого края до примерно 108 столбцов; логовая область – остаток (примерно 52 столбца)
+local tableX = 2
+local tableWidth = 106   -- столбцы 2..107 для таблицы
+local logsX = 110        -- столбцы 110..160 для логов
 
 -----------------------------------------------
 -- Функции отрисовки
 
--- Отрисовка статической области (заголовок, рамки)
 local function drawStatic()
-  -- Заголовок (строки 1-4)
-  g.setBackground(0x000000)
-  g.fill(1, 1, WIDTH, 4, " ")
-  g.setForeground(CTEXT)
+  -- Заголовок и строка с сортировкой (ряды 1-4)
+  gpu.setBackground(0x000000)
+  gpu.fill(1, 1, WIDTH, 4, " ")
+  gpu.setForeground(CTEXT)
   local header = "PreCraft"
-  g.set(math.floor((WIDTH - unicode.len(header)) / 2), 2, header)
-  g.set(2, 3, "Сортировка: " .. sortCriteriaDisplay[sortCriteria])
+  gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), 2, header)
+  gpu.set(2, 3, "Сортировка: " .. sortCriteriaDisplay[sortCriteria])
   
-  -- Рисуем границу таблицы
-  -- Таблица начинается с (2,5) и занимает около 60 столбцов и 36 строк (5+36=41)
-  g.setBackground(0x000000)
-  -- Рисуем заголовок таблицы
-  local tableHeader = string.format("|%3s|%-30s|%5s|%5s|%6s|", "Idx", "Name", "Req", "ME", "Craft")
-  g.set(2, 5, tableHeader)
-  -- Рисуем горизонтальную линию под заголовком
-  g.set(2, 6, string.rep("-", 57))
+  -- Заголовок таблицы: устанавливаем фиксированные подписи в верхней части таблицы
+  local tableHeader = string.format("|%3s|%-40s|%6s|%6s|%8s|", "Idx", "Name", "Req", "ME", "Craft")
+  gpu.set(tableX, 5, tableHeader)
+  gpu.set(tableX, 6, string.rep("-", tableWidth-2))
+  
+  -- Рамка логов: от столбца logsX до конца экрана
+  gpu.setBackground(0x000000)
+  gpu.fill(logsX, 4, WIDTH-logsX+1, HEIGHT-4, " ")
+  gpu.setForeground(CTEXT)
+  gpu.set(logsX+2, 4, "Logs:")
 end
 
--- Отрисовка динамической области – только товары (строки 7 до 41)
 local function drawTableItems()
-  local startX = 2
-  local headerRow = 5
-  local startRow = headerRow + 2  -- начиная с 7-й строки
-  local visibleRows = 35          -- показываем до 35 записей
-  -- Очищаем область таблицы
+  local startRow = 7   -- таблица записей начинается с 7-й строки
+  local visibleRows = 35
   for row = startRow, startRow + visibleRows - 1 do
-    g.setBackground(0x000000)
-    g.fill(startX, row, 60, 1, " ")
+    gpu.setBackground(0x000000)
+    gpu.fill(tableX, row, tableWidth, 1, " ")
   end
-
+  
   for i = scroll, math.min(#content, scroll + visibleRows - 1) do
     local row = startRow + (i - scroll)
     local item = content[i]
-    local detail = me.getItemDetail({id = item.id, dmg = item.dmg})
+    local detail = me.getItemDetail({id=item.id, dmg=item.dmg})
     local currentQty = (detail and detail.basic() and detail.basic().qty) or 0
-    -- Определяем цвет для строки: если в ME достаточно, то зелёный; если не хватает – красный; иначе жёлтый.
+    local diff = item.count - currentQty
     local colorText = CTEXT
     if currentQty >= item.count then
       colorText = COLOR_HIGH
-    elseif (item.count - currentQty) >= math.floor(item.count * 0.5) then
+    elseif diff >= math.floor(item.count * 0.5) then
       colorText = COLOR_LOW
     else
       colorText = COLOR_MEDIUM
     end
     if posSelect and i == posSelect then
-      g.setBackground(0x1e1e1e)
+      gpu.setBackground(0x1e1e1e)
     else
-      g.setBackground(0x000000)
+      gpu.setBackground(0x000000)
     end
-    g.setForeground(colorText)
-    local line = string.format("|%3d|%-30s|%5d|%5d|%6d|", i, item.name, item.count, currentQty, item.craftSize)
-    g.set(startX, row, line)
+    gpu.setForeground(colorText)
+    local line = string.format("|%3d|%-40s|%6d|%6d|%8d|", i, item.name, item.count, currentQty, item.craftSize)
+    gpu.set(tableX, row, line)
   end
 end
 
--- Отрисовка скроллбара справа от таблицы
 local function drawScrollBar()
-  oc.drawscroll(63, 7, 1, 35, scroll, #content, 0x1e1e1e, 0x004575)
+  -- Скроллбар рисуем справа от таблицы (столбец 109)
+  oc.drawscroll(108, 7, 1, 35, scroll, #content, 0x1e1e1e, 0x004575)
 end
 
--- Отрисовка кнопок – фиксированная область в нижней части
 local function drawButtons()
   for _, button in pairs(buttons) do
     for _, state in ipairs(button.ButtonIn) do
@@ -138,20 +138,31 @@ local function drawButtons()
   end
 end
 
--- Полная перерисовка, вызывается, когда установлен флаг redrawNeeded
+local function updateLogs()
+  -- Обновляем область логов справа (начиная с строки 6 в столбце logsX)
+  gpu.setBackground(0x000000)
+  gpu.fill(logsX, 6, WIDTH-logsX+1, HEIGHT-6, " ")
+  for i = 1, #debugLog1 do
+    gpu.set(logsX+2, 6+i-1, tostring(debugLog1[i]))
+  end
+  for i = 1, #debugLog2 do
+    gpu.set(logsX+2, 30+i-1, tostring(debugLog2[i]))
+  end
+end
+
 local function fullRedraw()
   drawStatic()
+  updateContent()  -- обновляем список content
   drawTableItems()
   drawScrollBar()
   drawButtons()
-  if WIDTH >= 85 then UpdateLogs() end
+  updateLogs()
 end
 
------------------------------------------------------
--- Функции работы с данными и GUI
+-----------------------------------------------
+-- Функции работы с содержимым
 
 local function updateContent()
-  -- Фильтрация по имени
   if inputFind ~= "" then
     content = {}
     for _, item in ipairs(dataItems) do
@@ -163,7 +174,6 @@ local function updateContent()
     content = {}
     for _, item in ipairs(dataItems) do table.insert(content, item) end
   end
-  -- Сортировка
   if sortCriteria == "name" then
     table.sort(content, function(a, b) return a.name:lower() < b.name:lower() end)
   elseif sortCriteria == "category" then
@@ -178,7 +188,6 @@ local function requestRedraw()
   redrawNeeded = true 
 end
 
--- Переход в новое состояние GUI
 local function toGui(state, clear)
   if clear then guiPath[#guiPath] = nil end
   if guiPath[#guiPath] ~= state then table.insert(guiPath, state) end
@@ -187,7 +196,6 @@ local function toGui(state, clear)
   requestRedraw()
 end
 
--- Возврат на предыдущий экран
 local function Back(to)
   if to then
     while #guiPath > to do table.remove(guiPath) end
@@ -198,7 +206,6 @@ local function Back(to)
   requestRedraw()
 end
 
--- Логирование (отдельно обновляется область логов)
 local function addLog(logType, msg)
   if logType == "ore" then
     if #debugLog1 > 19 then table.remove(debugLog1, 1) end
@@ -207,11 +214,11 @@ local function addLog(logType, msg)
     if #debugLog2 > 19 then table.remove(debugLog2, 1) end
     table.insert(debugLog2, msg)
   end
-  if WIDTH >= 85 then UpdateLogs() end
+  updateLogs()
 end
 
------------------------------------------------------
--- Функция автокрафта (оригинальная логика с защитой)
+-----------------------------------------------
+-- Функция автокрафта (ориентирована на оригинальную логику)
 
 local function Check()
   for i = 1, #dataq do
@@ -260,36 +267,36 @@ local function Check()
   addLog("recipe", "")
 end
 
------------------------------------------------------
+-----------------------------------------------
 -- Управление предметами
 
 local function AddItem()
   changeItem = true
   if me.getStackInSlot(1) then
-    g.fill(1,43, WIDTH, 1, " ")
-    g.set(2,43, "Введите название:")
+    gpu.fill(1,43, WIDTH, 1, " ")
+    gpu.set(2,43, "Введите название:")
     term.setCursor(20,43)
     local name = tostring(io.read())
-    g.fill(1,43, WIDTH, 1, " ")
-    g.set(2,43, "Введите категорию:")
+    gpu.fill(1,43, WIDTH, 1, " ")
+    gpu.set(2,43, "Введите категорию:")
     term.setCursor(20,43)
     local category = tostring(io.read())
-    g.fill(1,43, WIDTH, 1, " ")
-    g.set(2,43, "Введите требуемое число:")
+    gpu.fill(1,43, WIDTH, 1, " ")
+    gpu.set(2,43, "Введите требуемое число:")
     term.setCursor(25,43)
     local count = tonumber(io.read())
-    g.fill(1,43, WIDTH, 1, " ")
-    g.set(2,43, "Введите объём крафта:")
+    gpu.fill(1,43, WIDTH, 1, " ")
+    gpu.set(2,43, "Введите объём крафта:")
     term.setCursor(25,43)
     local craftSize = tonumber(io.read())
-    g.fill(1,43, WIDTH, 1, " ")
+    gpu.fill(1,43, WIDTH, 1, " ")
     local stack = me.getStackInSlot(1)
     table.insert(dataItems, {name = name, category = category, id = stack.id, dmg = stack.dmg, count = count, craftSize = craftSize, cpu = 65536})
     oc.savef("/home/BD.txt", dataItems)
   else
-    g.set(2,43, "Предмет не установлен в 1-й слот!")
+    gpu.set(2,43, "Предмет не установлен в 1-й слот!")
     os.sleep(2)
-    g.fill(1,43, WIDTH, 1, " ")
+    gpu.fill(1,43, WIDTH, 1, " ")
   end
   dataItems = oc.loadf("/home/BD.txt")
   updateContent()
@@ -327,21 +334,21 @@ end
 
 local function ChangeItem(action)
   if posSelect then
-    g.fill(1,45, WIDTH, 1, " ")
+    gpu.fill(1,45, WIDTH, 1, " ")
     if action == "changeName" then
-      g.set(2,45, "Введите новое имя:")
+      gpu.set(2,45, "Введите новое имя:")
       term.setCursor(25,45)
       dataItems[posSelect].name = tostring(io.read())
     elseif action == "changeCategory" then
-      g.set(2,45, "Введите новую категорию:")
+      gpu.set(2,45, "Введите новую категорию:")
       term.setCursor(25,45)
       dataItems[posSelect].category = tostring(io.read())
     elseif action == "changeCount" then
-      g.set(2,45, "Введите новое требуемое число:")
+      gpu.set(2,45, "Введите новое требуемое число:")
       term.setCursor(30,45)
       dataItems[posSelect].count = tonumber(io.read())
     elseif action == "changeCraftSize" then
-      g.set(2,45, "Введите новый объём крафта:")
+      gpu.set(2,45, "Введите новый объём крафта:")
       term.setCursor(30,45)
       dataItems[posSelect].craftSize = tonumber(io.read())
     end
@@ -352,7 +359,7 @@ local function ChangeItem(action)
   end
 end
 
------------------------------------------------------
+-----------------------------------------------
 -- Обработчики событий
 
 local function onTouch(_, _, x, y, _, nick)
@@ -369,8 +376,8 @@ local function onTouch(_, _, x, y, _, nick)
         end
       end
     end
-    -- Если касание произошло внутри области таблицы (строки 7-41, столбцы 2-60), выбираем элемент:
-    if x >= 2 and x <= 60 and y >= 7 and y <= 41 then
+    -- Если касание в области таблицы (колонки 2–(tableX+tableWidth)) и строках 7–41
+    if x >= tableX and x <= tableX + tableWidth - 1 and y >= 7 and y <= 41 then
       posSelect = scroll + (y - 6)
       requestRedraw()
     end
@@ -393,12 +400,12 @@ end
 local function onKeyDown(_, _, key, code, nick)
   if ADM[nick] and not changeItem then
     if guiPath[#guiPath] == "start" or guiPath[#guiPath] == "stop" or guiPath[#guiPath] == "go" then
-      if key == 8 then                          -- Backspace
+      if key == 8 then
         inputFind = unicode.sub(inputFind, 1, -2)
-      elseif key == 0 and code == 211 then        -- Delete
+      elseif key == 0 and code == 211 then
         inputFind = ""
-      elseif key ~= 0 then                        -- Добавляем символ
-        if inputFind == nil or inputFind == "" then
+      elseif key ~= 0 then
+        if inputFind == "" then
           inputFind = unicode.char(key)
         elseif unicode.len(inputFind) < 49 then
           inputFind = inputFind .. unicode.char(key)
@@ -417,7 +424,7 @@ local function initButtons()
   end
 end
 
------------------------------------------------------
+-----------------------------------------------
 -- Определения кнопок
 
 buttons = {
@@ -434,11 +441,11 @@ buttons = {
     x = 1, y = 1, w = 1, h = 1,
     cbutton = CDRAW, ctext = CBUTTON, text = "",
     action = function()
-      g.setResolution(160, 50)
+      gpu.setResolution(160, 50)
       event.cancel(etouch)
       event.cancel(escroll)
       event.cancel(ekeydown)
-      precraft = false
+      os.exit()  -- Программа завершится без перезапуска после ошибок
     end
   },
   Go = {
@@ -554,7 +561,7 @@ buttons = {
   }
 }
 
--- Если требуется, можно задать область скролла (эта схема – справа от таблицы)
+-- Область скролла (необязательно, здесь определяется для полноты)
 scrolls = {
   Buy = {
     ScrollIn = {"start", "go", "stop"},
@@ -571,11 +578,11 @@ scrolls = {
   }
 }
 
------------------------------------------------------
+-----------------------------------------------
 -- Инициализация и основной цикл
 
 local function LoadSystem()
-  g.fill(1, 1, WIDTH, HEIGHT, " ")
+  gpu.fill(1, 1, WIDTH, HEIGHT, " ")
   dataItems = oc.loadf("/home/BD.txt")
   initButtons()
   etouch = event.listen("touch", onTouch)
@@ -587,15 +594,16 @@ local function LoadSystem()
   return true
 end
 
--- Вместо постоянной перерисовки, основной цикл проверяет флаг redrawNeeded
+-- Основной цикл: если fatal error – программа завершится
 local function mainLoop()
   if LoadSystem() then
     while precraft do
       if go then
         local status, err = pcall(Check)
         if not status then
-          g.set(2, HEIGHT, "Ошибка: " .. tostring(err))
+          gpu.set(2, HEIGHT, "Ошибка: " .. tostring(err))
           os.sleep(2)
+          os.exit()  -- завершаем программу при ошибке
         end
       end
       if redrawNeeded then
@@ -612,6 +620,7 @@ if not ok then
   event.cancel(etouch)
   event.cancel(escroll)
   event.cancel(ekeydown)
-  g.set(2, HEIGHT, "Фатальная ошибка: " .. tostring(err))
+  gpu.set(2, HEIGHT, "Фатальная ошибка: " .. tostring(err))
   os.sleep(5)
+  os.exit()
 end
