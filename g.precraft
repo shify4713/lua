@@ -1,412 +1,84 @@
-----------------------------------------------------------------
--- Ultimate AutoCraft – Идеальный скрипт с улучшенным интерфейсом
--- Улучшения:
---  • Динамическое обновление логов (новые сообщения временно ярче)
---  • Расширенная цветовая индикация: количество выводится красным,
---    если недостаточно, и зелёным, если соответствует требуемому.
---  • Гибкая фильтрация по имени и по количеству с помощью ключей min: и max:
---  • Оптимизированный интерфейс с минимальным мерцанием и плавными переходами.
---  • Обновлённый и более надёжный механизм автокрафта.
-----------------------------------------------------------------
-
 local component = require("component")
-local fs = require("filesystem")
-local shell = require("shell")
 local event = require("event")
 local unicode = require("unicode")
 local term = require("term")
-local computer = require("computer")
 local g = component.gpu
 local me = component.me_interface
 
--- Пути и библиотека
-local DATA_FILE = "/home/BD.txt"
-local LIB_PATH = "/lib/ultimateOC.lua"
-local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/ultimateOC.lua"
-
-if not fs.exists(LIB_PATH) then
-    shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
-end
-local ok, uoc = pcall(require, "ultimateOC")
-if not ok then
-    io.stderr:write("Не удалось загрузить ultimateOC.lua: ", tostring(uoc), "\n")
-    os.exit(1)
-end
-
-if not fs.exists(DATA_FILE) then
-    uoc.savef(DATA_FILE, {})
-end
-
--------------------- Настройка времени --------------------
-local function getKyivTime()
-    local handle = io.popen("wget -qO- https://worldtimeapi.org/api/timezone/Europe/Kyiv.txt 2>/dev/null")
-    if handle then
-        local text = handle:read("*a")
-        handle:close()
-        local h, m, s = text:match("datetime:%s*%d+%-%d+%-%d+T(%d+):(%d+):(%d+)")
-        if h and m and s then
-            return string.format("%02d:%02d:%02d", tonumber(h), tonumber(m), tonumber(s))
-        end
-    end
-    local t = os.date("!*t", os.time() + 3*3600)
-    return string.format("%02d:%02d:%02d", t.hour, t.min, t.sec)
-end
-
--------------------- Настройки цветов и размера экрана --------------------
+-- Цветовая индикация
 local COLORS = {
-    button = 0x00BFFF,
-    buttonActive = 0x1E90FF,
-    border = 0x44475a,
-    text = 0xF8F8F2,
-    shadow = 0x282A36,
-    bg = 0x23242b,
-    error = 0xFF5555,      -- для ошибок и недостаточного количества
-    ok = 0x50FA7B,         -- для достаточного количества
-    log = 0x8BE9FD,
-    progress_bg = 0x44475a,
-    progress_fg = 0x50FA7B,
-    select = 0x31313A,
-    select_active = 0x44B3FF,
-    search_bg = 0x282B36,
-    search_border = 0x00BFFF,
-    search_cross = 0xFF5555,
-    search_hint = 0x888888,
-    bar_shadow = 0x181920,
-    tooltip_bg = 0x44475a,
-    tooltip_text = 0xF8F8F2,
+    LOW = 0xff0000, -- красный
+    MEDIUM = 0xffcc00, -- желтый
+    HIGH = 0x00ff00 -- зеленый
 }
-local WIDTH, HEIGHT = 110, 40
-local craftStatus = "Ожидание..."
-local nextCraftUpdate = 0
-local isCrafting = false
 
--------------------- Пагинация, фильтры и глобальные переменные --------------------
-local currentPage = 1
-local itemsPerPage = HEIGHT - 24  -- число строк таблицы
-local categoryFilter = "all"
-local categoryIndex = 1
-local categories = {"all"}  -- список категорий (будет обновляться)
+local WIDTH, HEIGHT = 160, 50
+local scroll, page = 1, 1
+local itemsPerPage = 35 -- количество предметов на странице
+local filterText = ""
 
-local logs = {}
-local dataItems = {}
-local search = ""
-local selectedItem = nil
-local changeitem = false
-local searchActive = false
-local hoveredButton = nil
-local tooltip = ""
-local tooltipTimeout = 0
+-- Настройка экрана
+g.setResolution(WIDTH, HEIGHT)
+g.setBackground(0x000000)
+g.setForeground(0xFFFFFF)
+g.fill(1, 1, WIDTH, HEIGHT, " ")
 
--- Для динамических логов: время последней записи, чтобы новый лог временно выделялся
-local lastLogTimestamp = os.time()
-
--------------------- Функция обновления списка категорий --------------------
-local function updateCategories()
-    local catSet = {}
-    for _,item in ipairs(dataItems) do
-        local cat = item.category or "all"
-        catSet[cat] = true
-    end
-    categories = {"all"}
-    for cat, _ in pairs(catSet) do
-        if cat ~= "all" then table.insert(categories, cat) end
-    end
-    table.sort(categories)
-    table.insert(categories, 1, "all")
-    categoryIndex = 1
-    categoryFilter = categories[categoryIndex]
-end
-
--------------------- Функция гибкой фильтрации --------------------
-local function getFilteredItems()
-    local items = {}
-    local minQty, maxQty
-    local searchText = search
-    if searchText and #searchText > 0 then
-        -- Извлекаем фильтры по количеству: формат "min:число" и "max:число"
-        local foundMin = searchText:match("min:(%d+)")
-        if foundMin then
-            minQty = tonumber(foundMin)
-            searchText = searchText:gsub("min:%d+", "")
-        end
-        local foundMax = searchText:match("max:(%d+)")
-        if foundMax then
-            maxQty = tonumber(foundMax)
-            searchText = searchText:gsub("max:%d+", "")
-        end
-        searchText = searchText:gsub("^%s*(.-)%s*$", "%1")  -- trim
-    end
-    for _,item in ipairs(dataItems) do
-        local nameMatch = true
-        if searchText and #searchText > 0 then
-            nameMatch = unicode.lower(item.name or ""):find(unicode.lower(searchText), 1, true)
-        end
-        local catMatch = (categoryFilter == "all") or (item.category and item.category == categoryFilter)
-        local qtyMatch = true
-        local currentQty = tonumber(item.current) or 0
-        if minQty and currentQty < minQty then qtyMatch = false end
-        if maxQty and currentQty > maxQty then qtyMatch = false end
-        
-        if nameMatch and catMatch and qtyMatch then
-            table.insert(items, item)
+local function fetchItems()
+    local dataItems = me.getItemsInNetwork()
+    local filteredItems = {}
+    
+    for _, item in ipairs(dataItems) do
+        if filterText == "" or unicode.lower(item.label):find(unicode.lower(filterText)) then
+            table.insert(filteredItems, item)
         end
     end
-    return items
+    
+    return filteredItems
 end
 
--------------------- Логгирование с реальным временем и динамической индикацией --------------------
-local function addLog(logs, text, lvl)
-    lvl = lvl or "INFO"
-    local now = getKyivTime()
-    local t = string.format("[%s][%s] %s", now, lvl, text)
-    table.insert(logs, t)
-    while #logs > 50 do table.remove(logs, 1) end
-    lastLogTimestamp = os.time()  -- обновляем время последнего лога для анимации
-end
-
--------------------- Визуальные функции --------------------
-local function clear()
-    g.setBackground(COLORS.bg)
-    g.fill(1,1,WIDTH,HEIGHT," ")
-    g.setForeground(COLORS.text)
-end
-
-local function shadowRect(x, y, w, h)
-    g.setBackground(COLORS.bar_shadow)
-    g.fill(x+1, y+h, w, 1, " ")
-    g.fill(x+w, y, 1, h, " ")
-    g.setBackground(COLORS.bg)
-end
-
-local function drawHeader()
-    uoc.drawText(3, 3, "Ultimate AutoCraft", COLORS.ok, true)
-    g.setBackground(COLORS.progress_fg)
-    g.fill(2,4,WIDTH-2,1," ")
-    shadowRect(2,4,WIDTH-2,1)
-    g.setBackground(COLORS.bg)
-    uoc.drawText(WIDTH-34,3,"Статус: "..craftStatus,
-        (craftStatus:find("Ошибка") and COLORS.error) or COLORS.ok)
-    uoc.progressBar(3,5,WIDTH-6, isCrafting and 0.9 or 0)
-end
-
--- Отрисовка навигации категорий (строка 2)
-local function drawCategoryNavigation()
-    local prefix = "Категория: "
-    local leftArrow = "<"
-    local rightArrow = ">"
-    local navString = prefix .. leftArrow .. " " .. categoryFilter .. " " .. rightArrow
-    local x = math.floor((WIDTH - unicode.len(navString)) / 2) + 1
-    local y = 2
-    g.setBackground(COLORS.bg)
-    g.setForeground(COLORS.ok)
-    g.set(x, y, navString)
-end
-
--- Отрисовка таблицы предметов с расширенной цветовой индикацией
 local function drawItems()
-    local x, y = 2, 8
-    local totalWidth = WIDTH - 4
-    local col_name = math.floor(totalWidth * 0.35)
-    local col_cat  = math.floor(totalWidth * 0.20)
-    local col_now  = math.floor(totalWidth * 0.15)
-    local col_hold = math.floor(totalWidth * 0.15)
-    local col_once = totalWidth - col_name - col_cat - col_now - col_hold
+    g.fill(1, 4, WIDTH, HEIGHT - 4, " ")
 
-    -- Верхняя рамка
-    g.setForeground(COLORS.select_active)
-    g.set(x, y, "┌"..string.rep("─", col_name).."┬"..string.rep("─",col_cat).."┬"..string.rep("─",col_now).."┬"..string.rep("─",col_hold).."┬"..string.rep("─",col_once).."┐")
-    -- Заголовки
-    g.set(x, y+1, "│")
-    g.setForeground(COLORS.ok)
-    g.set(x+1, y+1, string.format("%-"..col_name.."s", " Название"))
-    g.setForeground(COLORS.select_active)
-    g.set(x+col_name+1, y+1, "│")
-    g.setForeground(COLORS.ok)
-    g.set(x+col_name+2, y+1, string.format("%-"..col_cat.."s", " Категория"))
-    g.setForeground(COLORS.select_active)
-    g.set(x+col_name+col_cat+1, y+1, "│")
-    g.setForeground(COLORS.ok)
-    g.set(x+col_name+col_cat+2, y+1, string.format("%" .. col_now .. "s", " В наличии"))
-    g.setForeground(COLORS.select_active)
-    g.set(x+col_name+col_cat+col_now+1, y+1, "│")
-    g.setForeground(COLORS.ok)
-    g.set(x+col_name+col_cat+col_now+2, y+1, string.format("%" .. col_hold .. "s", " Держать"))
-    g.setForeground(COLORS.select_active)
-    g.set(x+col_name+col_cat+col_now+col_hold+1, y+1, "│")
-    g.setForeground(COLORS.ok)
-    g.set(x+col_name+col_cat+col_now+col_hold+2, y+1, string.format("%" .. col_once .. "s", " За раз"))
-    g.setForeground(COLORS.select_active)
-    g.set(x+col_name+col_cat+col_now+col_hold+col_once+2, y+1, "│")
-    -- Разделитель
-    g.set(x, y+2, "├"..string.rep("─", col_name).."┼"..string.rep("─",col_cat).."┼"..string.rep("─",col_now).."┼"..string.rep("─",col_hold).."┼"..string.rep("─",col_once).."┤")
+    local items = fetchItems()
+    local startIdx = (page - 1) * itemsPerPage + 1
+    local endIdx = math.min(#items, startIdx + itemsPerPage - 1)
+    
+    for i = startIdx, endIdx do
+        local item = items[i]
+        local color = COLORS.HIGH
+        if item.size < 10 then color = COLORS.LOW
+        elseif item.size < 50 then color = COLORS.MEDIUM end
 
-    -- Получаем отфильтрованные предметы
-    local filteredItems = getFilteredItems()
-    local totalItems = #filteredItems
-    local totalPages = math.max(1, math.ceil(totalItems / itemsPerPage))
-    if currentPage > totalPages then currentPage = totalPages end
-    local startIndex = (currentPage - 1) * itemsPerPage + 1
-    local endIndex = math.min(startIndex + itemsPerPage - 1, totalItems)
-
-    for i = startIndex, endIndex do
-        local it = filteredItems[i]
-        local row = y+2 + (i - startIndex) + 1
-        local isSel = (selectedItem and dataItems[selectedItem] and it == dataItems[selectedItem])
-        local bgColor = isSel and COLORS.select_active or COLORS.bg
-        g.setBackground(bgColor)
-        g.setForeground(COLORS.text)
-        local nameStr = unicode.sub((it.name or "<??>"), 1, col_name)
-        local catStr = unicode.sub((it.category or "all"), 1, col_cat)
-        g.set(x, row, "│")
-        g.set(x+1, row, string.format("%-"..col_name.."s", nameStr))
-        g.set(x+col_name+1, row, "│")
-        g.set(x+col_name+2, row, string.format("%-"..col_cat.."s", catStr))
-        g.set(x+col_name+col_cat+1, row, "│")
-        -- Цветовая индикация для количества: если текущее значение меньше требуемого – красным, иначе зелёным.
-        local currentQty = tonumber(it.current) or 0
-        local required = tonumber(it.count) or 0
-        local qtyColor = (currentQty < required) and COLORS.error or COLORS.ok
-        g.setForeground(qtyColor)
-        g.set(x+col_name+col_cat+2, row, string.format("%" .. col_now .. "s", currentQty))
-        g.setForeground(COLORS.text)
-        g.set(x+col_name+col_cat+col_now+1, row, "│")
-        g.set(x+col_name+col_cat+col_now+2, row, string.format("%" .. col_hold .. "s", tonumber(it.count) or 0))
-        g.set(x+col_name+col_cat+col_now+col_hold+1, row, "│")
-        g.set(x+col_name+col_cat+col_now+col_hold+2, row, string.format("%" .. col_once .. "s", tonumber(it.craftSize) or 0))
-        g.set(x+col_name+col_cat+col_now+col_hold+col_once+2, row, "│")
-        g.setBackground(COLORS.bg)
+        g.setForeground(color)
+        g.set(5, 4 + (i - startIdx), item.label .. " (" .. item.size .. ")")
     end
-
-    -- Нижняя рамка таблицы
-    local lastRow = y + itemsPerPage + 3
-    g.setForeground(COLORS.select_active)
-    g.set(x, lastRow, "└"..string.rep("─", col_name).."┴"..string.rep("─",col_cat).."┴"..string.rep("─",col_now).."┴"..string.rep("─",col_hold).."┴"..string.rep("─",col_once).."┘")
-    g.setForeground(COLORS.text)
-
-    -- Скролл-бар (если нужно)
-    if totalItems > itemsPerPage then
-        local barLen = math.max(2, math.floor(itemsPerPage * itemsPerPage / totalItems))
-        local barTop = y+3 + math.floor((itemsPerPage-barLen) * (currentPage-1) / math.max(1, totalItems-itemsPerPage))
-        g.setForeground(COLORS.select_active)
-        g.set(WIDTH-2, y+3, "│")
-        for i=1, itemsPerPage do
-            g.set(WIDTH-2, y+2+i, "│")
-        end
-        g.setForeground(COLORS.ok)
-        for i=0, barLen-1 do
-            g.set(WIDTH-2, barTop+i, "█")
-        end
-        g.setForeground(COLORS.text)
-    end
+    g.setForeground(0xFFFFFF)
+    
+    g.set(70, HEIGHT - 2, "Страница: " .. page .. " / " .. math.ceil(#items / itemsPerPage))
 end
 
--- Отрисовка страницы навигации (нижняя строка)
-local function drawPageNavigation()
-    local filtered = getFilteredItems()
-    local totalItems = #filtered
-    local totalPages = math.max(1, math.ceil(totalItems / itemsPerPage))
-    local pagText = "Страница: " .. currentPage .. "/" .. totalPages .. "  [<]  [>]"
-    local x = math.floor((WIDTH - unicode.len(pagText)) / 2) + 1
-    local y = HEIGHT - 18
-    g.setBackground(COLORS.bg)
-    g.setForeground(COLORS.ok)
-    g.set(x, y, pagText)
-end
-
--- Отрисовка динамических логов с легкой индикацией нового сообщения.
-local function drawLogs()
-    local x = 3
-    local y = HEIGHT - 17
-    local logAreaHeight = 4
-    local totalLogs = #logs
-    local startIndex = math.max(1, totalLogs - logAreaHeight + 1)
-    for i = 0, logAreaHeight - 1 do
-        local idx = startIndex + i
-        if logs[idx] then
-            if idx == totalLogs then
-                local dt = os.difftime(os.time(), lastLogTimestamp)
-                -- Если лог новый (менее 1 сек), делаем его ярче.
-                if dt < 1 then
-                    g.setForeground(COLORS.ok)
-                else
-                    g.setForeground(COLORS.log)
-                end
-            else
-                g.setForeground(COLORS.log)
-            end
-            g.setBackground(COLORS.bg)
-            g.set(x, y+i, logs[idx] .. string.rep(" ", WIDTH-6 - unicode.len(logs[idx])))
-        end
-    end
-end
-
--- Отрисовка поисковой строки с подсказкой о фильтрации
-local function drawSearchBar()
-    local x, y, w, h = 3, HEIGHT-13, WIDTH-6, 3
-    uoc.roundRect(x, y, w, h, COLORS.search_border, COLORS.search_bg)
-    g.setBackground(COLORS.search_bg)
-    g.fill(x+1, y+1, w-2, h-2, " ")
-    g.setForeground(COLORS.search_cross)
-    g.set(x+w-3, y+1, (search ~= "" and "×" or " "))
-    g.setForeground(searchActive and COLORS.ok or COLORS.search_hint)
-    local display = search
-    if display == "" then 
-        display = "Поиск: введите имя (min: и max: для кол-ва)..." 
-    end
-    if searchActive then display = display .. "_" end
-    local maxlen = w-7
-    if unicode.len(display) > maxlen then
-        display = unicode.sub(display, unicode.len(display)-maxlen+2)
-    end
-    g.set(x+2, y+1, display)
-    g.setBackground(COLORS.bg)
-    g.setForeground(COLORS.text)
-end
-
--- Отрисовка кнопок в нижней панели
-local function drawButtons()
-    local btns = {
-        {name="Удалить", x=WIDTH-60, tip="Удалить выбранный предмет из списка"},
-        {name="Изменить", x=WIDTH-45, tip="Изменить параметры предмета"},
-        {name=isCrafting and "Остановить" or "Автокрафт", x=WIDTH-30, tip=isCrafting and "Остановить автокрафт" or "Запустить автокрафт"},
-        {name="Добавить", x=WIDTH-15, tip="Добавить новый предмет (предмет в 1 слоте ME)"},
-    }
-    for i,v in ipairs(btns) do
-        local hover = hoveredButton == i
-        uoc.animatedButton(v.x, HEIGHT-4, 12, 3, v.name, hover, COLORS.button, COLORS.buttonActive, COLORS.text)
-        if hover then
-            tooltip = v.tip
-            tooltipTimeout = os.time()
-        end
-    end
-end
-
-local function drawTooltip()
-    if tooltip ~= "" and os.time() - tooltipTimeout < 3 then
-        local txt = " " .. tooltip .. " "
-        local w = unicode.len(txt)
-        local x, y = WIDTH - w - 3, HEIGHT - 7
-        g.setBackground(COLORS.tooltip_bg)
-        g.setForeground(COLORS.tooltip_text)
-        g.fill(x, y, w+2, 3, " ")
-        g.set(x+1, y+1, txt)
-        g.setBackground(COLORS.bg)
-        g.setForeground(COLORS.text)
-    end
-end
-
-local function draw()
-    clear()
-    drawCategoryNavigation()
-    drawHeader()
+local function updateFilter(input)
+    filterText = input
     drawItems()
-    drawLogs()
-    drawSearchBar()
-    drawButtons()
-    drawPageNavigation()
-    drawTooltip()
 end
 
--------------------- Функции работы с данными --------------------
-local function reload()
-    local ok,
+local function pageScroll(direction)
+    local totalPages = math.ceil(#fetchItems() / itemsPerPage)
+    page = math.max(1, math.min(page + direction, totalPages))
+    drawItems()
+end
+
+local function handleInput(_, _, char, key)
+    if key == 200 then pageScroll(-1) -- стрелка вверх
+    elseif key == 208 then pageScroll(1) -- стрелка вниз
+    elseif char > 31 and char < 127 then -- Ввод текста для поиска
+        filterText = filterText .. unicode.char(char)
+        updateFilter(filterText)
+    elseif key == 14 then -- Backspace
+        filterText = filterText:sub(1, -2)
+        updateFilter(filterText)
+    end
+end
+
+event.listen("key_down", handleInput)
+drawItems()
