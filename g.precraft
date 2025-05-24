@@ -168,7 +168,7 @@ local function drawButtons()
   end
 end
 
----------------------- СТАТИЧНЫЙ UI ----------------------
+---------------------- ОТРИСОВКА СТАТИЧНОЙ ОБЛАСТИ ----------------------
 local function drawStaticUI()
   -- Заголовок и метка сортировки (строки 1-3)
   gpu.setBackground(COLOR_HEADER_BG)
@@ -202,6 +202,20 @@ local function updateSortLabel()
   gpu.fill(2, 2, 25, 1, " ")
   gpu.setForeground(CTEXT)
   gpu.set(2, 2, sortText)
+end
+
+---------------------- ФУНКЦИИ ОТРИСОВКИ ЧАСТЕЙ UI ----------------------
+-- Область с таблицей (ячейки и скроллбар)
+local function drawTableSection()
+  drawTableItems()
+  drawScrollBar()
+end
+
+-- Область с кнопками (нижняя панель)
+local function drawButtonSection()
+  gpu.setBackground(BG_MAIN)
+  gpu.fill(1, BUTTONS_Y, WIDTH, BUTTONS_HEIGHT, " ")
+  drawButtons()
 end
 
 ---------------------- ОВЕРЛЕЙ ЛОГОВ ----------------------
@@ -297,18 +311,9 @@ local function drawScrollBar()
   else
     gpu.setBackground(indicatorColor)
     for i = y, y + height - 1 do
-        gpu.set(x, i, "█")
+      gpu.set(x, i, "█")
     end
   end
-end
-
----------------------- ОТРИСОВКА ДИНАМИЧНОЙ ОБЛАСТИ ----------------------
-local function drawDynamicUI()
-  drawTableItems()
-  drawScrollBar()
-  gpu.setBackground(BG_MAIN)
-  gpu.fill(1, BUTTONS_Y, WIDTH, BUTTONS_HEIGHT, " ")
-  drawButtons()
 end
 
 ---------------------- ПОЛНАЯ ПЕРЕРИСОВКА ----------------------
@@ -317,18 +322,21 @@ local function fullRedraw()
     drawFloatingLogs()
   else
     drawStaticUI()
-    drawDynamicUI()
+    drawTableSection()
+    drawButtonSection()
   end
 end
 
----------------------- ОБНОВЛЕНИЕ ДИНАМИКИ ----------------------
+---------------------- ОБНОВЛЕНИЕ UI ----------------------
 local function immediateRedraw(force)
   if inputActive then return end
   if force then
     if logsVisible then
       drawFloatingLogs()
     else
-      drawDynamicUI()
+      -- При явном обновлении перерисовываем и таблицу, и кнопку (например, при нажатии)
+      drawTableSection()
+      drawButtonSection()
     end
   end
 end
@@ -646,7 +654,7 @@ local function checkBackgroundUpdate()
     updateCachedCounts()
     lastCountUpdate = now
     if not logsVisible then
-      drawDynamicUI()
+      drawTableSection()
     else
       drawFloatingLogs()
     end
