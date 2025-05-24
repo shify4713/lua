@@ -2,7 +2,7 @@
 -- Версия с разделением статичных и динамичных областей.
 -- Статичная часть (заголовок, рамки, сортировочная метка) отрисовывается только по событию.
 -- Обновление таблицы (ячейки, скроллбар) происходит быстро и без мерцаний.
--- Раз в 20 сек обновляются количественные данные, запускается автокрафт при необходимости.
+-- Раз в 20 сек обновляются количественные данные и запускается автокрафт при необходимости.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -27,24 +27,39 @@ if not fs.exists(dataFile) then
   oc.savef(dataFile, {})
 end
 
----------------------- НАСТРОЙКИ ----------------------
-local ADM = { ["LiwMorgan"] = true }  -- Доступ только для указанного ника
-
--- Размер экрана (160×50)
-local WIDTH, HEIGHT = 160, 50
-gpu.setResolution(WIDTH, HEIGHT)
+---------------------- ГЛОБАЛЫЕ ПЕРЕМЕННЫЕ ----------------------
+local dataItems = {}         -- Список предметов
+local dataQueue = {}         -- Очередь для автокрафта (те же данные)
+local scroll = 1             -- Текущая позиция таблицы
+local posSelect = nil        -- Выбранная строка таблицы
+local craftingActive = false -- Режим автокрафта (ON/OFF)
+local running = true         -- Флаг работы программы
+local maxScroll = 1          -- Максимальное смещение таблицы
+local content = {}           -- Отфильтрованный/отсортированный список
+local sortCriteria = "name"  -- Возможные: "name", "category", "count"
+local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
+local craftLogs = {}         -- Массив логов
+local MAX_LOGS = 100         -- Максимальное число логов
+local logsVisible = false    -- Флаг отображения логового окна
+local buttons = {}           -- Таблица кнопок
+local logTimerId = nil       -- ID таймера логов
+local lastCountUpdate = 0    -- Время последнего обновления количеств
+local COUNT_UPDATE_INTERVAL = 20  -- Интервал обновления (сек)
+local inputActive = false    -- Флаг блокировки обновлений во время ввода
+local cachedCounts = {}      -- Кэш количественных значений
 
 ---------------------- РАЗМЕРЫ UI ----------------------
+local WIDTH, HEIGHT = 160, 50
+gpu.setResolution(WIDTH, HEIGHT)
 local TABLE_HEADER_Y = 4                           -- Верхняя рамка таблицы (заголовок)
 local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2        -- Начало области таблицы
 local BUTTONS_HEIGHT = 3                           -- Высота кнопок
 local BUTTONS_Y = HEIGHT - BUTTONS_HEIGHT + 1        -- Размещение кнопок в нижней части экрана
-local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Кол-во строк таблицы, видимых на экране
-
+local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Количество видимых строк таблицы
 local TABLE_X = 2                                  -- Начало таблицы слева
 local TABLE_WIDTH = 157                            -- Полная ширина таблицы
 
--- Ширины столбцов (подогнаны под TABLE_WIDTH)
+-- Определения ширины столбцов (подогнаны под TABLE_WIDTH)
 local COL_WIDTH_IDX    = 5
 local COL_WIDTH_NAME   = 94
 local COL_WIDTH_CAT    = 15
@@ -58,39 +73,13 @@ local CTEXT               = 0xDADADA   -- Светло-серый текст
 local COLOR_BUTTON        = 0x4A90E2   -- Синий для кнопок
 local COLOR_BUTTON_TEXT   = 0xFFFFFF   -- Белый текст на кнопках
 local COLOR_HIGHLIGHT     = 0x8A2BE2   -- Фиолетовый для выделения строки
-local COLOR_LOW           = 0xFF4C4C   -- Красный – недостаточно/ошибка
+local COLOR_LOW           = 0xFF4C4C   -- Красный – ошибка/недостаточно
 local COLOR_MEDIUM        = 0xFFCC00   -- Желтый – промежуточное состояние
 local COLOR_HIGH          = 0x00FF66   -- Зелёный – позитивное состояние
-
 local BG_ALT              = 0x2A2A2A   -- Альтернативный фон для четных строк
 local COLOR_HEADER_BG     = 0x333333   -- Фон заголовка
-local COLOR_LOG_BG        = 0x3A3A3A   -- Фон области логов
+local COLOR_LOG_BG        = 0x3A3A3A   -- Фон логового окна
 local COLOR_BUTTON_BORDER = 0x444444   -- Граница кнопок
-
----------------------- ГЛОБАЛЫЕ ПЕРЕМЕННЫЕ ----------------------
-local dataItems = {}         -- Список предметов (данные)
-local dataQueue = {}         -- Очередь для автокрафта (те же данные)
-local scroll = 1             -- Текущая позиция таблицы
-local posSelect = nil        -- Выбранная строка
-local craftingActive = false -- Автокрафт включён/выключён
-local running = true         -- Флаг работы программы
-local maxScroll = 1          -- Максимальное смещение таблицы
-local content = {}           -- Отфильтрованный/отсортированный список
-
-local sortCriteria = "name"  -- Возможные: "name", "category", "count"
-local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
-
-local craftLogs = {}         -- Массив логов
-local MAX_LOGS = 100         -- Максимальное число логов
-local logsVisible = false    -- Видимость окна логов
-local buttons = {}           -- Таблица кнопок
-
-local logTimerId = nil       -- ID таймера логов
-
-local lastCountUpdate = 0    -- Время последнего обновления количеств
-local COUNT_UPDATE_INTERVAL = 20  -- Интервал обновления (сек)
-
-local inputActive = false    -- Флаг блокировки фонового обновления во время ввода
 
 ---------------------- ФУНКЦИИ ВЫРАВНЕНИЯ ТЕКСТА ----------------------
 local function padOrTrim(text, width)
@@ -197,9 +186,8 @@ local function updateSortLabel()
 end
 
 ---------------------- ОБНОВЛЕНИЕ ОБЛАСТЕЙ ----------------------
--- Обновление области таблицы: ячейки + скроллбар
+-- Обновление области таблицы (ячейки и скроллбар)
 local function drawTableSection()
-  -- Отрисовка ячеек таблицы
   for row = TABLE_BODY_START_Y, BUTTONS_Y - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
@@ -234,7 +222,6 @@ local function drawTableSection()
     gpu.set(TABLE_X, rowPos, rowStr)
   end
   
-  -- Отрисовка скроллбара
   local x = TABLE_X + TABLE_WIDTH
   local y = TABLE_BODY_START_Y
   local height = VISIBLE_TABLE_ROWS
@@ -265,10 +252,9 @@ local function drawButtonSection()
   drawButtons()
 end
 
--- Полная перерисовка всего экрана (статичный UI + таблица + кнопки)
+-- Полная перерисовка всего экрана (статический UI, таблица и кнопки)
 local function fullRedraw()
   if logsVisible then
-    -- Если логи отображаются, отрисовываем окно логов
     gpu.setBackground(BG_MAIN)
     gpu.fill(1, 1, WIDTH, HEIGHT, " ")
     drawFloatingLogs()
@@ -279,7 +265,7 @@ local function fullRedraw()
   end
 end
 
--- Перерисовка изменившихся участков без полного обновления
+-- Перерисовка только динамических зон (обычно вызывается при изменениях)
 local function immediateRedraw(force)
   if inputActive then return end
   if force then
@@ -480,7 +466,7 @@ local function onTouch(_, _, x, y, _, nick)
       if x >= button.x and x <= (button.x + button.w - 1)
          and y >= button.y and y <= (button.y + button.h - 1) then
           button.action()
-          -- Обновляем только кнопочную область
+          -- Обновляем кнопку сразу
           drawButtonSection()
           return true
       end
@@ -554,7 +540,8 @@ local function initButtons()
         addLog("[Edit] Сортировка по " .. sortCriteriaDisplay[sortCriteria], COLOR_MEDIUM)
         updateContent()
         updateSortLabel()
-        fullRedraw()
+        drawTableSection()
+        drawButtonSection()
       end
     },
     {
@@ -564,7 +551,6 @@ local function initButtons()
       action = function()
         logsVisible = not logsVisible
         if logsVisible then
-          -- Ставим таймер обновления логов раз в 1 сек, чтобы окно не моргало
           if logTimerId then event.cancel(logTimerId) end
           logTimerId = event.timer(1.0, function()
             if logsVisible then drawFloatingLogs() end
@@ -579,7 +565,7 @@ local function initButtons()
   }
 end
 
----------------------- ЛОГЫ (ОКНО ЛОГОВ) ----------------------
+---------------------- ЛОГИ (ОКНО ЛОГОВ) ----------------------
 local function drawFloatingLogs()
   local overlayWidth = 70
   local overlayHeight = 20
@@ -625,9 +611,7 @@ local function checkBackgroundUpdate()
   if now - lastCountUpdate >= COUNT_UPDATE_INTERVAL then
     updateCachedCounts()
     lastCountUpdate = now
-    if not logsVisible then
-      drawTableSection()
-    end
+    if not logsVisible then drawTableSection() end
   end
 end
 
