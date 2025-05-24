@@ -43,6 +43,13 @@ local COLOR_LOW    = 0xFF4C4C  -- Красный – недостаточно
 local COLOR_MEDIUM = 0xFFCC00  -- Желтый – промежуточно
 local COLOR_HIGH   = 0x00FF66  -- Зелёный – достаточно
 
+-- Новые цвета для улучшения визуала:
+local BG_ALT          = 0x2A2A2A  -- Альтернативный фон для чередующихся строк таблицы
+local COLOR_HEADER_BG = 0x333333  -- Фон заголовка таблицы и шапки
+local COLOR_LOG_BG    = 0x2D2D2D  -- Фон области логов
+local COLOR_BUTTON_BORDER = 0x000000  -- Граница кнопок
+local COLOR_TABLE_BORDER  = 0x666666  -- Цвет вертикальных разделителей в таблице
+
 -- Размеры компонентов интерфейса
 local TABLE_X = 2
 local TABLE_WIDTH = 120          -- Ширина таблицы (левая часть)
@@ -90,7 +97,7 @@ local function promptInput(promptMessage)
   local input = io.read()
   -- Очистка окна ввода без затрагивания остального интерфейса
   gpu.fill(boxX - 1, boxY - 1, boxW + 2, boxH + 2, " ")
-  requestRedraw()
+  redrawNeeded = true
   return input
 end
 
@@ -150,7 +157,6 @@ local function addLogEvent(eventType, message, status)
     insufficient = COLOR_LOW
   }
   local color = statusColors[status] or CTEXT
-  -- Исключаем время – только тип и сообщение
   local fullMessage = "[" .. eventType .. "] " .. message
   if #craftLogs >= 20 then
     table.remove(craftLogs, 1)
@@ -171,26 +177,29 @@ local function drawBorder(x, y, w, h, fgColor)
   end
 end
 
+-- Рисуем статичные области: шапку, таблицу и область логов
 local function drawStatic()
-  -- Не очищаем весь экран при каждой перерисовке, чтобы избежать мерцания
+  -- Очищаем весь экран
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, 1, WIDTH, HEIGHT, " ")
   
-  -- Заголовок
+  -- Заголовок (заполнен цветом заголовка)
+  gpu.setBackground(COLOR_HEADER_BG)
+  gpu.fill(1, HEADER_Y, WIDTH, 3, " ")
   gpu.setForeground(CTEXT)
   local header = "PreCraft - Автокрафт предметов"
-  gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), HEADER_Y, header)
-  gpu.set(2, HEADER_Y + 1, "Сортировка: " .. sortCriteriaDisplay[sortCriteria])
+  gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), HEADER_Y + 1, header)
+  gpu.set(2, HEADER_Y + 2, "Сортировка: " .. sortCriteriaDisplay[sortCriteria])
   
   -- Рамка таблицы
   local tableHeaderWidth = TABLE_WIDTH
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, tableHeaderWidth + 2, tableHeaderHeight)
   
-  -- Заголовок таблицы
+  -- Заголовок таблицы с фоном шапки
   local headerStr = string.format("|%-4s|%-40s|%-20s|%-8s|%-8s|%-10s|", "Idx", "Name", "Категория", "Req", "ME", "Craft")
   headerStr = headerStr .. string.rep(" ", TABLE_WIDTH - unicode.len(headerStr))
-  gpu.setBackground(BG_MAIN)
+  gpu.setBackground(COLOR_HEADER_BG)
   gpu.setForeground(CTEXT)
   gpu.set(TABLE_X, TABLE_HEADER_Y, headerStr)
   gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("─", TABLE_WIDTH))
@@ -199,15 +208,69 @@ local function drawStatic()
   local logsWidth = WIDTH - LOGS_X - 1
   local logsHeight = HEIGHT - HEADER_Y - 1
   drawBorder(LOGS_X - 1, HEADER_Y - 1, logsWidth + 2, logsHeight + 2)
+  
+  -- Фон логов
+  gpu.setBackground(COLOR_LOG_BG)
+  gpu.fill(LOGS_X, HEADER_Y, logsWidth, logsHeight, " ")
 end
 
+-- Функция отрисовки области логов
+local function drawLogsArea()
+  local logsWidth = WIDTH - LOGS_X - 1
+  local logsHeight = HEIGHT - HEADER_Y - 1
+  gpu.setBackground(COLOR_LOG_BG)
+  gpu.fill(LOGS_X, HEADER_Y, logsWidth, logsHeight, " ")
+  local logY = HEADER_Y + 1
+  for i, log in ipairs(craftLogs) do
+    if logY <= HEADER_Y + logsHeight - 2 then
+      gpu.setForeground(log.color)
+      local logText = log.text
+      if unicode.len(logText) > logsWidth - 2 then
+        logText = unicode.sub(logText, 1, logsWidth - 2)
+      end
+      gpu.set(LOGS_X + 1, logY, logText)
+      logY = logY + 1
+    else
+      break
+    end
+  end
+end
+
+-- Функция для рисования кнопок с рамками
+local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
+  gpu.setBackground(bgColor)
+  gpu.fill(x, y, w, h, " ")
+  gpu.setForeground(COLOR_BUTTON_BORDER)
+  drawBorder(x, y, w, h, COLOR_BUTTON_BORDER)
+  gpu.setForeground(textColor)
+  local textPosX = x + math.floor((w - unicode.len(text)) / 2)
+  local textPosY = y + math.floor(h / 2)
+  gpu.set(textPosX, textPosY, text)
+end
+
+local function drawButtons()
+  if not buttons then return end
+  for i = 1, #buttons do
+    local button = buttons[i]
+    for j = 1, #button.ButtonIn do
+      if button.ButtonIn[j] == guiPath[#guiPath] and button.visible then
+        drawCustomButton(button.x, button.y, button.w, button.h, COLOR_BUTTON, COLOR_BUTTON_TEXT, button.text)
+      end
+    end
+  end
+end
+
+-- Отрисовка таблицы с чередующимися строками и вертикальными разделителями
 local function drawTableItems()
-  -- Очищаем только область таблицы
+  -- Очищаем область таблицы
   for row = TABLE_BODY_START_Y, TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
   end
-
+  
+  -- Координаты вертикальных разделителей (согласно формату строки)
+  local gridCols = {TABLE_X, TABLE_X+5, TABLE_X+46, TABLE_X+67, TABLE_X+76, TABLE_X+85, TABLE_X+96}
+  
   for i = scroll, math.min(#content, scroll + VISIBLE_TABLE_ROWS - 1) do
     local row = TABLE_BODY_START_Y + (i - scroll)
     local item = content[i]
@@ -227,33 +290,30 @@ local function drawTableItems()
       colorText = COLOR_MEDIUM
     end
 
+    -- Чередование фона строк
+    local rowBg = ((i - scroll) % 2 == 0) and BG_MAIN or BG_ALT
     if posSelect and i == posSelect then
-      gpu.setBackground(COLOR_HIGHLIGHT)
-    else
-      gpu.setBackground(BG_MAIN)
+      rowBg = COLOR_HIGHLIGHT
     end
 
+    gpu.setBackground(rowBg)
     local line = string.format("|%-4d|%-40s|%-20s|%-8d|%-8d|%-10d|", i, item.name, item.category or "", reqCount, currentQty, item.craftSize or 0)
-    line = line .. string.rep(" ", TABLE_WIDTH - unicode.len(line))
+    if unicode.len(line) < TABLE_WIDTH then
+      line = line .. string.rep(" ", TABLE_WIDTH - unicode.len(line))
+    end
     gpu.setForeground(colorText)
     gpu.set(TABLE_X, row, line)
+    
+    -- Отрисовка вертикальных разделителей для придания «решётчатости»
+    for _, colX in ipairs(gridCols) do
+      gpu.setForeground(COLOR_TABLE_BORDER)
+      gpu.set(colX, row, "│")
+    end
   end
 end
 
 local function drawScrollBar()
   oc.drawscroll(TABLE_X + TABLE_WIDTH + 1, TABLE_BODY_START_Y, 1, VISIBLE_TABLE_ROWS, scroll, #content, COLOR_HIGHLIGHT, COLOR_BUTTON)
-end
-
-local function drawButtons()
-  if not buttons then return end
-  for i = 1, #buttons do
-    local button = buttons[i]
-    for j = 1, #button.ButtonIn do
-      if button.ButtonIn[j] == guiPath[#guiPath] and button.visible then
-        oc.drawbutton(button.x, button.y, button.w, button.h, COLOR_BUTTON, COLOR_BUTTON_TEXT, button.text)
-      end
-    end
-  end
 end
 
 local function drawEditMode()
@@ -279,7 +339,7 @@ local function drawEditMode()
     local button = buttons[i]
     for j = 1, #button.ButtonIn do
       if button.ButtonIn[j] == "change" and button.visible then
-        oc.drawbutton(button.x, button.y, button.w, button.h, COLOR_BUTTON, COLOR_BUTTON_TEXT, button.text)
+        drawCustomButton(button.x, button.y, button.w, button.h, COLOR_BUTTON, COLOR_BUTTON_TEXT, button.text)
       end
     end
   end
