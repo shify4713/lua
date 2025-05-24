@@ -1,7 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
 -- Обновлённый интерфейс для разрешения 120×50.
--- Таблица занимает всю ширину экрана, новые предметы отображаются сразу,
--- а обновление экрана производится с минимальным мерцанием.
+-- Таблица занимает всю ширину экрана, данные обновляются каждые 8 секунд.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -45,7 +44,7 @@ local MAX_LOGS = 100         -- Максимальное число логов
 local logsVisible = false    -- Флаг отображения логового окна
 local buttons = {}           -- Таблица кнопок
 local lastCountUpdate = 0    -- Время последнего обновления количеств
-local COUNT_UPDATE_INTERVAL = 8  -- Интервал обновления для ME (изменено с 2 до 8 сек)
+local COUNT_UPDATE_INTERVAL = 8  -- Интервал обновления (8 секунд)
 local inputActive = false    -- Флаг блокировки обновлений во время ввода
 local cachedCounts = {}      -- Кэш количественных значений
 
@@ -68,11 +67,11 @@ local COL_WIDTH_ME     = 12
 local COL_WIDTH_CRAFT  = 12
 
 -- Заголовок таблицы занимает строки 1-3
-local TABLE_HEADER_Y = 4           -- Шапка таблицы (Начиная с 4-й строки)
+local TABLE_HEADER_Y = 4           -- Шапка таблицы (с 4-й строки)
 local TABLE_BODY_START_Y = 6         -- Тело таблицы начинается с 6-й строки
 local BUTTONS_HEIGHT = 3           -- Высота кнопок
-local BUTTONS_Y = HEIGHT - BUTTONS_HEIGHT + 1  -- Строка для кнопок
-local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Количество видимых строк таблицы
+local BUTTONS_Y = HEIGHT - BUTTONS_HEIGHT + 1  -- Строка кнопок
+local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Количество видимых строк
 
 --------------------------------------------------------------------
 -- ПАЛИТРА ЦВЕТОВ и параметры
@@ -336,6 +335,7 @@ local function inputOverlay(promptMessage)
   term.setCursorBlink(true)
   local input = term.read()
   term.setCursorBlink(false)
+  term.setCursor(1, HEIGHT)  -- Перемещаем курсор в нижнюю строку, чтобы он не висел в окне ввода
   inputActive = false
   updateUI()
   return input:sub(1, -2)
@@ -428,7 +428,7 @@ local function addLog(msg)
 end
 
 --------------------------------------------------------------------
--- АВТО-КРАФТ (теперь проверяется каждые 8 секунд)
+-- АВТО-КРАФТ (каждые 8 секунд)
 --------------------------------------------------------------------
 local function autoCraftCheck()
   if not craftingActive then return end
@@ -610,12 +610,12 @@ local function checkBackgroundUpdate()
 end
 
 local backgroundUpdateTimer = event.timer(1.0, checkBackgroundUpdate, math.huge)
-local craftTimer = event.timer(8.0, autoCraftCheck, math.huge)  -- Таймер автокрафта теперь 8 секунд
+local craftTimer = event.timer(8.0, autoCraftCheck, math.huge)  -- Автокрафт каждые 8 сек
 
 --------------------------------------------------------------------
 -- ГЛАВНЫЙ ЦИКЛ
 --------------------------------------------------------------------
 LoadSystem()
 while running do
-  event.pull(0.05)  -- основной цикл с задержкой 0.05 сек для уменьшения мерцания
+  event.pull(0.05)
 end
