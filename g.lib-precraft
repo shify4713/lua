@@ -7,7 +7,7 @@ local serialization = require("serialization")
 local oc = {}
 local g = component.gpu
 
--- Сохранение таблицы в файл (используется для BD.txt)
+-- Сохранение таблицы в файл (например, BD.txt)
 function oc.savef(filename, tbl)
   local file, err = io.open(filename, "w")
   if not file then error("Ошибка записи файла: " .. err) end
