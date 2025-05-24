@@ -1,84 +1,582 @@
+-- precraft.lua – основная программа с новой GUI и автокрафтом
 local component = require("component")
+local fs = require("filesystem")
+local shell = require("shell")
 local event = require("event")
 local unicode = require("unicode")
 local term = require("term")
 local g = component.gpu
 local me = component.me_interface
 
--- Цветовая индикация
-local COLORS = {
-    LOW = 0xff0000, -- красный
-    MEDIUM = 0xffcc00, -- желтый
-    HIGH = 0x00ff00 -- зеленый
+-- Если библиотеки нет – скачать её (можно оставить как есть)
+if not fs.exists("/lib/oc.lua") then
+  shell.execute("wget https://www.dropbox.com/s/cgfytt8g174a6vs/libPrecraft.lua?dl=1 /lib/oc.lua")
+end
+local oc = require("oc")
+
+-- Если файл данных не существует – создать его
+if not fs.exists("/home/BD.txt") then
+  oc.savef("/home/BD.txt", {})
+end
+
+--------------------Настройки--------------------
+local debugMode = true               -- режим отладки
+local ADM = {['KReaTlVNuY']=true, ['4ertik_']=true}  -- допуск пользователей
+local WIDTH, HEIGHT = 80, 50
+if debugMode then WIDTH, HEIGHT = 160, 50 end
+g.setResolution(WIDTH, HEIGHT)
+
+local CBUTTON = 0x00ffff
+local CDRAW   = 0x004575
+local CTEXT   = 0xD38FFE
+g.setForeground(CTEXT)
+--------------------------------------------------
+
+-- Глобальные переменные
+local dataItems = {}         -- список крафтов (загружается из BD.txt)
+local dataq = {}             -- копия для автокрафта
+local guiPath = {"start"}    -- стэк состояний интерфейса
+local debugLog1, debugLog2 = {}, {}  -- логи для отладки
+local inputFind = ""         -- строка фильтра
+local scroll = 1             -- положение скролла
+local posSelect = nil        -- выбранный элемент
+local changeItem = false     -- флаг ввода (редактирования/добавления)
+local go = true              -- включить автокрафт
+local precraft = true        -- главный цикл работы программы
+
+local maxScroll = 1          -- максимальное смещение
+local content = {}           -- отфильтрованный список элементов
+local yTouch = 0             -- сохранённое положение касания
+
+-- Цветовая индикация для списка (расширенная)
+local COLOR_LOW = 0xff0000    -- недостаточно – красный
+local COLOR_MEDIUM = 0xffcc00 -- среднее – жёлтый
+local COLOR_HIGH = 0x00ff00   -- достаточно – зелёный
+
+--------------------------------------------------
+-- Функции отрисовки интерфейса
+
+-- Полностью очищает область под основным контентом
+local function ClearScreen()
+  g.setBackground(0x000000)
+  g.fill(1, 4, WIDTH, HEIGHT-4, " ")
+end
+
+-- Рисует заголовок
+local function DrawHeader()
+  g.setBackground(0x000000)
+  g.setForeground(CTEXT)
+  g.fill(1,1,WIDTH,3," ")
+  g.set(math.floor((WIDTH - unicode.len("PreCraft"))/2), 2, "PreCraft")
+end
+
+-- Отрисовка отладочных логов на правой стороне экрана (начиная с колонки 85, если место позволяет)
+local function DrawDebugLogs()
+  if WIDTH >= 85 then
+    g.fill(85, 1, WIDTH-84, HEIGHT-1, " ")
+    for i = 1, #debugLog1 do
+      g.set(85, 4 + i - 1, tostring(debugLog1[i]))
+    end
+    for i = 1, #debugLog2 do
+      g.set(85, 26 + i - 1, tostring(debugLog2[i]))
+    end
+  end
+end
+
+-- Рисование списка предметов с цветовой индикацией
+local function DrawScrollContent()
+  if guiPath[#guiPath] == "start" or guiPath[#guiPath] == "stop" or guiPath[#guiPath] == "go" then
+    g.set(13, 5, "Название предмета:")
+    g.set(45, 5, "Подд. кол-во:")
+    g.set(60, 5, "Размер крафта:")
+    g.set(20, 43, "Для поиска введите название: " .. inputFind)
+    oc.right(71, 50, "Всего " .. tostring(#dataItems) .. " крафтов")
+  
+    -- Фильтрация: если введён текст – отбираем только подходящие элементы  
+    if inputFind ~= "" then
+      content = {}
+      for i, item in ipairs(dataItems) do
+        if unicode.lower(item.name):find(unicode.lower(inputFind)) then
+          table.insert(content, item)
+        end
+      end
+    else
+      content = dataItems
+    end
+  
+    maxScroll = math.max(1, #content - 35 + 1)
+  
+    -- Отрисовка списка (строки с 7-й по 41-ю)
+    for i = scroll, math.min(#content, scroll + 35 - 1) do
+      local k = i - scroll
+      local item = content[i]
+      local detail = me.getItemDetail({id = item.id, dmg = item.dmg})
+      local currentQty = (detail and detail.basic() and detail.basic().qty) or 0
+      local diff = item.count - currentQty
+      local colorText = CTEXT
+      if currentQty >= item.count then
+        colorText = COLOR_HIGH
+      elseif diff >= math.floor(item.count * 0.5) then
+        colorText = COLOR_LOW
+      else
+        colorText = COLOR_MEDIUM
+      end
+
+      if posSelect and i == posSelect then
+        g.setBackground(0x1e1e1e)
+      else
+        g.setBackground(0x000000)
+      end
+      g.setForeground(colorText)
+      g.fill(11, 7 + k, 58, 1, " ")
+      g.set(13, 7 + k, tostring(i .. ". " .. item.name))
+      g.set(45, 7 + k, tostring(item.count))
+      g.set(60, 7 + k, tostring(item.craftSize))
+    end
+    g.setBackground(0x000000)
+    g.setForeground(CTEXT)
+  end
+end
+
+-- Рисование скроллбара рядом со списком
+local function DrawScrollBar()
+  oc.drawscroll(70, 7, 1, 35, scroll, #content, 0x1e1e1e, 0x004575)
+end
+
+-- Рисование кнопок (в зависимости от текущего состояния guiPath)
+local function DrawButtons()
+  for name, button in pairs(buttons) do
+    for i, state in ipairs(button.ButtonIn) do
+      if state == guiPath[#guiPath] and button.visible then
+        oc.drawbutton(button.x, button.y, button.w, button.h, button.ctext, button.cbutton, button.text)
+      end
+    end
+  end
+end
+
+-- Общая функция отрисовки (заголовок, основное окно, кнопки, списки, логи)
+local function MainDraw()
+  DrawHeader()
+  ClearScreen()
+  Main()  -- отрисовка статичных элементов (например, в режиме "change")
+  DrawButtons()
+  DrawScrollContent()
+  DrawScrollBar()
+  DrawDebugLogs()
+end
+
+-- Отрисовка информации в режиме "change" (редактирование выбранного элемента)
+function Main()
+  if guiPath[#guiPath] == "start" or guiPath[#guiPath] == "stop" or guiPath[#guiPath] == "go" then
+    g.set(13, 5, "Название предмета:")
+    g.set(45, 5, "Поддержание:")
+    g.set(60, 5, "Размер крафта:")
+  elseif guiPath[#guiPath] == "change" then
+    if posSelect and dataItems[posSelect] then
+      g.set(13, 10, "Название предмета: " .. dataItems[posSelect].name)
+      g.set(13, 12, "id: " .. tostring(dataItems[posSelect].id))
+      g.set(13, 14, "dmg: " .. tostring(dataItems[posSelect].dmg))
+      g.set(13, 16, "Поддержание: " .. tostring(dataItems[posSelect].count))
+      g.set(13, 18, "Размер крафта: " .. tostring(dataItems[posSelect].craftSize))
+    end
+  end
+end
+
+-- Переход в другое состояние GUI
+local function toGui(state, clear)
+  if clear then guiPath[#guiPath] = nil end
+  if guiPath[#guiPath] ~= state then table.insert(guiPath, state) end
+  dataItems = oc.loadf("/home/BD.txt")
+  MainDraw()
+end
+
+-- Вернуться назад на уровень GUI
+local function Back(to)
+  if to then
+    while #guiPath > to do table.remove(guiPath) end
+  else
+    table.remove(guiPath)
+  end
+  posSelect = nil
+  MainDraw()
+end
+
+-- Добавляет строку в отладочные логи
+local function AddLog(logType, msg)
+  if logType == "ore" then
+    if #debugLog1 > 19 then table.remove(debugLog1, 1) end
+    table.insert(debugLog1, msg)
+  else
+    if #debugLog2 > 19 then table.remove(debugLog2, 1) end
+    table.insert(debugLog2, msg)
+  end
+  MainDraw()
+end
+
+--------------------------------------------------
+-- Функция автокрафта
+local function Check()
+  for i = 1, #dataq do
+    if not go then break end
+    local item = dataq[i]
+    if not item.craft or item.craft.isDone() or item.craft.isCanceled() then
+      item.craft = nil
+      local detail = me.getItemDetail({id = item.id, dmg = item.dmg})
+      if detail then
+        local currentQty = (detail.basic() and detail.basic().qty) or 0
+        local delta = item.count - currentQty
+        if delta > item.craftSize then delta = item.craftSize end
+        if delta > 0 then
+          local cpus = me.getCpus()
+          for j = 1, #cpus do
+            if not cpus[j].busy and cpus[j].storage == item.cpu then
+              local craftables = me.getCraftables({name = item.id, damage = item.dmg})
+              if craftables.n and craftables.n >= 1 then
+                item.craft = craftables[1].request(delta, false, tostring(item.cpu))
+                if debugMode then
+                  local canceled, cancelmsg = item.craft.isCanceled()
+                  if not canceled and cancelmsg then
+                    if cancelmsg == "computing" then
+                      AddLog("ore", item.name .. " не хватает ресурсов (" .. cancelmsg .. ")")
+                    end
+                  elseif cancelmsg == "request failed (missing resources?)" then
+                    AddLog("ore", item.name .. " не хватает ресурсов (" .. cancelmsg .. ")")
+                  elseif cancelmsg then
+                    AddLog("ore", item.name .. " " .. cancelmsg)
+                  end
+                  os.sleep(0.5)
+                  break
+                end
+              elseif debugMode then
+                AddLog("recipe", item.name .. " не имеет рецепта")
+              end
+              break
+            end
+          end
+        end
+      end
+    end
+  end
+  os.sleep(1)
+  AddLog("ore", " ")
+  AddLog("recipe", " ")
+end
+
+--------------------------------------------------
+-- Управление списком предметов (Добавление, Удаление, Редактирование)
+
+local function AddItem()
+  changeItem = true
+  if me.getStackInSlot(1) then
+    g.fill(1,43, WIDTH, 1, " ")
+    g.set(14,43, "Введите название предмета:")
+    term.setCursor(40,43)
+    local name = tostring(io.read())
+    g.fill(1,43,WIDTH, 1, " ")
+    g.set(14,43, "Введите число поддержания:")
+    term.setCursor(41,43)
+    local count = tonumber(io.read())
+    g.fill(1,43,WIDTH, 1, " ")
+    g.set(14,43, "Введите макс. объём крафта:")
+    term.setCursor(41,43)
+    local craftSize = tonumber(io.read())
+    g.fill(1,43,WIDTH, 1, " ")
+    local stack = me.getStackInSlot(1)
+    table.insert(dataItems, {name = name, id = stack.id, dmg = stack.dmg, count = count, craftSize = craftSize, cpu = 65536})
+    oc.savef("/home/BD.txt", dataItems)
+  else
+    g.set(14,43, "Предмет не установлен в 1-й слот интерфейса")
+    os.sleep(2)
+    g.fill(1,43,WIDTH, 1, " ")
+  end
+  MainDraw()
+  changeItem = false
+end
+
+local function RemoveItem()
+  if posSelect then
+    for i = 1, #dataItems do
+      if dataItems[i].name == content[posSelect].name then
+        table.remove(dataItems, i)
+        oc.savef("/home/BD.txt", dataItems)
+        posSelect = nil
+        MainDraw()
+        return true
+      end
+    end
+  end
+end
+
+local function EditItem()
+  if posSelect then
+    for i = 1, #dataItems do
+      if dataItems[i].name == content[posSelect].name then
+        posSelect = i
+        toGui("change", false)
+        return true
+      end
+    end
+  end
+end
+
+local function ChangeItem(action)
+  if posSelect then
+    g.fill(1,45, WIDTH, 1, " ")
+    if action == "changeName" then
+      g.set(14,45, "Введите название предмета:")
+      term.setCursor(40,45)
+      dataItems[posSelect].name = tostring(io.read())
+    elseif action == "changeCount" then
+      g.set(14,45, "Введите число поддержания:")
+      term.setCursor(41,45)
+      dataItems[posSelect].count = tonumber(io.read())
+    elseif action == "changeCraftSize" then
+      g.set(14,45, "Введите макс. объём крафта:")
+      term.setCursor(41,45)
+      dataItems[posSelect].craftSize = tonumber(io.read())
+    end
+    oc.savef("/home/BD.txt", dataItems)
+    g.fill(1,45,WIDTH, 1, " ")
+    MainDraw()
+  end
+end
+
+--------------------------------------------------
+-- Обработчики событий
+
+local function eButton(_, _, x, y, _, nick)
+  if ADM[nick] then
+    for name, button in pairs(buttons) do
+      if x >= button.x and x <= button.x + button.w - 1 and
+         y >= button.y and y <= button.y + button.h - 1 then
+        for i, state in ipairs(button.ButtonIn) do
+          if state == guiPath[#guiPath] then
+            yTouch = y
+            button.action()
+            return true
+          end
+        end
+      end
+    end
+  end
+end
+
+local function eScroll(_, _, _, _, zs, nick)
+  if ADM[nick] then
+    if guiPath[#guiPath] == "start" or guiPath[#guiPath] == "stop" or guiPath[#guiPath] == "go" then
+      if not zs then
+        scroll = 1
+      elseif zs == 1 and scroll > 1 then
+        scroll = scroll - 1
+      elseif zs == -1 and scroll < maxScroll then
+        scroll = scroll + 1
+      end
+      MainDraw()
+    end
+  end
+end
+
+local function eKeyDown(_, _, key, code, nick)
+  if ADM[nick] and not changeItem then
+    if guiPath[#guiPath] == "start" or guiPath[#guiPath] == "stop" or guiPath[#guiPath] == "go" then
+      local y = 43
+      g.fill(20, y, 30, 1, " ")
+      if key == 8 then                    -- backspace
+        inputFind = unicode.sub(inputFind, 1, -2)
+      elseif key == 0 and code == 211 then  -- delete
+        inputFind = ""
+      elseif key ~= 0 then                -- добавляем символ
+        if inputFind == nil or inputFind == "" then
+          inputFind = unicode.char(key)
+        elseif unicode.len(inputFind) < 49 then
+          inputFind = inputFind .. unicode.char(key)
+        end
+      end
+      MainDraw()
+    end
+  end
+end
+
+-- Инициализация кнопок (вычисление концов координат)
+local function initButtons()
+  for name, button in pairs(buttons) do
+    button.endX = button.x + button.w - 1
+    button.endY = button.y + button.h - 1
+  end
+end
+
+--------------------------------------------------
+-- Определения кнопок
+buttons = {
+  LOGO = {
+    ButtonIn = {"start", "go", "stop", "change"},
+    visible = true,
+    x = 10, y = 1, w = 62, h = 3,
+    cbutton = CDRAW, ctext = CBUTTON, text = "PreCraft",
+    action = function() end
+  },
+  Exit = {
+    ButtonIn = {"start", "go", "stop", "change"},
+    visible = false,
+    x = 1, y = 1, w = 1, h = 1,
+    cbutton = CDRAW, ctext = CBUTTON, text = "",
+    action = function()
+      g.setResolution(160, 50)
+      event.cancel(etouch)
+      event.cancel(escroll)
+      event.cancel(ekeydown)
+      precraft = false
+    end
+  },
+  Select = {
+    ButtonIn = {"stop"},
+    visible = false,
+    x = 11, y = 7, w = 60, h = 35,
+    text = "",
+    action = function() 
+      posSelect = scroll + (yTouch - 7)
+      MainDraw()
+    end
+  },
+  Go = {
+    ButtonIn = {"start", "go"},
+    visible = true,
+    x = 14, y = 47, w = 24, h = 3,
+    cbutton = 0x28C730, ctext = 0x28C730, text = "Go",
+    action = function() end
+  },
+  GoTrue = {
+    ButtonIn = {"stop"},
+    visible = true,
+    x = 14, y = 47, w = 24, h = 3,
+    cbutton = 0x00ffff, ctext = 0x00ffff, text = "Go",
+    action = function()
+      toGui("go", false)
+      dataq = dataItems
+      go = true
+      MainDraw()
+    end
+  },
+  Stop = {
+    ButtonIn = {"stop"},
+    visible = true,
+    x = 43, y = 47, w = 24, h = 3,
+    cbutton = 0xff0000, ctext = 0xff0000, text = "Stop",
+    action = function() end
+  },
+  StopTrue = {
+    ButtonIn = {"start", "go"},
+    visible = true,
+    x = 43, y = 47, w = 24, h = 3,
+    cbutton = 0x00ffff, ctext = 0x00ffff, text = "Stop",
+    action = function()
+      toGui("stop", false)
+      go = false
+      MainDraw()
+    end
+  },
+  Add = {
+    ButtonIn = {"stop"},
+    visible = true,
+    x = 20, y = 45, w = 10, h = 1,
+    cbutton = nil, ctext = 0x00ffff, text = "[Добавить]",
+    action = function() AddItem() end
+  },
+  Change = {
+    ButtonIn = {"stop"},
+    visible = true,
+    x = 36, y = 45, w = 10, h = 1,
+    cbutton = nil, ctext = 0x00ffff, text = "[Изменить]",
+    action = function() EditItem() end
+  },
+  Remove = {
+    ButtonIn = {"stop"},
+    visible = true,
+    x = 54, y = 45, w = 9, h = 1,
+    cbutton = nil, ctext = 0x00ffff, text = "[Удалить]",
+    action = function() RemoveItem() end
+  },
+  changeName = {
+    ButtonIn = {"change"},
+    visible = true,
+    x = 14, y = 35, w = 53, h = 3,
+    cbutton = CDRAW, ctext = CBUTTON, text = "Изменить название",
+    action = function() ChangeItem("changeName") end
+  },
+  changeCount = {
+    ButtonIn = {"change"},
+    visible = true,
+    x = 14, y = 38, w = 53, h = 3,
+    cbutton = CDRAW, ctext = CBUTTON, text = "Изменить число поддержания",
+    action = function() ChangeItem("changeCount") end
+  },
+  changeCraftSize = {
+    ButtonIn = {"change"},
+    visible = true,
+    x = 14, y = 41, w = 53, h = 3,
+    cbutton = CDRAW, ctext = CBUTTON, text = "Изменить размер крафта",
+    action = function() ChangeItem("changeCraftSize") end
+  },
+  changeBack = {
+    ButtonIn = {"change"},
+    visible = true,
+    x = 14, y = 47, w = 53, h = 3,
+    cbutton = CDRAW, ctext = CBUTTON, text = "Назад",
+    action = function() Back() end
+  }
 }
 
-local WIDTH, HEIGHT = 160, 50
-local scroll, page = 1, 1
-local itemsPerPage = 35 -- количество предметов на странице
-local filterText = ""
+-- Определения для скролла (при необходимости расширить функционал)
+scrolls = {
+  Buy = {
+    ScrollIn = {"start", "go", "stop"},
+    iwY = 43,
+    xGui = 10,
+    yGui = 6,
+    wGui = 62,
+    hGui = 37,
+    x = 70,
+    y = 7,
+    w = 1,
+    h = 35,
+    action = function() content = dataItems end
+  }
+}
 
--- Настройка экрана
-g.setResolution(WIDTH, HEIGHT)
-g.setBackground(0x000000)
-g.setForeground(0xFFFFFF)
-g.fill(1, 1, WIDTH, HEIGHT, " ")
+--------------------------------------------------
+-- Инициализация системы: загрузка данных, кнопок и запуск событий
+local function LoadSystem()
+  g.fill(1, 1, WIDTH, HEIGHT, " ")
+  dataItems = oc.loadf("/home/BD.txt")
+  initButtons()
+  etouch = event.listen("touch", eButton)
+  escroll = event.listen("scroll", eScroll)
+  ekeydown = event.listen("key_down", eKeyDown)
+  toGui("start", false)
+  dataq = dataItems
+  MainDraw()
+  return true
+end
 
-local function fetchItems()
-    local dataItems = me.getItemsInNetwork()
-    local filteredItems = {}
-    
-    for _, item in ipairs(dataItems) do
-        if filterText == "" or unicode.lower(item.label):find(unicode.lower(filterText)) then
-            table.insert(filteredItems, item)
-        end
+-- Главный цикл работы автокрафта и обновления GUI
+local function mainLoop()
+  if LoadSystem() then
+    while precraft do
+      if go then
+        g.set(1, 1, "check")
+        Check()
+      else
+        g.set(1, 1, "sleep")
+      end
+      os.sleep(1)
     end
-    
-    return filteredItems
+  end
 end
 
-local function drawItems()
-    g.fill(1, 4, WIDTH, HEIGHT - 4, " ")
-
-    local items = fetchItems()
-    local startIdx = (page - 1) * itemsPerPage + 1
-    local endIdx = math.min(#items, startIdx + itemsPerPage - 1)
-    
-    for i = startIdx, endIdx do
-        local item = items[i]
-        local color = COLORS.HIGH
-        if item.size < 10 then color = COLORS.LOW
-        elseif item.size < 50 then color = COLORS.MEDIUM end
-
-        g.setForeground(color)
-        g.set(5, 4 + (i - startIdx), item.label .. " (" .. item.size .. ")")
-    end
-    g.setForeground(0xFFFFFF)
-    
-    g.set(70, HEIGHT - 2, "Страница: " .. page .. " / " .. math.ceil(#items / itemsPerPage))
+local ok, err = pcall(mainLoop)
+if not ok then
+  event.cancel(etouch)
+  event.cancel(escroll)
+  event.cancel(ekeydown)
+  -- При необходимости можно вызвать computer.shutdown(true)
 end
-
-local function updateFilter(input)
-    filterText = input
-    drawItems()
-end
-
-local function pageScroll(direction)
-    local totalPages = math.ceil(#fetchItems() / itemsPerPage)
-    page = math.max(1, math.min(page + direction, totalPages))
-    drawItems()
-end
-
-local function handleInput(_, _, char, key)
-    if key == 200 then pageScroll(-1) -- стрелка вверх
-    elseif key == 208 then pageScroll(1) -- стрелка вниз
-    elseif char > 31 and char < 127 then -- Ввод текста для поиска
-        filterText = filterText .. unicode.char(char)
-        updateFilter(filterText)
-    elseif key == 14 then -- Backspace
-        filterText = filterText:sub(1, -2)
-        updateFilter(filterText)
-    end
-end
-
-event.listen("key_down", handleInput)
-drawItems()
