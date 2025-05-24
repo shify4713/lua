@@ -1,7 +1,7 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
 -- Улучшенная версия: разделение статичных и динамичных частей интерфейса,
--- обновление таблицы и кнопок происходит реже (количество обновляется раз в 20 сек),
--- корректное крафтирование партиями и детальное логирование без повторов.
+-- обновление таблицы происходит реже (количество обновляется раз в 20 сек),
+-- корректное крафтирование партиями, детальное логирование и окно ввода без мерцания.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -73,15 +73,18 @@ local MAX_LOGS = 100         -- Максимальное число записе
 local logsVisible = false    -- Флаг: активно ли окно логов
 local buttons = {}           -- Таблица кнопок
 
--- Флаг для отслеживания изменений (для автокрафта)
+-- Флаг для отслеживания изменений (автокрафт)
 local bgChanges = false
--- Время последнего обновления статичных элементов (при загрузке)
+-- Время последнего обновления статичных элементов
 local lastMainUpdate = os.time()
 
 -- Кэширование количества для стабильного отображения (обновляем раз в 20 сек)
 local cachedCounts = {}
 local lastCountUpdate = 0
 local COUNT_UPDATE_INTERVAL = 20  -- в секундах
+
+-- Флаг, обозначающий, что окно ввода активно (блокирует фоновые обновления)
+local inputActive = false
 
 ---------------------- ЛОГИРОВАНИЕ ----------------------
 local function addLog(msg, color)
@@ -246,7 +249,7 @@ drawButtons = _drawButtons
 local function _drawDynamicUI()
   drawTableItems()
   drawScrollBar()
-  -- Обновляем только нижнюю область с кнопками (без очистки всего фона)
+  -- Обновляем нижнюю область (только кнопки)
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, HEIGHT - 3, WIDTH, 3, " ")
   drawButtons()
@@ -256,10 +259,10 @@ drawDynamicUI = _drawDynamicUI
 ---------------------- ПОЛНАЯ ПЕРЕРИСОВКА ----------------------
 local function fullRedraw()
   if logsVisible then
-    -- Если оверлей логов активен, обновляем только его
+    -- Если активен оверлей логов, обновляем только его
     drawFloatingLogs()
   else
-    -- Первоначальное прорисовывание: статичные и динамичные элементы
+    -- Перерисовываем статичные и динамичные элементы
     gpu.setBackground(BG_MAIN)
     gpu.fill(1, 1, WIDTH, HEIGHT, " ")
     drawStaticUI()
@@ -267,9 +270,9 @@ local function fullRedraw()
   end
 end
 
----------------------- ФУНКЦИЯ ОБНОВЛЕНИЯ ДИНАМИКИ НЕЗАВИСИМО ----------------------
--- Эта функция вызывается для обновления только динамических элементов
+---------------------- ОБНОВЛЕНИЕ ДИНАМИКИ (без полной очистки) ----------------------
 local function immediateRedraw(force)
+  if inputActive then return end  -- если окно ввода активно, не обновлять
   if force then
     if logsVisible then
       drawFloatingLogs()
@@ -319,9 +322,11 @@ end
 
 ---------------------- ОКНО ВВОДА ДАННЫХ ----------------------
 local function inputOverlay(promptMessage)
+  inputActive = true
   local boxW, boxH = 60, 3
   local boxX = math.floor((WIDTH - boxW) / 2)
   local boxY = math.floor((HEIGHT - boxH) / 2)
+  -- Рисуем рамку ввода поверх существующего UI
   drawBorder(boxX - 1, boxY - 1, boxW + 2, boxH + 2, COLOR_BUTTON)
   gpu.setBackground(BG_MAIN)
   gpu.fill(boxX, boxY, boxW, boxH, " ")
@@ -331,6 +336,8 @@ local function inputOverlay(promptMessage)
   term.setCursorBlink(true)
   local input = term.read()
   term.setCursorBlink(false)
+  inputActive = false
+  fullRedraw() -- восстанавливаем UI после ввода
   return input:sub(1, -2)
 end
 
@@ -407,7 +414,7 @@ end
 local function autoCraftCheck()
   if not craftingActive then return end
   
-  -- Функция для дедупликации сообщений по элементу
+  -- Функция для дедупликации сообщений по предмету
   local function logIfChanged(item, newMsg, newColor)
     if item.lastMsg ~= newMsg then
       addLog(newMsg, newColor)
@@ -545,7 +552,6 @@ local function initButtons()
       action = function()
         logsVisible = not logsVisible
         if logsVisible then
-          -- При включении логов сразу отрисовываем оверлей логов
           drawFloatingLogs()
           logTimerId = event.timer(1.0, function() drawFloatingLogs() end, math.huge)
         else
@@ -553,7 +559,6 @@ local function initButtons()
             event.cancel(logTimerId)
             logTimerId = nil
           end
-          -- При выключении логов – перерисовываем только динамику
           immediateRedraw(true)
         end
       end
@@ -570,9 +575,7 @@ local function LoadSystem()
   touchEvent = event.listen("touch", onTouch)
   scrollEvent = event.listen("scroll", onScroll)
   dataQueue = dataItems
-  -- Первоначальное прорисовывание всего интерфейса
   fullRedraw()
-  -- Изначальное обновление кэша количеств
   updateCachedCounts()
   lastCountUpdate = os.time()
   return true
@@ -580,14 +583,15 @@ end
 
 ---------------------- ТАЙМЕР ДЛЯ ФОНОВОГО ОБНОВЛЕНИЯ (каждые 1 сек.) ----------------------
 local function checkBackgroundUpdate()
+  if inputActive then return end  -- не обновляем, если окно ввода активно
   local now = os.time()
   if now - lastCountUpdate >= COUNT_UPDATE_INTERVAL then
     updateCachedCounts()
     lastCountUpdate = now
     if not logsVisible then
-      drawDynamicUI()  -- обновляем только динамические элементы (таблицу и кнопки)
+      drawDynamicUI()  -- обновляем таблицу и кнопки
     else
-      drawFloatingLogs() -- обновляем только оверлей логов
+      drawFloatingLogs() -- обновляем только логи
     end
   end
 end
