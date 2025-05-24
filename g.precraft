@@ -1,5 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Исправлено: увеличена таблица, уменьшена область логов, исправлена ошибка drawCustomButton и устранены визуальные артефакты.
+-- Финальный вариант: плавающая зона логов, перераспределённые колонки таблицы,
+-- подпись сортировки слева и улучшенный визуал.
 local component = require("component")
 local fs = require("filesystem")
 local shell = require("shell")
@@ -25,7 +26,7 @@ end
 
 ---------------------- НАСТРОЙКИ ----------------------
 local debugMode = true
-local ADM = { ["LiwMorgan"] = true }  -- Доступ только для указанного ниκа
+local ADM = { ["LiwMorgan"] = true }  -- Доступ только для указанного ника
 
 -- Разрешение экрана
 local WIDTH, HEIGHT = 160, 50
@@ -43,37 +44,38 @@ local COLOR_HIGH          = 0x00FF66  -- Зелёный – достаточно
 
 local BG_ALT              = 0x2A2A2A  -- Альтернативный фон для четных строк
 local COLOR_HEADER_BG     = 0x333333  -- Фон заголовка и шапки таблицы
-local COLOR_LOG_BG        = 0x2D2D2D  -- Фон области логов
+local COLOR_LOG_BG        = 0x2D2D2D  -- Фон для всплывающей зоны логов
 local COLOR_BUTTON_BORDER = 0x000000  -- Граница кнопок
 
 ---------------------- РАЗМЕРЫ UI КОМПОНЕНТОВ ----------------------
 local TABLE_X = 2
-local TABLE_WIDTH = 138   -- увеличено с 120 до 138 для расширения таблицы
-local LOGS_X = TABLE_X + TABLE_WIDTH + 2  -- сдвинули справа: 2 + 138 + 2 = 142
-local HEADER_Y = 1
-local HEADER_TEXT_Y = HEADER_Y + 1
-local TABLE_HEADER_Y = HEADER_Y + 3
+-- Распределение столбцов:
+-- "Idx": 5, "Name": 40, "Категория": 15, "Req": 12, "ME": 12, "Craft": 12.
+-- Итоговая ширина (текстовых символов) + разделители = 5+40+15+12+12+12 + 7 = 103.
+local TABLE_WIDTH = 103   
+local TABLE_HEADER_Y = 4      -- Заголовок таблицы начинается с этой строки
 local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2
 local VISIBLE_TABLE_ROWS = 35
 
 ---------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ----------------------
-local dataItems = {}    -- Список предметов
-local dataQueue = {}    -- Для автокрафта (ссылка на dataItems)
-local scroll = 1        -- Позиция скролла таблицы
-local posSelect = nil   -- Выбранная строка в таблице
-local craftingActive = false  -- Статус автокрафта
-local running = true          -- Флаг работы программы
-local maxScroll = 1           -- Максимальное смещение
-local content = {}            -- Отфильтрованая и отсортированная информация
+local dataItems = {}           -- Список предметов
+local dataQueue = {}           -- Для автокрафта (ссылка на dataItems)
+local scroll = 1               -- Позиция скролла таблицы
+local posSelect = nil          -- Выбранная строка в таблице
+local craftingActive = false   -- Статус автокрафта
+local running = true           -- Флаг работы программы
+local maxScroll = 1            -- Максимальное смещение
+local content = {}             -- Отфильтрованная и отсортированная информация
 
-local sortCriteria = "name"   -- Возможные: "name", "category", "count"
+local sortCriteria = "name"    -- Возможные: "name", "category", "count"
 local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
 
-local redrawNeeded = true     -- Флаг необходимости перерисовки
-local craftLogs = {}          -- Логи (до 20 записей)
-local buttons = {}            -- Кнопки интерфейса
+local redrawNeeded = true      -- Флаг необходимости перерисовки
+local craftLogs = {}           -- Логи (до 20 записей)
+local buttons = {}             -- Кнопки интерфейса
+local logsVisible = false      -- Флаг, активна ли всплывающая зона логов
 
--- Forward declaration для предотвращения ошибки вызова nil: drawCustomButton
+-- Forward declaration для функции drawCustomButton
 local drawCustomButton = nil
 
 ---------------------- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ----------------------
@@ -113,34 +115,57 @@ end
 
 ---------------------- СТАТИЧЕСКАЯ ОТРИСОВКА UI ----------------------
 local function drawStaticUI()
+  -- Очистка экрана
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, 1, WIDTH, HEIGHT, " ")
   
-  -- Заголовок и информация о сортировке (одна строка)
+  -- Заголовок: строка 1 – название; строка 2 – сортировка слева
   gpu.setBackground(COLOR_HEADER_BG)
-  gpu.fill(1, HEADER_Y, WIDTH, 3, " ")
+  gpu.fill(1, 1, WIDTH, 3, " ")
   local header = "PreCraft - Автокрафт предметов"
   local sortText = "Сортировка: " .. sortCriteriaDisplay[sortCriteria]
   gpu.setForeground(CTEXT)
-  gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), HEADER_TEXT_Y, header)
-  gpu.set(WIDTH - unicode.len(sortText) - 2, HEADER_TEXT_Y, sortText)
+  gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), 1, header)
+  gpu.set(2, 2, sortText)
   
-  -- Рисуем рамку таблицы и заголовок
+  -- Рамка таблицы
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableHeaderHeight, COLOR_BUTTON)
-  local headerStr = "|" .. padOrTrim("Idx", 5) .. "|" .. padOrTrim("Name", 60) .. "|" .. padOrTrim("Категория", 18) 
-                      .. "|" .. padOrTrim("Req", 16) .. "|" .. padOrTrim("ME", 16) .. "|" .. padOrTrim("Craft", 16) .. "|"
+  
+  -- Заголовок колонок таблицы
+  local headerStr = "|" .. padOrTrim("Idx", 5) .. "|" 
+                          .. padOrTrim("Name", 40) .. "|" 
+                          .. padOrTrim("Категория", 15) .. "|" 
+                          .. padOrTrim("Req", 12) .. "|" 
+                          .. padOrTrim("ME", 12) .. "|" 
+                          .. padOrTrim("Craft", 12) .. "|"
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.setForeground(CTEXT)
   gpu.set(TABLE_X, TABLE_HEADER_Y, headerStr)
   gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("─", TABLE_WIDTH))
-  
-  -- Зона логов (уменьшена по ширине, чтобы увеличить таблицу)
-  local logsWidth = WIDTH - LOGS_X - 1
-  local logsHeight = HEIGHT - HEADER_Y - 1
-  drawBorder(LOGS_X - 1, HEADER_Y - 1, logsWidth + 2, logsHeight + 2, COLOR_BUTTON)
+end
+
+---------------------- РИСОВКА ВСПЛЫВАЮЩЕЙ ЗОНЫ ЛОГОВ ----------------------
+local function drawFloatingLogs()
+  local overlayWidth = 60
+  local overlayHeight = 15
+  local overlayX = math.floor((WIDTH - overlayWidth) / 2)
+  local overlayY = math.floor((HEIGHT - overlayHeight) / 2)
+  drawBorder(overlayX - 1, overlayY - 1, overlayWidth + 2, overlayHeight + 2, COLOR_BUTTON)
   gpu.setBackground(COLOR_LOG_BG)
-  gpu.fill(LOGS_X, HEADER_Y, logsWidth, logsHeight, " ")
+  gpu.fill(overlayX, overlayY, overlayWidth, overlayHeight, " ")
+  local logY = overlayY
+  local startIdx = math.max(1, #craftLogs - overlayHeight + 1)
+  for i = startIdx, #craftLogs do
+    local log = craftLogs[i]
+    local logText = log.text
+    if unicode.len(logText) > overlayWidth - 2 then
+      logText = unicode.sub(logText, 1, overlayWidth - 2)
+    end
+    gpu.setForeground(log.color)
+    gpu.set(overlayX + 1, logY, logText)
+    logY = logY + 1
+  end
 end
 
 ---------------------- ДИНАМИЧЕСКАЯ ОТРИСОВКА UI ----------------------
@@ -177,11 +202,11 @@ local function drawTableItems()
     
     gpu.setBackground(rowBg)
     local rowStr = "|" .. padOrTrim(i, 5)
-                   .. "|" .. padOrTrim(item.name, 60)
-                   .. "|" .. padOrTrim(item.category or "", 18)
-                   .. "|" .. padOrTrim(reqCount, 16)
-                   .. "|" .. padOrTrim(currentQty, 16)
-                   .. "|" .. padOrTrim(item.craftSize or 0, 16) .. "|"
+                   .. "|" .. padOrTrim(item.name, 40)
+                   .. "|" .. padOrTrim(item.category or "", 15)
+                   .. "|" .. padOrTrim(reqCount, 12)
+                   .. "|" .. padOrTrim(currentQty, 12)
+                   .. "|" .. padOrTrim(item.craftSize or 0, 12) .. "|"
     gpu.setForeground(colorText)
     gpu.set(TABLE_X, row, rowStr)
   end
@@ -198,29 +223,10 @@ local function drawButtons()
       local btnText = button.text
       if button.id == "craft" then
         btnText = "Craft: " .. (craftingActive and "ON" or "OFF")
+      elseif button.id == "logs" then
+        btnText = "Logs: " .. (logsVisible and "ON" or "OFF")
       end
       drawCustomButton(button.x, button.y, button.w, button.h, COLOR_BUTTON, COLOR_BUTTON_TEXT, btnText)
-    end
-  end
-end
-
-local function drawLogsArea()
-  local logsWidth = WIDTH - LOGS_X - 1
-  local logsHeight = HEIGHT - HEADER_Y - 1
-  gpu.setBackground(COLOR_LOG_BG)
-  gpu.fill(LOGS_X + 1, HEADER_Y + 1, logsWidth - 1, logsHeight - 2, " ")
-  local logY = HEADER_Y + 1
-  for i, log in ipairs(craftLogs) do
-    if logY <= HEADER_Y + logsHeight - 2 then
-      gpu.setForeground(log.color)
-      local logText = log.text
-      if unicode.len(logText) > logsWidth - 2 then
-        logText = unicode.sub(logText, 1, logsWidth - 2)
-      end
-      gpu.set(LOGS_X + 1, logY, logText)
-      logY = logY + 1
-    else
-      break
     end
   end
 end
@@ -230,7 +236,9 @@ local function fullRedraw()
   drawTableItems()
   drawScrollBar()
   drawButtons()
-  drawLogsArea()
+  if logsVisible then
+    drawFloatingLogs()
+  end
 end
 
 local function updateContent()
@@ -273,7 +281,7 @@ local function addLogEvent(eventType, message, status)
     table.remove(craftLogs, 1)
   end
   table.insert(craftLogs, { text = fullMessage, color = color })
-  drawLogsArea()
+  requestRedraw()
 end
 
 local function inputOverlay(promptMessage)
@@ -476,6 +484,15 @@ local function initButtons()
         end
         addLogEvent("Edit", "Сортировка по " .. sortCriteriaDisplay[sortCriteria], "intermediate")
         updateContent()
+        requestRedraw()
+      end
+    },
+    {
+      id = "logs", visible = true,
+      x = 84, y = HEIGHT - 3, w = 10, h = 3,
+      text = "Logs: OFF",
+      action = function()
+        logsVisible = not logsVisible
         requestRedraw()
       end
     }
