@@ -1,7 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Итоговый вариант: разделённое обновление автокрафта, UI и лог‑окна.
--- Основной UI перерисовывается реже (и не обновляется, когда логи активны),
--- что устраняет мерцание и не затирает логовое окно, а логи сохраняются постоянно.
+-- Улучшенная версия: разделённое обновление статических и динамических частей UI для снижения мерцания
+
 local component = require("component")
 local fs = require("filesystem")
 local shell = require("shell")
@@ -48,20 +47,15 @@ local COLOR_LOG_BG        = 0x2D2D2D  -- Фон всплывающей обла�
 local COLOR_BUTTON_BORDER = 0x000000  -- Граница кнопок
 
 ---------------------- РАЗМЕРЫ UI ----------------------
--- Таблица располагается слева и заполняет почти всю ширину.
-local TABLE_X = 2
--- "Полная" ширина строки (без рамки) = 157 символов.
--- Распределение столбцов:
--- Idx: 5, Категория: 15, Req: 12, ME: 12, Craft: 12  → сумма = 56.
--- Остаток (157 – 7 разделителей – 56) для столбца Name = 94.
-local TABLE_WIDTH = 157  
+local TABLE_X = 2  -- Начало таблицы слева
+local TABLE_WIDTH = 157  -- Полная ширина таблицы
 local TABLE_HEADER_Y = 4      -- Заголовок таблицы
 local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2
 local VISIBLE_TABLE_ROWS = 35
 
 ---------------------- ГЛОБАЛЫЕ ПЕРЕМЕННЫЕ ----------------------
 local dataItems = {}           -- Список предметов
-local dataQueue = {}           -- Для автокрафта (ссылка на dataItems)
+local dataQueue = {}           -- Очередь для автокрафта
 local scroll = 1               -- Текущая позиция в таблице
 local posSelect = nil          -- Выбранная строка таблицы
 local craftingActive = false   -- Состояние автокрафта (ON/OFF)
@@ -72,17 +66,17 @@ local content = {}             -- Отфильтрованный/отсорти�
 local sortCriteria = "name"    -- Возможные: "name", "category", "count"
 local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
 
-local craftLogs = {}           -- Массив логов (до 20 записей) – записи сохраняются постоянно
-local logsVisible = false      -- Флаг: активно ли логовое окно
+local craftLogs = {}           -- Массив логов (до 20 записей)
+local logsVisible = false      -- Флаг: активно ли окно логов
 local buttons = {}             -- Таблица кнопок
 
-local redrawNeeded = true      -- Флаг необходимости перерисовки основного UI
-local logTimerId = nil         -- ID таймера для логового окна (запускается, если логи активны)
+local redrawNeeded = true      -- Флаг необходимости обновления динамических частей UI
+local logTimerId = nil         -- ID таймера для логового окна
 
 -- Forward declaration для drawCustomButton
 local drawCustomButton = nil
 
----------------------- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ----------------------
+---------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------------------
 local function padOrTrim(text, width)
   text = tostring(text)
   local len = unicode.len(text)
@@ -93,7 +87,6 @@ local function padOrTrim(text, width)
   end
 end
 
----------------------- ФУНКЦИЯ РИСОВАНИЯ ГРАНИЦЫ ----------------------
 local function drawBorder(x, y, w, h, fgColor)
   fgColor = fgColor or CTEXT
   gpu.setForeground(fgColor)
@@ -105,7 +98,7 @@ local function drawBorder(x, y, w, h, fgColor)
   end
 end
 
----------------------- ФУНКЦИЯ ОТРИСОВКИ КНОПКИ ----------------------
+---------------------- ОТРИСОВКА КНОПКИ ----------------------
 drawCustomButton = function(x, y, w, h, bgColor, textColor, text)
   gpu.setBackground(bgColor)
   gpu.fill(x, y, w, h, " ")
@@ -117,14 +110,16 @@ drawCustomButton = function(x, y, w, h, bgColor, textColor, text)
   gpu.set(textPosX, textPosY, text)
 end
 
----------------------- РИСОВКА СТАТИЧЕСКОГО UI ----------------------
+---------------------- ОТРИСОВКА СТАТИЧЕСКОГО UI ----------------------
+-- Рисуем те элементы, которые меняются редко: заголовок, рамки таблицы и т.п.
 local function drawStaticUI()
-  -- Чтобы избежать мерцания основного меню, очистку экрана выполняем только когда окно логов не активно.
   if not logsVisible then
+    -- Полная очистка экрана, если окно логов не активно
     gpu.setBackground(BG_MAIN)
     gpu.fill(1, 1, WIDTH, HEIGHT, " ")
   end
-  
+
+  -- Заголовок и параметры сортировки
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.fill(1, 1, WIDTH, 3, " ")
   local header = "PreCraft - Автокрафт предметов"
@@ -132,10 +127,10 @@ local function drawStaticUI()
   gpu.setForeground(CTEXT)
   gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), 1, header)
   gpu.set(2, 2, sortText)
-  
+
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableHeaderHeight, COLOR_BUTTON)
-  
+
   local headerStr = "|" .. padOrTrim("Idx", 5) .. "|" ..
                            padOrTrim("Name", 94) .. "|" ..
                            padOrTrim("Категория", 15) .. "|" ..
@@ -148,7 +143,7 @@ local function drawStaticUI()
   gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("─", TABLE_WIDTH))
 end
 
----------------------- РИСОВКА ЛОГОВОГО ОКНА ----------------------
+---------------------- ОТРИСОВКА ЛОГОВ ----------------------
 local function drawFloatingLogs()
   local overlayWidth = 70
   local overlayHeight = 20
@@ -171,13 +166,14 @@ local function drawFloatingLogs()
   end
 end
 
----------------------- РИСОВКА ТАБЛИЦЫ ----------------------
+---------------------- ОТРИСОВКА ТАБЛИЦЫ ----------------------
 local function drawTableItems()
+  -- Очищаем область таблицы (динамическая область)
   for row = TABLE_BODY_START_Y, TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
   end
-  
+
   for i = scroll, math.min(#content, scroll + VISIBLE_TABLE_ROWS - 1) do
     local rowPos = TABLE_BODY_START_Y + (i - scroll)
     local record = content[i]
@@ -215,15 +211,15 @@ local function drawTableItems()
   end
 end
 
----------------------- РИСОВКА СКРОЛЛБАРА ----------------------
+---------------------- ОТРИСОВКА СКРОЛЛБАРА ----------------------
 local function drawScrollBar()
   oc.drawscroll(TABLE_X + TABLE_WIDTH, TABLE_BODY_START_Y, 1, VISIBLE_TABLE_ROWS,
                 scroll, #content, COLOR_HIGHLIGHT, COLOR_BUTTON)
 end
 
----------------------- РИСОВКА КНОПОК ----------------------
+---------------------- ОТРИСОВКА КНОПОК ----------------------
 local function drawButtons()
-  for i, button in ipairs(buttons) do
+  for _, button in ipairs(buttons) do
     if button.visible then
       local btnText = button.text
       if button.id == "craft" then
@@ -239,8 +235,8 @@ end
 
 ---------------------- ПОЛНАЯ ПЕРЕРИСОВКА ----------------------
 local function fullRedraw()
-  drawStaticUI()
-  drawTableItems()
+  drawStaticUI()      -- Перерисовка статических элементов (заголовок, рамки)
+  drawTableItems()    -- Только динамическая область таблицы
   drawScrollBar()
   drawButtons()
 end
@@ -289,7 +285,7 @@ local function inputOverlay(promptMessage)
   term.setCursorBlink(true)
   local input = term.read()
   requestRedraw()
-  return input:sub(1, -2)
+  return input:sub(1, -2)  -- Удаляем символ перевода строки
 end
 
 ---------------------- РАБОТА С ПРЕДМЕТАМИ ----------------------
@@ -398,7 +394,7 @@ end
 ---------------------- ОБРАБОТКА СОБЫТИЙ ----------------------
 local function onTouch(_, _, x, y, _, nick)
   if ADM[nick] then
-    for i, button in ipairs(buttons) do
+    for _, button in ipairs(buttons) do
       if x >= button.x and x <= (button.x + button.w - 1)
          and y >= button.y and y <= (button.y + button.h - 1) then
           button.action()
@@ -478,14 +474,14 @@ local function initButtons()
       action = function()
         logsVisible = not logsVisible
         if logsVisible then
-          fullRedraw()  -- однократное обновление для отображения логового окна
+          fullRedraw()  -- Обновляем окно сразу для показа логов
           logTimerId = event.timer(1.0, function() drawFloatingLogs() end, math.huge)
         else
           if logTimerId then
             event.cancel(logTimerId)
             logTimerId = nil
           end
-          fullRedraw()  -- восстановление основного UI
+          fullRedraw()  -- Восстанавливаем основной UI
         end
         requestRedraw()
       end
@@ -506,23 +502,23 @@ local function LoadSystem()
   return true
 end
 
----------------------- РЕЖИМ ОБНОВЛЕНИЯ ЧЕРЕЗ ТАЙМЕРЫ ----------------------
-local craftTimer = event.timer(1.0, autoCraftCheck, math.huge)    -- Автокрафт: 1.0 с
+---------------------- РЕЖИМ ОБНОВЛЕНИЯ ЧЕРЕЗ ТАЙМЕР ----------------------
+-- Таймер для динамического обновления: если активны логи – обновляем только их,
+-- иначе, если флаг redrawNeeded поднят – обновляем динамические области.
 local uiTimer = event.timer(0.5, function()
-  if not logsVisible and redrawNeeded then
+  if logsVisible then
+    drawFloatingLogs()
+  elseif redrawNeeded then
     fullRedraw()
     redrawNeeded = false
   end
 end, math.huge)
--- Логовое окно обновляется своим таймером (logTimerId) только когда активно.
+
+-- Таймер автокрафта (1 раз в сек.)
+local craftTimer = event.timer(1.0, autoCraftCheck, math.huge)
 
 ---------------------- ГЛАВНЫЙ ЦИКЛ ----------------------
 LoadSystem()
 while running do
   event.pull(0.5)
 end
-
--- Для завершения (при необходимости) не забудьте отменить таймеры:
--- event.cancel(craftTimer)
--- event.cancel(uiTimer)
--- if logTimerId then event.cancel(logTimerId) end
