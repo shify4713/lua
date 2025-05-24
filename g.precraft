@@ -37,7 +37,6 @@ gpu.setResolution(WIDTH, HEIGHT)
 ---------------------- РАЗМЕРЫ UI ----------------------
 local TABLE_HEADER_Y = 4                           -- Верхняя рамка таблицы (заголовок)
 local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2        -- Начало области тела таблицы
-
 local BUTTONS_HEIGHT = 3                           -- Высота кнопок
 local BUTTONS_Y = HEIGHT - BUTTONS_HEIGHT + 1        -- Кнопки располагаются в нижней части экрана
 local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Таблица растягивается до кнопок
@@ -136,6 +135,21 @@ local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
   gpu.set(textPosX, textPosY, text)
 end
 
+---------------------- ФУНКЦИЯ ОТРИСОВКИ КНОПОК ----------------------
+local function drawButtons()
+  for _, button in ipairs(buttons) do
+    if button.visible then
+      local btnText = button.text
+      if button.id == "craft" then
+        btnText = "Craft: " .. (craftingActive and "ON" or "OFF")
+      elseif button.id == "logs" then
+        btnText = "Logs: " .. (logsVisible and "ON" or "OFF")
+      end
+      drawCustomButton(button.x, button.y, button.w, button.h, COLOR_BUTTON, COLOR_BUTTON_TEXT, btnText)
+    end
+  end
+end
+
 ---------------------- СТАТИЧНЫЙ UI ----------------------
 local function drawStaticUI()
   -- Заголовок и метка сортировки (строки 1-3)
@@ -153,7 +167,7 @@ local function drawStaticUI()
   local tableBorderHeight = BUTTONS_Y - (TABLE_HEADER_Y - 1)
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableBorderHeight, COLOR_BUTTON)
   
-  -- Отрисовка заголовка таблицы. Для числовых столбцов — выравнивание по правому краю.
+  -- Отрисовка заголовка таблицы. Числовые столбцы выравниваются по правому краю.
   local headerStr = "|" .. padOrTrimRight("Idx", 5) .. "|" ..
                           padOrTrim("Name", 94) .. "|" ..
                           padOrTrim("Категория", 15) .. "|" ..
@@ -200,7 +214,7 @@ end
 
 ---------------------- ТАБЛИЦА ----------------------
 local function drawTableItems()
-  -- Очищаем область таблицы: от TABLE_BODY_START_Y до непосредственно перед кнопками (BUTTONS_Y)
+  -- Очищаем область таблицы от TABLE_BODY_START_Y до BUTTONS_Y - 1
   for row = TABLE_BODY_START_Y, BUTTONS_Y - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
@@ -243,14 +257,13 @@ end
 
 ---------------------- СКРОЛЛБАР ----------------------
 local function drawScrollBar()
-  local x = TABLE_X + TABLE_WIDTH  -- колонка скроллбара
+  local x = TABLE_X + TABLE_WIDTH
   local y = TABLE_BODY_START_Y
   local height = VISIBLE_TABLE_ROWS
   local total = #content
   local trackColor = COLOR_BUTTON
   local indicatorColor = COLOR_HIGHLIGHT
 
-  -- Рисуем дорожку скроллбара (символ "│")
   gpu.setBackground(trackColor)
   for i = y, y + height - 1 do
       gpu.set(x, i, "│")
@@ -523,7 +536,7 @@ end
 
 ---------------------- ИНИЦИАЛИЗАЦИЯ КНОПОК ----------------------
 local function initButtons()
-  -- Располагаем кнопки в зоне BUTTONS_Y, которая вычислена по высоте экрана.
+  -- Кнопки располагаются в зоне BUTTONS_Y
   buttons = {
     {
       id = "craft", visible = true,
