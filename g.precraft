@@ -34,29 +34,32 @@ local ADM = { ["LiwMorgan"] = true }  -- Доступ только для ука
 local WIDTH, HEIGHT = 160, 50
 gpu.setResolution(WIDTH, HEIGHT)
 
----------------------- ПАЛИТРА ЦВЕТОВ ----------------------
-local BG_MAIN             = 0x1A1A1A  -- Тёмно-серый фон
-local CTEXT               = 0xDADADA  -- Светло-серый текст
-local COLOR_BUTTON        = 0x4A90E2  -- Синий для кнопок
-local COLOR_BUTTON_TEXT   = 0xFFFFFF  -- Белый текст на кнопках
--- Новый яркий цвет выделения – заменён на мягкий золотой:
-local COLOR_HIGHLIGHT     = 0xFFD700  -- Мягкий золотой для выделения
-local COLOR_LOW           = 0xFF4C4C  -- Красный – ошибка/недостаточно
-local COLOR_MEDIUM        = 0xFFCC00  -- Желтый – промежуточное состояние
-local COLOR_HIGH          = 0x00FF66  -- Зелёный – позитивное состояние
-
-local BG_ALT              = 0x2A2A2A  -- Альтернативный фон для четных строк
-local COLOR_HEADER_BG     = 0x333333  -- Фон заголовка
--- Для логов выбран более тёмный фон для контраста:
-local COLOR_LOG_BG        = 0x3A3A3A  -- Фон всплывающей области логов (обновлено)
-local COLOR_BUTTON_BORDER = 0x444444  -- Граница кнопок (обновлён, вместо чистого чёрного)
-
 ---------------------- РАЗМЕРЫ UI ----------------------
-local TABLE_X = 2            -- Начало таблицы слева
-local TABLE_WIDTH = 157      -- Полная ширина таблицы
-local TABLE_HEADER_Y = 4     -- Заголовок таблицы (верхняя рамка)
-local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2  -- Начало тела таблицы
-local VISIBLE_TABLE_ROWS = 35
+local TABLE_HEADER_Y = 4                           -- Верхняя рамка таблицы (заголовок)
+local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2        -- Начало области тела таблицы
+
+local BUTTONS_HEIGHT = 3                           -- Высота кнопок
+local BUTTONS_Y = HEIGHT - BUTTONS_HEIGHT + 1        -- Кнопки располагаются в нижней части экрана
+local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Таблица растягивается до кнопок
+
+local TABLE_X = 2                                  -- Начало таблицы слева
+local TABLE_WIDTH = 157                            -- Полная ширина таблицы
+
+---------------------- ПАЛИТРА ЦВЕТОВ ----------------------
+local BG_MAIN             = 0x1A1A1A   -- Тёмно-серый фон
+local CTEXT               = 0xDADADA   -- Светло-серый текст
+local COLOR_BUTTON        = 0x4A90E2   -- Синий для кнопок
+local COLOR_BUTTON_TEXT   = 0xFFFFFF   -- Белый текст на кнопках
+-- Новый цвет выделения – насыщенный фиолетовый:
+local COLOR_HIGHLIGHT     = 0x8A2BE2   -- Фиолетовый для выделения строки
+local COLOR_LOW           = 0xFF4C4C   -- Красный – ошибка/недостаточно
+local COLOR_MEDIUM        = 0xFFCC00   -- Желтый – промежуточное состояние
+local COLOR_HIGH          = 0x00FF66   -- Зелёный – позитивное состояние
+
+local BG_ALT              = 0x2A2A2A   -- Альтернативный фон для четных строк
+local COLOR_HEADER_BG     = 0x333333   -- Фон заголовка
+local COLOR_LOG_BG        = 0x3A3A3A   -- Фон всплывающей области логов (для лучшего контраста)
+local COLOR_BUTTON_BORDER = 0x444444   -- Граница кнопок (серый вместо чистого чёрного)
 
 ---------------------- ГЛОБАЛЫЕ ПЕРЕМЕННЫЕ ----------------------
 local dataItems = {}         -- Список предметов
@@ -76,24 +79,19 @@ local MAX_LOGS = 100         -- Максимальное число записе
 local logsVisible = false    -- Флаг: активно ли окно логов
 local buttons = {}           -- Таблица кнопок
 
--- Для таймера логов
-local logTimerId = nil
+local logTimerId = nil       -- ID таймера логов
 
--- Флаг для отслеживания изменений автокрафта
-local bgChanges = false
--- Время последнего обновления статичной области
+local bgChanges = false      -- Флаг изменений в автокрафте
 local lastMainUpdate = os.time()
 
--- Кэширование количеств для стабильного отображения (обновляем раз в 20 сек)
+-- Кэширование количеств (обновление раз в 20 сек)
 local cachedCounts = {}
 local lastCountUpdate = 0
-local COUNT_UPDATE_INTERVAL = 20  -- в секундах
+local COUNT_UPDATE_INTERVAL = 20  -- секунд
 
--- Флаг, блокирующий фоновые обновления при активном окне ввода
-local inputActive = false
+local inputActive = false    -- Флаг, блокирующий фоновые обновления при вводе
 
 ---------------------- ФУНКЦИИ ВЫРАВНЕНИЯ ТЕКСТА ----------------------
--- Функция для заполнения или обрезки строки слева (для текстовых полей)
 local function padOrTrim(text, width)
   text = tostring(text)
   local len = unicode.len(text)
@@ -104,7 +102,6 @@ local function padOrTrim(text, width)
   end
 end
 
--- Функция для выравнивания по правому краю (для числовых значений)
 local function padOrTrimRight(text, width)
   text = tostring(text)
   local len = unicode.len(text)
@@ -115,7 +112,7 @@ local function padOrTrimRight(text, width)
   end
 end
 
----------------------- ФУНКЦИЯ ОТОБРАЖЕНИЯ ГРАНИЦЫ ----------------------
+---------------------- РИСОВАНИЕ ГРАНИЦЫ ----------------------
 local function drawBorder(x, y, w, h, fgColor)
   fgColor = fgColor or CTEXT
   gpu.setForeground(fgColor)
@@ -150,11 +147,13 @@ local function drawStaticUI()
   gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), 1, header)
   gpu.set(2, 2, sortText)
   
-  -- Рисуем рамку таблицы
-  local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
-  drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableHeaderHeight, COLOR_BUTTON)
+  -- Рисуем рамку таблицы.
+  -- Верхняя рамка начинается с (TABLE_HEADER_Y - 1).
+  -- Нижняя граница должна прилегать к области, где расположены кнопки (BUTTONS_Y).
+  local tableBorderHeight = BUTTONS_Y - (TABLE_HEADER_Y - 1)
+  drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableBorderHeight, COLOR_BUTTON)
   
-  -- Заголовок таблицы с выравниванием: числовые поля по правому краю
+  -- Отрисовка заголовка таблицы. Для числовых столбцов — выравнивание по правому краю.
   local headerStr = "|" .. padOrTrimRight("Idx", 5) .. "|" ..
                           padOrTrim("Name", 94) .. "|" ..
                           padOrTrim("Категория", 15) .. "|" ..
@@ -167,11 +166,10 @@ local function drawStaticUI()
   gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("─", TABLE_WIDTH))
 end
 
--- Обновление метки сортировки (при изменении критерия)
 local function updateSortLabel()
   local sortText = "Сортировка: " .. sortCriteriaDisplay[sortCriteria]
   gpu.setBackground(COLOR_HEADER_BG)
-  gpu.fill(2, 2, 25, 1, " ")  -- очищаем область для метки
+  gpu.fill(2, 2, 25, 1, " ")
   gpu.setForeground(CTEXT)
   gpu.set(2, 2, sortText)
 end
@@ -202,11 +200,13 @@ end
 
 ---------------------- ТАБЛИЦА ----------------------
 local function drawTableItems()
-  for row = TABLE_BODY_START_Y, TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS - 1 do
+  -- Очищаем область таблицы: от TABLE_BODY_START_Y до непосредственно перед кнопками (BUTTONS_Y)
+  for row = TABLE_BODY_START_Y, BUTTONS_Y - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
   end
   
+  -- Отображаем строки таблицы (от scroll до scroll + VISIBLE_TABLE_ROWS - 1)
   for i = scroll, math.min(#content, scroll + VISIBLE_TABLE_ROWS - 1) do
     local rowPos = TABLE_BODY_START_Y + (i - scroll)
     local record = content[i]
@@ -241,16 +241,16 @@ local function drawTableItems()
   end
 end
 
----------------------- ПЕРСОНАЛИЗОВАННЫЙ СКРОЛЛБАР ----------------------
+---------------------- СКРОЛЛБАР ----------------------
 local function drawScrollBar()
-  local x = TABLE_X + TABLE_WIDTH  -- колонка для скроллбара
+  local x = TABLE_X + TABLE_WIDTH  -- колонка скроллбара
   local y = TABLE_BODY_START_Y
   local height = VISIBLE_TABLE_ROWS
   local total = #content
-  local trackColor = COLOR_BUTTON  -- фон дорожки – как у кнопок
+  local trackColor = COLOR_BUTTON
   local indicatorColor = COLOR_HIGHLIGHT
 
-  -- Рисуем дорожку скроллбара с символом "│"
+  -- Рисуем дорожку скроллбара (символ "│")
   gpu.setBackground(trackColor)
   for i = y, y + height - 1 do
       gpu.set(x, i, "│")
@@ -266,7 +266,6 @@ local function drawScrollBar()
       end
     end
   else
-    -- Если элементов меньше или равно видимым строкам, заполняем всю область индикатором
     gpu.setBackground(indicatorColor)
     for i = y, y + height - 1 do
         gpu.set(x, i, "█")
@@ -279,7 +278,7 @@ local function drawDynamicUI()
   drawTableItems()
   drawScrollBar()
   gpu.setBackground(BG_MAIN)
-  gpu.fill(1, HEIGHT - 3, WIDTH, 3, " ")
+  gpu.fill(1, BUTTONS_Y, WIDTH, BUTTONS_HEIGHT, " ")
   drawButtons()
 end
 
@@ -504,7 +503,7 @@ local function onTouch(_, _, x, y, _, nick)
       end
     end
     if x >= TABLE_X and x <= (TABLE_X + TABLE_WIDTH - 1)
-       and y >= TABLE_BODY_START_Y and y < (TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS) then
+       and y >= TABLE_BODY_START_Y and y < BUTTONS_Y then
       posSelect = scroll + (y - TABLE_BODY_START_Y)
       immediateRedraw(true)
     end
@@ -524,12 +523,11 @@ end
 
 ---------------------- ИНИЦИАЛИЗАЦИЯ КНОПОК ----------------------
 local function initButtons()
-  -- Размещаем кнопки сразу под таблицей, чтобы убрать большой промежуток.
-  local buttonY = TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS + 1
+  -- Располагаем кнопки в зоне BUTTONS_Y, которая вычислена по высоте экрана.
   buttons = {
     {
       id = "craft", visible = true,
-      x = 16, y = buttonY, w = 16, h = 3,
+      x = 16, y = BUTTONS_Y, w = 16, h = BUTTONS_HEIGHT,
       text = "Craft: OFF",
       action = function()
         craftingActive = not craftingActive
@@ -543,25 +541,25 @@ local function initButtons()
     },
     {
       id = "add", visible = true,
-      x = 34, y = buttonY, w = 10, h = 3,
+      x = 34, y = BUTTONS_Y, w = 10, h = BUTTONS_HEIGHT,
       text = "Add",
       action = addItem
     },
     {
       id = "edit", visible = true,
-      x = 46, y = buttonY, w = 10, h = 3,
+      x = 46, y = BUTTONS_Y, w = 10, h = BUTTONS_HEIGHT,
       text = "Edit",
       action = editItem
     },
     {
       id = "remove", visible = true,
-      x = 58, y = buttonY, w = 12, h = 3,
+      x = 58, y = BUTTONS_Y, w = 12, h = BUTTONS_HEIGHT,
       text = "Remove",
       action = removeItem
     },
     {
       id = "sort", visible = true,
-      x = 72, y = buttonY, w = 10, h = 3,
+      x = 72, y = BUTTONS_Y, w = 10, h = BUTTONS_HEIGHT,
       text = "Sort",
       action = function()
         if sortCriteria == "name" then
@@ -579,7 +577,7 @@ local function initButtons()
     },
     {
       id = "logs", visible = true,
-      x = 84, y = buttonY, w = 12, h = 3,
+      x = 84, y = BUTTONS_Y, w = 12, h = BUTTONS_HEIGHT,
       text = "Logs: OFF",
       action = function()
         logsVisible = not logsVisible
