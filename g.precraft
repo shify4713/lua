@@ -76,13 +76,6 @@ local bgChanges = false
 -- Время последнего полного обновления (в секундах)
 local lastMainUpdate = os.time()
 
--- Функция немедленной перерисовки (вызывается по действиям пользователя)
-local function immediateRedraw()
-  fullRedraw()
-  lastMainUpdate = os.time()
-  bgChanges = false
-end
-
 ---------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------------------
 local function padOrTrim(text, width)
   text = tostring(text)
@@ -245,6 +238,29 @@ function fullRedraw()
   drawButtons()
 end
 
+---------------------- ДЕБАУНС ПЕРЕРИСОВКИ ----------------------
+local redrawScheduled = false
+-- Функция перерисовки с защитой от чрезмерных вызовов.
+-- Если force == true, то перерисовка выполняется сразу.
+function immediateRedraw(force)
+  if force then
+    fullRedraw()
+    lastMainUpdate = os.time()
+    bgChanges = false
+    redrawScheduled = false
+  else
+    if not redrawScheduled then
+      redrawScheduled = true
+      event.timer(0.1, function()
+          fullRedraw()
+          lastMainUpdate = os.time()
+          bgChanges = false
+          redrawScheduled = false
+      end)
+    end
+  end
+end
+
 ---------------------- ОБНОВЛЕНИЕ КОНТЕНТА ТАБЛИЦЫ ----------------------
 local function updateContent()
   content = {}
@@ -283,6 +299,7 @@ local function inputOverlay(promptMessage)
   term.setCursor(boxX + 2 + unicode.len(promptMessage) + 1, boxY)
   term.setCursorBlink(true)
   local input = term.read()
+  term.setCursorBlink(false)
   return input:sub(1, -2)
 end
 
@@ -312,7 +329,7 @@ local function addItem()
   updateContent()
   scroll = 1
   posSelect = nil
-  immediateRedraw()
+  immediateRedraw(true)
 end
 
 local function removeItem()
@@ -324,7 +341,7 @@ local function removeItem()
     posSelect = nil
     dataItems = oc.loadf(dataFile) or {}
     updateContent()
-    immediateRedraw()
+    immediateRedraw(true)
   end
 end
 
@@ -351,7 +368,7 @@ local function editItem()
     updateContent()
     table.insert(craftLogs, { text = "[Edit] Изменён: " .. item.name, color = COLOR_MEDIUM })
     posSelect = nil
-    immediateRedraw()
+    immediateRedraw(true)
   end
 end
 
@@ -432,7 +449,7 @@ local function initButtons()
       text = "Craft: OFF",
       action = function()
         craftingActive = not craftingActive
-        immediateRedraw()
+        immediateRedraw(true)
       end
     },
     {
@@ -467,7 +484,7 @@ local function initButtons()
         end
         table.insert(craftLogs, { text = "[Edit] Сортировка по " .. sortCriteriaDisplay[sortCriteria], color = COLOR_MEDIUM })
         updateContent()
-        immediateRedraw()
+        immediateRedraw(true)
       end
     },
     {
@@ -486,7 +503,7 @@ local function initButtons()
           end
           fullRedraw()
         end
-        immediateRedraw()
+        immediateRedraw(true)
       end
     }
   }
