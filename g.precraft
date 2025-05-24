@@ -1,3 +1,4 @@
+-- Загружаем библиотеки
 local component = require("component")
 local fs = require("filesystem")
 local shell = require("shell")
@@ -13,668 +14,143 @@ local DATA_FILE = "/home/BD.txt"
 local LIB_PATH = "/lib/ultimateOC.lua"
 local LIB_URL = "https://raw.githubusercontent.com/shify4713/lua/refs/heads/main/ultimateOC.lua"
 
+-- Загрузка библиотеки
 if not fs.exists(LIB_PATH) then
-  shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
+    shell.execute("wget -f " .. LIB_URL .. " " .. LIB_PATH)
 end
 local ok, uoc = pcall(require, "ultimateOC")
 if not ok then
-  io.stderr:write("Не удалось загрузить ultimateOC.lua: " .. tostring(uoc) .. "\n")
-  os.exit(1)
+    io.stderr:write("Не удалось загрузить ultimateOC.lua: " .. tostring(uoc) .. "\n")
+    os.exit(1)
 end
 
+-- Проверка существования файла данных
 if not fs.exists(DATA_FILE) then
-  uoc.savef(DATA_FILE, {})
+    uoc.savef(DATA_FILE, {})
 end
 
---------------------------------------------------------------------------------
--- Новое разрешение и разметка экрана 160×50
---------------------------------------------------------------------------------
-local WIDTH, HEIGHT = 160, 50
-
--- Верхние зоны:
-local HEADER_HEIGHT = 3           -- строки 1–3: заголовок (название, progressBar)
-local CATEGORY_Y = 4              -- строка 4: навигация по категориям
-
--- Таблица предметов:
-local TABLE_TOP_Y = 5             -- таблица начинается со строки 5
-local TABLE_HEIGHT = 20           -- таблица занимает строки 5–24
-local DATA_ROWS = TABLE_HEIGHT - 4  -- (т.к. строка с рамкой сверху, заголовок, разделитель и нижняя рамка)
-
--- Поле поиска:
-local SEARCH_Y = TABLE_TOP_Y + TABLE_HEIGHT  -- строки 25–27
-local SEARCH_HEIGHT = 3
-
--- Навигация по страницам:
-local PAGE_NAV_Y = SEARCH_Y + SEARCH_HEIGHT  -- строка 28
-
--- Логи:
-local LOGS_Y = PAGE_NAV_Y + 1         -- строки 29–42
-local LOGS_HEIGHT = 14
-
--- Кнопки:
-local BUTTONS_Y = LOGS_Y + LOGS_HEIGHT  -- строки 43–50
-local BUTTONS_HEIGHT = HEIGHT - BUTTONS_Y + 1  -- 50-43+1 = 8
-
---------------------------------------------------------------------------------
--- Определяем ширины столбцов для таблицы (внутренняя ширина = WIDTH–4 = 156)
---------------------------------------------------------------------------------
-local col_name = 70   -- Название
-local col_cat  = 30   -- Категория
-local col_now  = 16   -- В наличии
-local col_hold = 20   -- Держать
-local col_once = 20   -- За раз
--- Суммарно: 70+30+16+20+20 = 156
-
---------------------------------------------------------------------------------
 -- Глобальные переменные
---------------------------------------------------------------------------------
 local craftStatus = "Ожидание..."
-local nextCraftUpdate = 0
-local isCrafting = false
-
 local currentPage = 1
 local categoryFilter = "all"
-local categoryIndex = 1
-local categories = { "all" }
-
 local logs = {}
 local dataItems = {}
 local search = ""
 local selectedItem = nil
-local changeitem = false
-local searchActive = false
+local isCrafting = false
 
--- Для автокрафта разрешаем только CPU с 256К хранилищем:
-local CPU_STORAGE = 65536
+-- Настройки интерфейса
+local WIDTH, HEIGHT = 160, 50
+local DARK_BG = 0x181920
+local TEXT_COLOR = 0xFFFFFF
+local HIGHLIGHT_COLOR = 0x00BFFF
+local ERROR_COLOR = 0xFF5555
+gpu.setResolution(WIDTH, HEIGHT)
 
---------------------------------------------------------------------------------
--- Функция логирования (без отметок времени)
---------------------------------------------------------------------------------
-local function addLog(logs, text, lvl)
-  lvl = lvl or "INFO"
-  local t = string.format("[%s] %s", lvl, text)
-  table.insert(logs, t)
-  while #logs > 50 do table.remove(logs, 1) end
+-- Функция логирования
+local function addLog(text, lvl)
+    lvl = lvl or "INFO"
+    local t = string.format("[%s] %s", lvl, text)
+    table.insert(logs, t)
+    while #logs > 50 do table.remove(logs, 1) end
 end
 
---------------------------------------------------------------------------------
--- Функции работы с данными
---------------------------------------------------------------------------------
-local function updateCategories()
-  local catSet = {}
-  for _, item in ipairs(dataItems) do
-    local cat = item.category or "all"
-    catSet[cat] = true
-  end
-  categories = { "all" }
-  for cat, _ in pairs(catSet) do
-    if cat ~= "all" then table.insert(categories, cat) end
-  end
-  table.sort(categories)
-  table.insert(categories, 1, "all")
-  categoryIndex = 1
-  categoryFilter = categories[categoryIndex]
-end
-
-local function getFilteredItems()
-  local items = {}
-  for _, item in ipairs(dataItems) do
-    if ((search == "") or unicode.lower(item.name or ""):find(unicode.lower(search), 1, true))
-       and (categoryFilter == "all" or (item.category and item.category == categoryFilter)) then
-      table.insert(items, item)
-    end
-  end
-  table.sort(items, function(a, b)
-    if (a.category or "") == (b.category or "") then
-      return (a.name or "") < (b.name or "")
-    else
-      return (a.category or "") < (b.category or "")
-    end
-  end)
-  return items
-end
-
+-- Функция обновления данных
 local function reload()
-  local ok, res = pcall(uoc.loadf, DATA_FILE)
-  dataItems = ok and res or {}
-  for _, item in ipairs(dataItems) do
-    local qty = 0
-    local stackList = {}
-    pcall(function() stackList = me.getItemsInNetwork({ id = item.id, damage = item.dmg }) end)
-    if stackList and stackList.n and stackList.n > 0 then
-      for _, stack in ipairs(stackList) do
-        if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
-          qty = stack.size or stack.qty or 0
-          break
-        end
-      end
-    else
-      local ok2, d = pcall(me.getItemDetail, { id = item.id, dmg = item.dmg })
-      if ok2 and d then qty = d.qty or d.size or 0 end
-    end
-    item.current = qty
-  end
-  updateCategories()
-end
-
-local function save()
-  local ok, err = pcall(uoc.savef, DATA_FILE, dataItems)
-  if not ok then addLog(logs, "Ошибка сохранения: " .. tostring(err), "ERROR") end
-end
-
-local function resetSelection()
-  search = ""
-  currentPage = 1
-  selectedItem = nil
-end
-
---------------------------------------------------------------------------------
--- Визуальные функции
---------------------------------------------------------------------------------
-local function clear()
-  gpu.setBackground(0x23242b)
-  gpu.fill(1, 1, WIDTH, HEIGHT, " ")
-  gpu.setForeground(0xF8F8F2)
-end
-
-local function shadowRect(x, y, w, h)
-  gpu.setBackground(0x181920)
-  gpu.fill(x + 1, y + h, w, 1, " ")
-  gpu.fill(x + w, y, 1, h, " ")
-  gpu.setBackground(0x23242b)
-end
-
--- Заголовок (строки 1–3)
-local function drawHeader()
-  uoc.drawText(3, 1, "Ultimate AutoCraft", 0x50FA7B, true)
-  gpu.setBackground(0x50FA7B)
-  gpu.fill(2, 2, WIDTH - 2, 1, " ")
-  shadowRect(2, 2, WIDTH - 2, 1)
-  gpu.setBackground(0x23242b)
-  uoc.drawText(WIDTH - 40, 1, "Статус: " .. craftStatus, (craftStatus:find("Ошибка") and 0xFF5555) or 0x50FA7B)
-  uoc.progressBar(3, 3, WIDTH - 6, isCrafting and 0.9 or 0)
-end
-
--- Навигация по категориям (строка 4)
-local function drawCategoryNavigation()
-  local prefix = "Категория: "
-  local leftArrow = "<"
-  local rightArrow = ">"
-  local navString = prefix .. leftArrow .. " " .. categoryFilter .. " " .. rightArrow
-  local x = math.floor((WIDTH - unicode.len(navString)) / 2) + 1
-  gpu.setBackground(0x23242b)
-  gpu.setForeground(0x50FA7B)
-  gpu.set(x, CATEGORY_Y, navString)
-end
-
--- Таблица с предметами (строки 5–24)
-local function drawItems()
-  local x = 2
-  local y = TABLE_TOP_Y
-  gpu.setForeground(0x44B3FF)
-  local topLine = "┌" .. string.rep("─", col_name) .. "┬" ..
-                   string.rep("─", col_cat) .. "┬" ..
-                   string.rep("─", col_now) .. "┬" ..
-                   string.rep("─", col_hold) .. "┬" ..
-                   string.rep("─", col_once) .. "┐"
-  gpu.set(x, y, topLine)
-  
-  local headerY = y + 1
-  gpu.set(x, headerY, "│")
-  gpu.setForeground(0x50FA7B)
-  gpu.set(x + 1, headerY, string.format("%-" .. col_name .. "s", " Название"))
-  gpu.setForeground(0x44B3FF)
-  gpu.set(x + col_name + 1, headerY, "│")
-  gpu.setForeground(0x50FA7B)
-  gpu.set(x + col_name + 2, headerY, string.format("%-" .. col_cat .. "s", " Категория"))
-  gpu.setForeground(0x44B3FF)
-  gpu.set(x + col_name + col_cat + 1, headerY, "│")
-  gpu.setForeground(0x50FA7B)
-  gpu.set(x + col_name + col_cat + 2, headerY, string.format("%-" .. col_now .. "s", " В наличии"))
-  gpu.setForeground(0x44B3FF)
-  gpu.set(x + col_name + col_cat + col_now + 1, headerY, "│")
-  gpu.setForeground(0x50FA7B)
-  gpu.set(x + col_name + col_cat + col_now + 2, headerY, string.format("%-" .. col_hold .. "s", " Держать"))
-  gpu.setForeground(0x44B3FF)
-  gpu.set(x + col_name + col_cat + col_now + col_hold + 1, headerY, "│")
-  gpu.setForeground(0x50FA7B)
-  gpu.set(x + col_name + col_cat + col_now + col_hold + 2, headerY, string.format("%-" .. col_once .. "s", " За раз"))
-  gpu.setForeground(0x44B3FF)
-  gpu.set(x + col_name + col_cat + col_now + col_hold + col_once + 1, headerY, "│")
-  
-  local divider = "├" .. string.rep("─", col_name) .. "┼" ..
-                  string.rep("─", col_cat) .. "┼" ..
-                  string.rep("─", col_now) .. "┼" ..
-                  string.rep("─", col_hold) .. "┼" ..
-                  string.rep("─", col_once) .. "┤"
-  gpu.set(x, y + 2, divider)
-  
-  local filteredItems = getFilteredItems()
-  local totalItems = #filteredItems
-  local totalPages = math.max(1, math.ceil(totalItems / DATA_ROWS))
-  if currentPage > totalPages then currentPage = totalPages end
-  local startIndex = (currentPage - 1) * DATA_ROWS + 1
-  local endIndex = math.min(startIndex + DATA_ROWS - 1, totalItems)
-  
-  for i = startIndex, endIndex do
-    local it = filteredItems[i]
-    local row = y + 2 + (i - startIndex) + 1
-    local isSel = (selectedItem and dataItems[selectedItem] and it == dataItems[selectedItem])
-    gpu.setBackground(isSel and 0x44B3FF or 0x23242b)
-    gpu.setForeground(0xF8F8F2)
-    local nameStr = unicode.sub(it.name or "<??>", 1, col_name)
-    local catStr  = unicode.sub(it.category or "all", 1, col_cat)
-    local inStock = string.format("%-" .. col_now .. "s", tostring(tonumber(it.current) or 0))
-    local holdStr = string.format("%-" .. col_hold .. "s", tostring(tonumber(it.count) or 0))
-    local onceStr = string.format("%-" .. col_once .. "s", tostring(tonumber(it.craftSize) or 0))
-    gpu.set(x, row, "│")
-    gpu.set(x + 1, row, string.format("%-" .. col_name .. "s", nameStr))
-    gpu.set(x + col_name + 1, row, "│")
-    gpu.set(x + col_name + 2, row, string.format("%-" .. col_cat .. "s", catStr))
-    gpu.set(x + col_name + col_cat + 1, row, "│")
-    gpu.set(x + col_name + col_cat + 2, row, inStock)
-    gpu.set(x + col_name + col_cat + col_now + 1, row, "│")
-    gpu.set(x + col_name + col_cat + col_now + 2, row, holdStr)
-    gpu.set(x + col_name + col_cat + col_now + col_hold + 1, row, "│")
-    gpu.set(x + col_name + col_cat + col_now + col_hold + 2, row, onceStr)
-    gpu.set(x + col_name + col_cat + col_now + col_hold + col_once + 1, row, "│")
-    gpu.setBackground(0x23242b)
-  end
-  
-  local bottomLine = "└" .. string.rep("─", col_name) .. "┴" ..
-                     string.rep("─", col_cat) .. "┴" ..
-                     string.rep("─", col_now) .. "┴" ..
-                     string.rep("─", col_hold) .. "┴" ..
-                     string.rep("─", col_once) .. "┘"
-  gpu.set(x, y + TABLE_HEIGHT - 1, bottomLine)
-end
-
--- Поле поиска (строки 25–27)
-local function drawSearchBar()
-  local x, y, w, h = 3, SEARCH_Y, WIDTH - 6, SEARCH_HEIGHT
-  uoc.roundRect(x, y, w, h, 0x00BFFF, 0x282B36)
-  gpu.setBackground(0x282B36)
-  gpu.fill(x + 1, y + 1, w - 2, h - 2, " ")
-  gpu.setForeground(0xFF5555)
-  gpu.set(x + w - 3, y + 1, (search ~= "" and "×" or " "))
-  gpu.setForeground((searchActive and 0x50FA7B) or 0x888888)
-  local display = search
-  if display == "" then display = "Поиск: введите часть названия..." end
-  if searchActive then display = display .. "_" end
-  local maxlen = w - 7
-  if unicode.len(display) > maxlen then
-    display = unicode.sub(display, unicode.len(display) - maxlen + 2)
-  end
-  gpu.set(x + 2, y + 1, display)
-  gpu.setBackground(0x23242b)
-  gpu.setForeground(0xF8F8F2)
-end
-
--- Навигация по страницам (строка 28)
-local function drawPageNavigation()
-  local filtered = getFilteredItems()
-  local totalItems = #filtered
-  local totalPages = math.max(1, math.ceil(totalItems / DATA_ROWS))
-  local navText = "Страница: " .. currentPage .. "/" .. totalPages .. "  [<]  [>]"
-  local x = math.floor((WIDTH - unicode.len(navText)) / 2) + 1
-  gpu.setBackground(0x23242b)
-  gpu.setForeground(0x50FA7B)
-  gpu.set(x, PAGE_NAV_Y, navText)
-end
-
--- Логи (строки 29–42)
-local function drawLogs()
-  uoc.drawLogs(3, LOGS_Y, logs, LOGS_HEIGHT, 0x8BE9FD)
-end
-
--- Кнопки (строки 43–50): кнопки отрисовываются по центру нижней зоны
-local function drawButtons()
-  local btnWidth = 20
-  local btnCount = 4
-  local totalBtnWidth = btnWidth * btnCount
-  local startX = math.floor((WIDTH - totalBtnWidth) / 2) + 1
-  local y = BUTTONS_Y + math.floor((BUTTONS_HEIGHT - 1) / 2)
-  local btns = {
-    { name = "Удалить", action = "remove" },
-    { name = "Изменить", action = "edit" },
-    { name = isCrafting and "Остановить" or "Автокрафт", action = "craft" },
-    { name = "Добавить", action = "add" }
-  }
-  for i, v in ipairs(btns) do
-    local bx = startX + (i - 1) * btnWidth
-    uoc.animatedButton(bx, BUTTONS_Y, btnWidth, BUTTONS_HEIGHT, v.name, false, 0x00BFFF, 0x1E90FF, 0xF8F8F2)
-  end
-end
-
-local function draw()
-  clear()
-  drawHeader()
-  drawCategoryNavigation()
-  drawItems()
-  drawSearchBar()
-  drawPageNavigation()
-  drawLogs()
-  drawButtons()
-end
-
---------------------------------------------------------------------------------
--- Модальные окна для добавления и редактирования
---------------------------------------------------------------------------------
-local function addItem()
-  changeitem = true
-  clear()
-  local startY = math.floor(HEIGHT / 2) - 2
-  uoc.drawText(10, startY, "Вставьте предмет в 1-й слот ME и введите параметры.", 0x50FA7B)
-  uoc.drawText(10, startY + 1, "Название: ", 0xF8F8F2)
-  term.setCursor(22, startY + 1)
-  local name = tostring(io.read())
-  uoc.drawText(10, startY + 2, "Держать (число): ", 0xF8F8F2)
-  term.setCursor(29, startY + 2)
-  local count = tonumber(io.read()) or 0
-  uoc.drawText(10, startY + 3, "Крафт за раз (число): ", 0xF8F8F2)
-  term.setCursor(32, startY + 3)
-  local craftSize = tonumber(io.read()) or 1
-  uoc.drawText(10, startY + 4, "Категория: ", 0xF8F8F2)
-  term.setCursor(22, startY + 4)
-  local category = tostring(io.read())
-  if category == "" then category = "all" end
-  local stack = nil
-  local ok, res = pcall(me.getStackInSlot, 1)
-  if ok then stack = res end
-  if stack then
-    table.insert(dataItems, {
-      name = name,
-      id = stack.id,
-      dmg = stack.dmg,
-      count = count,
-      craftSize = craftSize,
-      category = category
-    })
-    save()
-    addLog(logs, "Добавлен предмет: " .. name, "INFO")
-  else
-    addLog(logs, "Ошибка: нет предмета в слоте 1!", "ERROR")
-  end
-  changeitem = false
-  resetSelection()
-  draw()
-end
-
-local function editItem()
-  if not selectedItem then return addLog(logs, "Не выбран предмет!", "ERROR") end
-  local item = dataItems[selectedItem]
-  changeitem = true
-  clear()
-  local startY = math.floor(HEIGHT / 2) - 2
-  uoc.drawText(10, startY, "Изменение: " .. (item.name or "<?>"), 0x50FA7B)
-  uoc.drawText(10, startY + 1, "Новое имя (Enter пропустить): ", 0xF8F8F2)
-  term.setCursor(42, startY + 1)
-  local name = tostring(io.read())
-  if name and name ~= "" then item.name = name end
-  uoc.drawText(10, startY + 2, "Новое держать (число, Enter пропустить): ", 0xF8F8F2)
-  term.setCursor(54, startY + 2)
-  local countstr = tostring(io.read())
-  local count = tonumber(countstr)
-  if countstr ~= "" and count then item.count = count end
-  uoc.drawText(10, startY + 3, "Новый крафт за раз (число, Enter пропустить): ", 0xF8F8F2)
-  term.setCursor(56, startY + 3)
-  local csstr = tostring(io.read())
-  local cs = tonumber(csstr)
-  if csstr ~= "" and cs then item.craftSize = cs end
-  uoc.drawText(10, startY + 4, "Новая категория (Enter пропустить): ", 0xF8F8F2)
-  term.setCursor(42, startY + 4)
-  local category = tostring(io.read())
-  if category ~= "" then item.category = category end
-  save()
-  addLog(logs, "Изменено: " .. item.name, "INFO")
-  changeitem = false
-  resetSelection()
-  draw()
-end
-
-local function removeItem()
-  if not selectedItem then return addLog(logs, "Не выбран предмет!", "ERROR") end
-  addLog(logs, "Удалён: " .. (dataItems[selectedItem].name or "<?>"), "WARN")
-  table.remove(dataItems, selectedItem)
-  selectedItem = nil
-  save()
-  draw()
-end
-
-local function doCraft()
-  isCrafting = true
-  craftStatus = "Автокрафт..."
-  save()
-  addLog(logs, "Запущен автокрафт", "INFO")
-  draw()
-end
-
-local function stopCraft()
-  isCrafting = false
-  craftStatus = "Остановлено"
-  addLog(logs, "Остановлен автокрафт", "WARN")
-  draw()
-end
-
---------------------------------------------------------------------------------
--- Основной цикл автокрафта
---------------------------------------------------------------------------------
-local function autoCraftLoop()
-  while true do
-    if isCrafting then
-      local now = computer.uptime()
-      if now >= nextCraftUpdate then
-        reload()
-        local ok2, cpus = pcall(me.getCpus)
-        cpus = ok2 and cpus or {}
-        for _, item in ipairs(dataItems) do
-          local count = tonumber(item.count) or 0
-          local craftSize = tonumber(item.craftSize) or 1
-          local currentQty = tonumber(item.current) or 0
-          if currentQty < count then
-            local freeCPU = nil
-            for _, cpu in ipairs(cpus) do
-              if cpu.storage and cpu.storage == CPU_STORAGE and (not cpu.busy) then
-                freeCPU = cpu
-                break
-              end
-            end
-            if freeCPU then
-              local ok3, craftables = pcall(me.getCraftables, { name = item.id, damage = item.dmg })
-              craftables = ok3 and craftables or { n = 0 }
-              if craftables.n and craftables.n >= 1 then
-                local delta = math.min(craftSize, count - currentQty)
-                if delta > 0 then
-                  local succ, req = pcall(function() return craftables[1].request(delta, false, freeCPU.name) end)
-                  if succ and req then
-                    craftStatus = "Крафт: " .. (item.name or "<?>")
-                    addLog(logs, "Крафт " .. delta .. "x " .. (item.name or "<?>") .. " на CPU " .. tostring(freeCPU.name), "INFO")
-                  else
-                    craftStatus = "Ошибка: запрос крафта"
-                    addLog(logs, "Ошибка: не удалось отправить крафт " .. (item.name or "<?>"), "ERROR")
-                  end
+    local ok, res = pcall(uoc.loadf, DATA_FILE)
+    dataItems = ok and res or {}
+    for _, item in ipairs(dataItems) do
+        local qty = 0
+        local stackList = {}
+        pcall(function() stackList = me.getItemsInNetwork({ id = item.id, damage = item.dmg }) end)
+        if stackList and stackList.n > 0 then
+            for _, stack in ipairs(stackList) do
+                if stack.name == item.id and (item.dmg == nil or stack.damage == item.dmg) then
+                    qty = stack.size or stack.qty or 0
+                    break
                 end
-              else
-                craftStatus = "Ошибка: нет рецепта " .. (item.name or "<?>")
-                addLog(logs, "Ошибка: нет рецепта " .. (item.name or "<?>"), "ERROR")
-              end
-            else
-              craftStatus = "Ошибка: нет свободных CPU с 256К"
-              addLog(logs, "Ошибка: нет свободных CPU с требуемой емкостью", "ERROR")
             end
-          end
         end
-        save()
-        nextCraftUpdate = now + 5
-      end
+        item.current = qty
+    end
+end
+
+-- Функция отображения интерфейса
+local function draw()
+    gpu.setBackground(DARK_BG)
+    gpu.fill(1, 1, WIDTH, HEIGHT, " ")
+    gpu.setForeground(TEXT_COLOR)
+    
+    -- Заголовок
+    gpu.set(3, 1, "Ultimate AutoCraft - Улучшенная версия")
+
+    -- Лог
+    for i, log in ipairs(logs) do
+        gpu.set(3, HEIGHT - 15 + i, log)
+    end
+
+    -- Таблица предметов
+    gpu.set(3, 5, "Название    Категория    В наличии    Держать    Крафт за раз")
+    for i, item in ipairs(dataItems) do
+        local row = 6 + i
+        local color = TEXT_COLOR
+        if item.current < (item.count or 0) then color = ERROR_COLOR end
+        gpu.setForeground(color)
+        gpu.set(3, row, string.format("%-10s %-10s %-10d %-10d %-10d", item.name, item.category, item.current, item.count, item.craftSize))
+    end
+    gpu.setForeground(TEXT_COLOR)
+end
+
+-- Функция добавления предмета
+local function addItem()
+    if me.getStackInSlot(1) then
+        gpu.fill(1, HEIGHT-5, WIDTH, 1, " ")
+        gpu.set(14, HEIGHT-5, "Введите название предмета:")
+        term.setCursor(40, HEIGHT-5)
+        local name = tostring(io.read())
+        gpu.fill(1, HEIGHT-4, WIDTH, 1, " ")
+        gpu.set(14, HEIGHT-4, "Введите кол-во поддержания:")
+        term.setCursor(41, HEIGHT-4)
+        local count = tonumber(io.read())
+        gpu.fill(1, HEIGHT-3, WIDTH, 1, " ")
+        gpu.set(14, HEIGHT-3, "Введите макс. объём крафта:")
+        term.setCursor(41, HEIGHT-3)
+        local craftSize = tonumber(io.read())
+        table.insert(dataItems, {name=name, id = me.getStackInSlot(1).id, dmg = me.getStackInSlot(1).dmg, count = count, craftSize = craftSize, cpu = 257000})
+        uoc.savef(DATA_FILE, dataItems)
+        addLog("Добавлен предмет: " .. name, "INFO")
+    else
+        addLog("Ошибка: нет предмета в слоте 1!", "ERROR")
     end
     draw()
-    os.sleep(0.2)
-  end
 end
 
---------------------------------------------------------------------------------
--- Обработка событий
---------------------------------------------------------------------------------
-event.listen("touch", function(_, _, x, y, _, _)
-  if changeitem then return end
-
-  -- Навигация по категориям (строка 4)
-  if y == CATEGORY_Y then
-    local prefix = "Категория: "
-    local leftArrow = "<"
-    local rightArrow = ">"
-    local navString = prefix .. leftArrow .. " " .. categoryFilter .. " " .. rightArrow
-    local startX = math.floor((WIDTH - unicode.len(navString)) / 2) + 1
-    local leftArrowX = startX + unicode.len(prefix)
-    local rightArrowX = startX + unicode.len(prefix) + 1 + unicode.len(categoryFilter) + 1
-    if x >= leftArrowX and x < leftArrowX + 1 then
-      if categoryIndex > 1 then
-        categoryIndex = categoryIndex - 1
-        categoryFilter = categories[categoryIndex]
-        currentPage = 1
+-- Функция автокрафта
+local function autoCraft()
+    isCrafting = true
+    addLog("Запуск автокрафта...", "INFO")
+    while isCrafting do
+        for _, item in ipairs(dataItems) do
+            if item.current < item.count then
+                local craftables = me.getCraftables({ name = item.id, damage = item.dmg })
+                if craftables and craftables.n > 0 then
+                    local req = craftables[1].request(item.craftSize)
+                    if req then
+                        addLog("Крафт: " .. item.name, "INFO")
+                    else
+                        addLog("Ошибка крафта: " .. item.name, "ERROR")
+                    end
+                else
+                    addLog("Нет рецепта: " .. item.name, "ERROR")
+                end
+            end
+        end
+        reload()
         draw()
-        return
-      end
-    elseif x >= rightArrowX and x < rightArrowX + 1 then
-      if categoryIndex < #categories then
-        categoryIndex = categoryIndex + 1
-        categoryFilter = categories[categoryIndex]
-        currentPage = 1
-        draw()
-        return
-      end
+        os.sleep(5)
     end
-  end
+end
 
-  -- Навигация по страницам (строка 28)
-  if y == PAGE_NAV_Y then
-    local filtered = getFilteredItems()
-    local totalItems = #filtered
-    local totalPages = math.max(1, math.ceil(totalItems / DATA_ROWS))
-    local navText = "Страница: " .. currentPage .. "/" .. totalPages .. "  [<]  [>]"
-    local startX = math.floor((WIDTH - unicode.len(navText)) / 2) + 1
-    local leftArrowStart, leftArrowEnd = string.find(navText, "%[%<%]")
-    local rightArrowStart, rightArrowEnd = string.find(navText, "%[%>%]")
-    if leftArrowStart then
-      local absLeftStart = startX + leftArrowStart - 1
-      local absLeftEnd = startX + leftArrowEnd - 1
-      if x >= absLeftStart and x <= absLeftEnd then
-        if currentPage > 1 then
-          currentPage = currentPage - 1
-          draw()
-          return
-        end
-      end
-    end
-    if rightArrowStart then
-      local absRightStart = startX + rightArrowStart - 1
-      local absRightEnd = startX + rightArrowEnd - 1
-      if x >= absRightStart and x <= absRightEnd then
-        if currentPage < totalPages then
-          currentPage = currentPage + 1
-          draw()
-          return
-        end
-      end
-    end
-  end
-
-  -- Обработка нажатия по кнопкам (строки 43–50)
-  if y >= BUTTONS_Y and y < BUTTONS_Y + BUTTONS_HEIGHT then
-    local btnWidth = 20
-    local btnCount = 4
-    local totalBtnWidth = btnWidth * btnCount
-    local startX = math.floor((WIDTH - totalBtnWidth) / 2) + 1
-    for i = 1, btnCount do
-      local bx = startX + (i - 1) * btnWidth
-      if x >= bx and x < bx + btnWidth then
-        if i == 1 then
-          removeItem()
-        elseif i == 2 then
-          editItem()
-        elseif i == 3 then
-          if isCrafting then stopCraft() else doCraft() end
-        elseif i == 4 then
-          addItem()
-        end
-        draw()
-        return
-      end
-    end
-  end
-
-  -- Обработка нажатия по области поиска (строки 25–27)
-  if y >= SEARCH_Y and y < SEARCH_Y + SEARCH_HEIGHT then
-    if x >= 3 + (WIDTH - 6) - 3 and x <= 3 + (WIDTH - 6) - 1 and search ~= "" then
-      search = ""
-      draw()
-      return
-    end
-    if x >= 3 and x < 3 + (WIDTH - 6) - 4 then
-      searchActive = true
-      draw()
-      return
-    end
-  end
-
-  -- Выбор предмета из таблицы (строки TABLE_TOP_Y+3 до TABLE_TOP_Y+3+DATA_ROWS–1)
-  local tableStartY = TABLE_TOP_Y + 3
-  local tableEndY = tableStartY + DATA_ROWS - 1
-  if y >= tableStartY and y <= tableEndY then
-    local idx = (currentPage - 1) * DATA_ROWS + (y - tableStartY + 1)
-    local filteredItems = getFilteredItems()
-    if filteredItems[idx] then
-      for k, v in ipairs(dataItems) do
-        if v == filteredItems[idx] then
-          selectedItem = k
-          break
-        end
-      end
-      draw()
-      return
-    end
-  end
-
-  draw()
-end)
-
-event.listen("key_down", function(_, _, key, _, _)
-  if changeitem then return end
-  if searchActive then
-    if key == 14 then
-      search = unicode.sub(search, 1, unicode.len(search) - 1)
-    elseif key == 211 then
-      search = ""
-    elseif key == 28 then
-      searchActive = false
-    elseif key >= 32 then
-      if unicode.len(search) < (WIDTH - 15) then
-        search = search .. unicode.char(key)
-      end
-    end
-  else
-    local filtered = getFilteredItems()
-    local totalPages = math.max(1, math.ceil(#filtered / DATA_ROWS))
-    if key == 200 then
-      currentPage = math.max(1, currentPage - 1)
-    elseif key == 208 then
-      currentPage = math.min(totalPages, currentPage + 1)
-    end
-  end
-  draw()
-end)
-
---------------------------------------------------------------------------------
--- Старт программы
---------------------------------------------------------------------------------
-gpu.setResolution(WIDTH, HEIGHT)
+-- Запуск программы
 reload()
 draw()
-local ok, err = pcall(autoCraftLoop)
-if not ok then
-  addLog(logs, "Фатальная ошибка: " .. tostring(err), "ERROR")
-  draw()
-  os.sleep(3)
-  computer.shutdown(true)
-end
