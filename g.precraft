@@ -1,6 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
 -- Улучшенная версия: разделение статичных и динамичных частей интерфейса,
--- обновление таблицы и кнопок происходит реже (фон обновляется раз в 20 сек),
+-- обновление таблицы и кнопок происходит реже (количество обновляется раз в 20 сек),
 -- корректное крафтирование партиями и детальное логирование без повторов.
 
 local component = require("component")
@@ -73,10 +73,15 @@ local MAX_LOGS = 100         -- Максимальное число записе
 local logsVisible = false    -- Флаг: активно ли окно логов
 local buttons = {}           -- Таблица кнопок
 
--- Флаг для отслеживания фоновых изменений, вызванных автокрафтом
+-- Флаг для отслеживания изменений (для автокрафта)
 local bgChanges = false
--- Время последнего обновления интерфейса (в секундах)
+-- Время последнего обновления статичных элементов (при загрузке)
 local lastMainUpdate = os.time()
+
+-- Кэширование количества для стабильного отображения (обновляем раз в 20 сек)
+local cachedCounts = {}
+local lastCountUpdate = 0
+local COUNT_UPDATE_INTERVAL = 20  -- в секундах
 
 ---------------------- ЛОГИРОВАНИЕ ----------------------
 local function addLog(msg, color)
@@ -170,6 +175,7 @@ end
 
 ---------------------- ОТРИСОВКА ТАБЛИЦЫ ----------------------
 local function drawTableItems()
+  -- Очищаем только область таблицы
   for row = TABLE_BODY_START_Y, TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
@@ -179,11 +185,8 @@ local function drawTableItems()
     local rowPos = TABLE_BODY_START_Y + (i - scroll)
     local record = content[i]
     local item = record.item
-    local detail = me.getItemDetail({id = item.id, dmg = item.dmg})
-    local currentQty = 0
-    if detail and detail.basic() then
-      currentQty = detail.basic().qty or 0
-    end
+    local key = item.id .. ":" .. item.dmg
+    local currentQty = cachedCounts[key] or 0
     local reqCount = tonumber(item.count) or 0
     local diff = reqCount - currentQty
     local colorText = CTEXT
@@ -243,6 +246,7 @@ drawButtons = _drawButtons
 local function _drawDynamicUI()
   drawTableItems()
   drawScrollBar()
+  -- Обновляем только нижнюю область с кнопками (без очистки всего фона)
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, HEIGHT - 3, WIDTH, 3, " ")
   drawButtons()
@@ -252,9 +256,10 @@ drawDynamicUI = _drawDynamicUI
 ---------------------- ПОЛНАЯ ПЕРЕРИСОВКА ----------------------
 local function fullRedraw()
   if logsVisible then
-    -- При показе логов обновляем только оверлей логов, не трогая фон и основные элементы
+    -- Если оверлей логов активен, обновляем только его
     drawFloatingLogs()
   else
+    -- Первоначальное прорисовывание: статичные и динамичные элементы
     gpu.setBackground(BG_MAIN)
     gpu.fill(1, 1, WIDTH, HEIGHT, " ")
     drawStaticUI()
@@ -262,12 +267,15 @@ local function fullRedraw()
   end
 end
 
----------------------- ФУНКЦИЯ ПЕРЕРИСОВКИ (только принудительно) ----------------------
+---------------------- ФУНКЦИЯ ОБНОВЛЕНИЯ ДИНАМИКИ НЕЗАВИСИМО ----------------------
+-- Эта функция вызывается для обновления только динамических элементов
 local function immediateRedraw(force)
   if force then
-    fullRedraw()
-    lastMainUpdate = os.time()
-    bgChanges = false
+    if logsVisible then
+      drawFloatingLogs()
+    else
+      drawDynamicUI()
+    end
   end
 end
 
@@ -294,6 +302,19 @@ local function updateContent()
   
   maxScroll = math.max(1, #content - VISIBLE_TABLE_ROWS + 1)
   if scroll > maxScroll then scroll = maxScroll end
+end
+
+---------------------- ОБНОВЛЕНИЕ КЭША КОЛИЧЕСТВ ----------------------
+local function updateCachedCounts()
+  for i, item in ipairs(dataItems) do
+    local key = item.id .. ":" .. item.dmg
+    local detail = me.getItemDetail({id = item.id, dmg = item.dmg})
+    if detail and detail.basic() then
+      cachedCounts[key] = detail.basic().qty or 0
+    else
+      cachedCounts[key] = 0
+    end
+  end
 end
 
 ---------------------- ОКНО ВВОДА ДАННЫХ ----------------------
@@ -524,16 +545,17 @@ local function initButtons()
       action = function()
         logsVisible = not logsVisible
         if logsVisible then
-          fullRedraw()
+          -- При включении логов сразу отрисовываем оверлей логов
+          drawFloatingLogs()
           logTimerId = event.timer(1.0, function() drawFloatingLogs() end, math.huge)
         else
           if logTimerId then
             event.cancel(logTimerId)
             logTimerId = nil
           end
-          fullRedraw()
+          -- При выключении логов – перерисовываем только динамику
+          immediateRedraw(true)
         end
-        immediateRedraw(true)
       end
     }
   }
@@ -548,14 +570,25 @@ local function LoadSystem()
   touchEvent = event.listen("touch", onTouch)
   scrollEvent = event.listen("scroll", onScroll)
   dataQueue = dataItems
+  -- Первоначальное прорисовывание всего интерфейса
   fullRedraw()
+  -- Изначальное обновление кэша количеств
+  updateCachedCounts()
+  lastCountUpdate = os.time()
   return true
 end
 
 ---------------------- ТАЙМЕР ДЛЯ ФОНОВОГО ОБНОВЛЕНИЯ (каждые 1 сек.) ----------------------
 local function checkBackgroundUpdate()
-  if bgChanges and (os.time() - lastMainUpdate >= 20) then
-    immediateRedraw(true)
+  local now = os.time()
+  if now - lastCountUpdate >= COUNT_UPDATE_INTERVAL then
+    updateCachedCounts()
+    lastCountUpdate = now
+    if not logsVisible then
+      drawDynamicUI()  -- обновляем только динамические элементы (таблицу и кнопки)
+    else
+      drawFloatingLogs() -- обновляем только оверлей логов
+    end
   end
 end
 
