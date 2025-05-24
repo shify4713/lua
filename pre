@@ -1,8 +1,11 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Обновлённая версия без проверок на админа.
--- Логика крафта организована через состояния: waiting, processing, finished.
--- Улучшено обновление кэша и добавлена градация цветового выделения.
--- Обработчики событий работают через event.listen без блокирующих event.pull.
+-- Переработанная версия с переработанной логикой событий, кнопок и обновлением UI.
+--
+-- В этой версии:
+--  • Все проверки на админа убраны.
+--  • Обновление интерфейса организовано через заранее объявленную функцию updateUI.
+--  • Обработка событий (touch/scroll) происходит через event.listen.
+--  • Реализована явная логика состояний для крафта (waiting, processing, finished).
 
 local component = require("component")
 local fs = require("filesystem")
@@ -83,7 +86,7 @@ local COLOR_HIGHLIGHT_TEXT= 0x000000
 local COLOR_NONE          = 0xFF0000   -- Красный: нет предметов
 local COLOR_ORANGE        = 0xFFA500   -- Оранжевый: меньше 25% от требуемого
 local COLOR_YELLOW        = 0xFFFF00   -- Жёлтый: меньше 50% от требуемого
-local COLOR_GREEN         = 0x00FF66   -- Зелёный: количество удовлетворяет требованию
+local COLOR_GREEN         = 0x00FF66   -- Зелёный: требуемое количество достигнуто
 
 local BG_ROW_1            = 0x1A1A1A
 local BG_ROW_2            = 0x2A2A2A
@@ -143,7 +146,12 @@ local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
 end
 
 --------------------------------------------------------------------
--- МОДАЛЬНОЕ ОКНО ВВОДА С КНОПКОЙ "Cancel"
+-- ФОРВАРД-ДЕКЛАРАЦИЯ (чтобы updateUI использовалась везде)
+--------------------------------------------------------------------
+local updateUI
+
+--------------------------------------------------------------------
+-- ФУНКЦИЯ МОДАЛЬНОГО ОКНА ВВОДА
 --------------------------------------------------------------------
 local function customInputOverlay(promptMessage)
   inputActive = true
@@ -203,12 +211,12 @@ local function customInputOverlay(promptMessage)
   
   term.setCursorBlink(false)
   inputActive = false
-  updateUI()
+  if updateUI then updateUI() end
   return inputStr
 end
 
 --------------------------------------------------------------------
--- ОТРИСОВКА ЗАГОЛОВКА И ШАПКИ ТАБЛИЦЫ
+-- ФУНКЦИИ ОТРИСОВКИ ЭЛЕМЕНТОВ ИНТЕРФЕЙСА
 --------------------------------------------------------------------
 local function redrawHeader()
   gpu.setBackground(COLOR_HEADER_BG)
@@ -233,9 +241,6 @@ local function redrawTableHeader()
   gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("─", TABLE_WIDTH))
 end
 
---------------------------------------------------------------------
--- ОТРИСОВКА ТЕЛА ТАБЛИЦЫ
---------------------------------------------------------------------
 local function redrawTable()
   for row = TABLE_BODY_START_Y, BUTTONS_Y - 1 do
     gpu.setBackground(BG_MAIN)
@@ -287,9 +292,6 @@ local function redrawTable()
   end
 end
 
---------------------------------------------------------------------
--- ОТРИСОВКА КНОПОК И ЛОГОВ
---------------------------------------------------------------------
 local function redrawButtons()
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, BUTTONS_Y, WIDTH, BUTTONS_HEIGHT, " ")
@@ -328,7 +330,8 @@ local function redrawLogs()
   end
 end
 
-local function updateUI()
+-- Функция обновления всего UI (сборка отрисовки)
+updateUI = function()
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, 1, WIDTH, HEIGHT, " ")
   redrawHeader()
@@ -341,7 +344,7 @@ local function updateUI()
 end
 
 --------------------------------------------------------------------
--- ОБНОВЛЕНИЕ ДАННЫХ И СОРТИРОВКА
+-- ФУНКЦИИ ОБНОВЛЕНИЯ ДАННЫХ
 --------------------------------------------------------------------
 local function updateContent()
   content = {}
@@ -469,7 +472,7 @@ local function editItem()
 end
 
 --------------------------------------------------------------------
--- ДОБАВЛЕНИЕ ЗАПИСИ В ЛОГИ
+-- ДОБАВЛЕНИЕ ЗАПИСЕЙ В ЛОГ
 --------------------------------------------------------------------
 local function addLog(msg)
   table.insert(craftLogs, { text = msg, color = CTEXT })
@@ -478,7 +481,7 @@ local function addLog(msg)
 end
 
 --------------------------------------------------------------------
--- ЛОГИКА АВТО-КРАФТА С ИСПОЛЬЗОВАНИЕМ СОСТОЯНИЙ
+-- ЛОГИКА АВТО-КРАФТА (по состояниям waiting, processing, finished)
 --------------------------------------------------------------------
 local function autoCraftCheck()
   if not craftingActive then return end
@@ -535,10 +538,10 @@ local function autoCraftCheck()
 end
 
 --------------------------------------------------------------------
--- ОБРАБОТКА СОБЫТИЙ: КАСАНИЙ И СКРОЛЛА
+-- ОБРАБОТКА СОБЫТИЙ: TOUCH И SCROLL
 --------------------------------------------------------------------
 local function handleTouch(x, y)
-  -- Проверка нажатия на кнопки
+  -- Если нажатие попало в область кнопок, вызываем action
   for _, button in ipairs(buttons) do
     if x >= button.x and x <= (button.x + button.w - 1) and
        y >= button.y and y <= (button.y + button.h - 1) then
@@ -546,11 +549,11 @@ local function handleTouch(x, y)
       return true
     end
   end
-  -- Если нажато в области таблицы – выбираем строку
+  -- Если нажатие в области таблицы — выбираем соответствующую строку
   if x >= TABLE_X and x <= (TABLE_X + TABLE_WIDTH - 1) and
      y >= TABLE_BODY_START_Y and y < BUTTONS_Y then
-     posSelect = scroll + (y - TABLE_BODY_START_Y)
-     return true
+    posSelect = scroll + (y - TABLE_BODY_START_Y)
+    return true
   end
   return false
 end
@@ -652,7 +655,7 @@ local function LoadSystem()
   initButtons()
   event.listen("touch", onUIEvent)
   event.listen("scroll", onUIEvent)
-  dataQueue = dataItems   -- используем один и тот же список для автокрафта
+  dataQueue = dataItems   -- используем один список для автокрафта
   updateCachedCounts()
   lastCountUpdate = os.time()
   addLog("[System] Система запущена")
@@ -675,5 +678,5 @@ local craftTimer = event.timer(8.0, autoCraftCheck, math.huge)
 
 LoadSystem()
 while running do
-  os.sleep(0.1)
+  event.pull(0.1)  -- главный цикл: ждём события
 end
