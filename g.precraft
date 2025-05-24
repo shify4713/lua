@@ -1,7 +1,7 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Улучшенная версия: разделение статичных и динамичных частей интерфейса,
--- обновление таблицы происходит реже (количество обновляется раз в 20 сек),
--- корректное крафтирование партиями, детальное логирование и окно ввода без мерцания.
+-- Версия с разделением статичных и динамичных областей для минимизации мерцания.
+-- Статичная часть (заголовок, рамки и метка сортировки) рисуется один раз,
+-- динамика (таблица, кнопки, логи) обновляется только в изменяемых областях.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -51,8 +51,8 @@ local COLOR_BUTTON_BORDER = 0x000000  -- Граница кнопок
 ---------------------- РАЗМЕРЫ UI ----------------------
 local TABLE_X = 2            -- Начало таблицы слева
 local TABLE_WIDTH = 157      -- Полная ширина таблицы
-local TABLE_HEADER_Y = 4     -- Заголовок таблицы
-local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2
+local TABLE_HEADER_Y = 4     -- Заголовок таблицы (верхняя рамка)
+local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2  -- Начало тела таблицы
 local VISIBLE_TABLE_ROWS = 35
 
 ---------------------- ГЛОБАЛЫЕ ПЕРЕМЕННЫЕ ----------------------
@@ -73,9 +73,9 @@ local MAX_LOGS = 100         -- Максимальное число записе
 local logsVisible = false    -- Флаг: активно ли окно логов
 local buttons = {}           -- Таблица кнопок
 
--- Флаг для отслеживания изменений (автокрафт)
+-- Флаг для отслеживания изменений автокрафта
 local bgChanges = false
--- Время последнего обновления статичных элементов
+-- Время последнего обновления статичной области
 local lastMainUpdate = os.time()
 
 -- Кэширование количества для стабильного отображения (обновляем раз в 20 сек)
@@ -83,7 +83,7 @@ local cachedCounts = {}
 local lastCountUpdate = 0
 local COUNT_UPDATE_INTERVAL = 20  -- в секундах
 
--- Флаг, обозначающий, что окно ввода активно (блокирует фоновые обновления)
+-- Флаг, блокирующий фоновые обновления при активном окне ввода
 local inputActive = false
 
 ---------------------- ЛОГИРОВАНИЕ ----------------------
@@ -128,8 +128,9 @@ local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
   gpu.set(textPosX, textPosY, text)
 end
 
----------------------- ОТРИСОВКА СТАТИЧНОГО UI ----------------------
+---------------------- СТАТИЧНЫЙ UI (заголовок, рамки, метка сортировки) ----------------------
 local function drawStaticUI()
+  -- Рисуем заголовок и метку сортировки (область строк 1-3)
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.fill(1, 1, WIDTH, 3, " ")
   local header = "PreCraft - Автокрафт предметов"
@@ -137,23 +138,35 @@ local function drawStaticUI()
   gpu.setForeground(CTEXT)
   gpu.set(math.floor((WIDTH - unicode.len(header)) / 2), 1, header)
   gpu.set(2, 2, sortText)
-
+  
+  -- Рисуем рамку для таблицы
   local tableHeaderHeight = (TABLE_BODY_START_Y - TABLE_HEADER_Y) + VISIBLE_TABLE_ROWS + 2
   drawBorder(TABLE_X - 1, TABLE_HEADER_Y - 1, TABLE_WIDTH + 2, tableHeaderHeight, COLOR_BUTTON)
-
+  
+  -- Рисуем заголовок таблицы
   local headerStr = "|" .. padOrTrim("Idx", 5) .. "|" ..
-                           padOrTrim("Name", 94) .. "|" ..
-                           padOrTrim("Категория", 15) .. "|" ..
-                           padOrTrim("Req", 12) .. "|" ..
-                           padOrTrim("ME", 12) .. "|" ..
-                           padOrTrim("Craft", 12) .. "|"
+                          padOrTrim("Name", 94) .. "|" ..
+                          padOrTrim("Категория", 15) .. "|" ..
+                          padOrTrim("Req", 12) .. "|" ..
+                          padOrTrim("ME", 12) .. "|" ..
+                          padOrTrim("Craft", 12) .. "|"
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.setForeground(CTEXT)
   gpu.set(TABLE_X, TABLE_HEADER_Y, headerStr)
   gpu.set(TABLE_X, TABLE_HEADER_Y + 1, string.rep("─", TABLE_WIDTH))
 end
 
----------------------- ОТРИСОВКА ЛОГОВ ----------------------
+-- Обновление метки сортировки (при изменении критерия)
+local function updateSortLabel()
+  local sortText = "Сортировка: " .. sortCriteriaDisplay[sortCriteria]
+  gpu.setBackground(COLOR_HEADER_BG)
+  -- предполагаем максимальную длину 25 символов для метки
+  gpu.fill(2, 2, 25, 1, " ")
+  gpu.setForeground(CTEXT)
+  gpu.set(2, 2, sortText)
+end
+
+---------------------- ЛОГИ (оверлей) ----------------------
 local function drawFloatingLogs()
   local overlayWidth = 70
   local overlayHeight = 20
@@ -162,6 +175,7 @@ local function drawFloatingLogs()
   drawBorder(overlayX - 1, overlayY - 1, overlayWidth + 2, overlayHeight + 2, COLOR_BUTTON)
   gpu.setBackground(COLOR_LOG_BG)
   gpu.fill(overlayX, overlayY, overlayWidth, overlayHeight, " ")
+  
   local logY = overlayY
   local startIdx = math.max(1, #craftLogs - overlayHeight + 1)
   for i = startIdx, #craftLogs do
@@ -176,14 +190,14 @@ local function drawFloatingLogs()
   end
 end
 
----------------------- ОТРИСОВКА ТАБЛИЦЫ ----------------------
+---------------------- ТАБЛИЦА: Рисование строк ----------------------
 local function drawTableItems()
-  -- Очищаем только область таблицы
+  -- Очищаем только область таблицы (тело таблицы)
   for row = TABLE_BODY_START_Y, TABLE_BODY_START_Y + VISIBLE_TABLE_ROWS - 1 do
     gpu.setBackground(BG_MAIN)
     gpu.fill(TABLE_X, row, TABLE_WIDTH, 1, " ")
   end
-
+  
   for i = scroll, math.min(#content, scroll + VISIBLE_TABLE_ROWS - 1) do
     local rowPos = TABLE_BODY_START_Y + (i - scroll)
     local record = content[i]
@@ -218,17 +232,17 @@ local function drawTableItems()
   end
 end
 
----------------------- Предварительные объявления динамических функций ----------------------
+---------------------- ПРЕДВАРИТЕЛЬНЫЕ ОБЪЯВЛЕНИЯ ДИНАМИЧЕСКИХ ФУНКЦИЙ ----------------------
 local drawScrollBar, drawButtons, drawDynamicUI
 
----------------------- ОТРИСОВКА СКРОЛЛБАРА ----------------------
+---------------------- СКРОЛЛБАР ----------------------
 local function _drawScrollBar()
   oc.drawscroll(TABLE_X + TABLE_WIDTH, TABLE_BODY_START_Y, 1, VISIBLE_TABLE_ROWS,
                 scroll, #content, COLOR_HIGHLIGHT, COLOR_BUTTON)
 end
 drawScrollBar = _drawScrollBar
 
----------------------- ОТРИСОВКА КНОПОК ----------------------
+---------------------- КНОПКИ ----------------------
 local function _drawButtons()
   for _, button in ipairs(buttons) do
     if button.visible then
@@ -245,34 +259,30 @@ local function _drawButtons()
 end
 drawButtons = _drawButtons
 
----------------------- ОТРИСОВКА ДИНАМИЧНОГО UI ----------------------
-local function _drawDynamicUI()
+---------------------- ДИНАМИЧНАЯ ОБЛАСТЬ (таблица и кнопки) ----------------------
+local function drawDynamicUI()
+  -- Обновляем только область таблицы (без затрагивания заголовка)
   drawTableItems()
   drawScrollBar()
-  -- Обновляем нижнюю область (только кнопки)
+  -- Обновляем нижнюю панель с кнопками (область последних 3 строк)
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, HEIGHT - 3, WIDTH, 3, " ")
   drawButtons()
 end
-drawDynamicUI = _drawDynamicUI
 
 ---------------------- ПОЛНАЯ ПЕРЕРИСОВКА ----------------------
 local function fullRedraw()
   if logsVisible then
-    -- Если активен оверлей логов, обновляем только его
     drawFloatingLogs()
   else
-    -- Перерисовываем статичные и динамичные элементы
-    gpu.setBackground(BG_MAIN)
-    gpu.fill(1, 1, WIDTH, HEIGHT, " ")
     drawStaticUI()
     drawDynamicUI()
   end
 end
 
----------------------- ОБНОВЛЕНИЕ ДИНАМИКИ (без полной очистки) ----------------------
+---------------------- ОБНОВЛЕНИЕ ДИНАМИЧЕСКОЙ ОБЛАСТИ (без очистки всех статичных элементов) ----------------------
 local function immediateRedraw(force)
-  if inputActive then return end  -- если окно ввода активно, не обновлять
+  if inputActive then return end
   if force then
     if logsVisible then
       drawFloatingLogs()
@@ -288,7 +298,7 @@ local function updateContent()
   for i, item in ipairs(dataItems) do
     table.insert(content, { idx = i, item = item })
   end
-
+  
   if sortCriteria == "name" then
     table.sort(content, function(a, b)
       return (a.item.name or ""):lower() < (b.item.name or ""):lower()
@@ -320,13 +330,13 @@ local function updateCachedCounts()
   end
 end
 
----------------------- ОКНО ВВОДА ДАННЫХ ----------------------
+---------------------- ОКНО ВВОДА (без мерцаний) ----------------------
 local function inputOverlay(promptMessage)
   inputActive = true
   local boxW, boxH = 60, 3
   local boxX = math.floor((WIDTH - boxW) / 2)
   local boxY = math.floor((HEIGHT - boxH) / 2)
-  -- Рисуем рамку ввода поверх существующего UI
+  -- Рисуем рамку ввода поверх существующего интерфейса
   drawBorder(boxX - 1, boxY - 1, boxW + 2, boxH + 2, COLOR_BUTTON)
   gpu.setBackground(BG_MAIN)
   gpu.fill(boxX, boxY, boxW, boxH, " ")
@@ -337,7 +347,7 @@ local function inputOverlay(promptMessage)
   local input = term.read()
   term.setCursorBlink(false)
   inputActive = false
-  fullRedraw() -- восстанавливаем UI после ввода
+  fullRedraw()  -- восстанавливаем UI после ввода
   return input:sub(1, -2)
 end
 
@@ -414,7 +424,6 @@ end
 local function autoCraftCheck()
   if not craftingActive then return end
   
-  -- Функция для дедупликации сообщений по предмету
   local function logIfChanged(item, newMsg, newColor)
     if item.lastMsg ~= newMsg then
       addLog(newMsg, newColor)
@@ -542,6 +551,7 @@ local function initButtons()
         end
         addLog("[Edit] Сортировка по " .. sortCriteriaDisplay[sortCriteria], COLOR_MEDIUM)
         updateContent()
+        updateSortLabel()  -- обновляем только метку сортировки
         immediateRedraw(true)
       end
     },
@@ -581,17 +591,17 @@ local function LoadSystem()
   return true
 end
 
----------------------- ТАЙМЕР ДЛЯ ФОНОВОГО ОБНОВЛЕНИЯ (каждые 1 сек.) ----------------------
+---------------------- ТАЙМЕР ФОНОВОГО ОБНОВЛЕНИЯ (раз в 1 сек.) ----------------------
 local function checkBackgroundUpdate()
-  if inputActive then return end  -- не обновляем, если окно ввода активно
+  if inputActive then return end
   local now = os.time()
   if now - lastCountUpdate >= COUNT_UPDATE_INTERVAL then
     updateCachedCounts()
     lastCountUpdate = now
     if not logsVisible then
-      drawDynamicUI()  -- обновляем таблицу и кнопки
+      drawDynamicUI()
     else
-      drawFloatingLogs() -- обновляем только логи
+      drawFloatingLogs()
     end
   end
 end
