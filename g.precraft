@@ -1,7 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Версия с разделением статичных и динамичных областей.
 -- Статичная часть (заголовок, рамки, сортировочная метка) отрисовывается только по событию.
--- Обновление таблицы (ячейки, скроллбар) происходит быстро и без мерцаний.
+-- Обновление таблицы (ячейки, скроллбар) выполняется быстро без мерцаний.
 -- Раз в 20 сек обновляются количественные данные и запускается автокрафт при необходимости.
 
 local component = require("component")
@@ -27,7 +26,9 @@ if not fs.exists(dataFile) then
   oc.savef(dataFile, {})
 end
 
----------------------- ГЛОБАЛЫЕ ПЕРЕМЕННЫЕ ----------------------
+--------------------------------------------------------------------
+-- ГЛОБАЛЫЕ ПЕРЕМЕННЫЕ
+--------------------------------------------------------------------
 local ADM = { ["LiwMorgan"] = true } -- Только LiwMorgan имеет доступ к касаниям!
 local dataItems = {}         -- Список предметов
 local dataQueue = {}         -- Очередь для автокрафта (те же данные)
@@ -43,24 +44,26 @@ local craftLogs = {}         -- Массив логов
 local MAX_LOGS = 100         -- Максимальное число логов
 local logsVisible = false    -- Флаг отображения логового окна
 local buttons = {}           -- Таблица кнопок
-local logTimerId = nil       -- ID таймера логов
+local logTimerId = nil       -- ID таймера логового окна
 local lastCountUpdate = 0    -- Время последнего обновления количеств
 local COUNT_UPDATE_INTERVAL = 20  -- Интервал обновления (сек)
 local inputActive = false    -- Флаг блокировки обновлений во время ввода
 local cachedCounts = {}      -- Кэш количественных значений
 
----------------------- РАЗМЕРЫ UI ----------------------
+--------------------------------------------------------------------
+-- РАЗМЕРЫ UI. 
+--------------------------------------------------------------------
 local WIDTH, HEIGHT = 160, 50
 gpu.setResolution(WIDTH, HEIGHT)
-local TABLE_HEADER_Y = 4                           -- Верхняя рамка таблицы (заголовок)
-local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2        -- Начало области таблицы
+local TABLE_HEADER_Y = 4                           -- Строка заголовка таблицы
+local TABLE_BODY_START_Y = TABLE_HEADER_Y + 2        -- Начало body таблицы
 local BUTTONS_HEIGHT = 3                           -- Высота кнопок
-local BUTTONS_Y = HEIGHT - BUTTONS_HEIGHT + 1        -- Размещение кнопок в нижней части экрана
-local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Количество видимых строк таблицы
+local BUTTONS_Y = HEIGHT - BUTTONS_HEIGHT + 1        -- Расположение кнопок (нижняя часть)
+local VISIBLE_TABLE_ROWS = BUTTONS_Y - TABLE_BODY_START_Y  -- Количество видимых строк
 local TABLE_X = 2                                  -- Начало таблицы слева
 local TABLE_WIDTH = 157                            -- Полная ширина таблицы
 
--- Определения ширины столбцов (подогнаны под TABLE_WIDTH)
+-- Ширины столбцов (подогнаны под TABLE_WIDTH)
 local COL_WIDTH_IDX    = 5
 local COL_WIDTH_NAME   = 94
 local COL_WIDTH_CAT    = 15
@@ -68,21 +71,25 @@ local COL_WIDTH_REQ    = 12
 local COL_WIDTH_ME     = 12
 local COL_WIDTH_CRAFT  = 12
 
----------------------- ПАЛИТРА ЦВЕТОВ ----------------------
+--------------------------------------------------------------------
+-- ПАЛИТРА ЦВЕТОВ
+--------------------------------------------------------------------
 local BG_MAIN             = 0x1A1A1A   -- Тёмно-серый фон
 local CTEXT               = 0xDADADA   -- Светло-серый текст
 local COLOR_BUTTON        = 0x4A90E2   -- Синий для кнопок
-local COLOR_BUTTON_TEXT   = 0xFFFFFF   -- Белый текст на кнопках
+local COLOR_BUTTON_TEXT   = 0xFFFFFF   -- Белый текст кнопок
 local COLOR_HIGHLIGHT     = 0x8A2BE2   -- Фиолетовый для выделения строки
 local COLOR_LOW           = 0xFF4C4C   -- Красный – ошибка/недостаточно
 local COLOR_MEDIUM        = 0xFFCC00   -- Желтый – промежуточное состояние
 local COLOR_HIGH          = 0x00FF66   -- Зелёный – позитивное состояние
-local BG_ALT              = 0x2A2A2A   -- Альтернативный фон для четных строк
+local BG_ALT              = 0x2A2A2A   -- Альтернативный фон для чётных строк
 local COLOR_HEADER_BG     = 0x333333   -- Фон заголовка
 local COLOR_LOG_BG        = 0x3A3A3A   -- Фон логового окна
 local COLOR_BUTTON_BORDER = 0x444444   -- Граница кнопок
 
----------------------- ФУНКЦИИ ВЫРАВНЕНИЯ ТЕКСТА ----------------------
+--------------------------------------------------------------------
+-- ФУНКЦИИ ВЫРАВНЕНИЯ ТЕКСТА
+--------------------------------------------------------------------
 local function padOrTrim(text, width)
   text = tostring(text)
   local len = unicode.len(text)
@@ -114,7 +121,9 @@ local function padCenter(text, width)
   return string.rep(" ", left) .. text .. string.rep(" ", right)
 end
 
----------------------- РИСОВАНИЕ ГРАНИЦЫ ----------------------
+--------------------------------------------------------------------
+-- РИСОВАНИЕ ГРАНИЦЫ
+--------------------------------------------------------------------
 local function drawBorder(x, y, w, h, fgColor)
   fgColor = fgColor or CTEXT
   gpu.setForeground(fgColor)
@@ -126,7 +135,9 @@ local function drawBorder(x, y, w, h, fgColor)
   end
 end
 
----------------------- ОТРИСОВКА КНОПКИ ----------------------
+--------------------------------------------------------------------
+-- ОТРИСОВКА КНОПКИ
+--------------------------------------------------------------------
 local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
   gpu.setBackground(bgColor)
   gpu.fill(x, y, w, h, " ")
@@ -138,7 +149,9 @@ local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
   gpu.set(textPosX, textPosY, text)
 end
 
----------------------- ОТРИСОВКА КНОПОК ----------------------
+--------------------------------------------------------------------
+-- ОТРИСОВКА КНОПОК (динамически обновляемые)
+--------------------------------------------------------------------
 local function drawButtons()
   for _, button in ipairs(buttons) do
     if button.visible then
@@ -153,7 +166,9 @@ local function drawButtons()
   end
 end
 
----------------------- СТАТИЧНЫЙ UI (ЗАГОЛОВОК И РАМКА) ----------------------
+--------------------------------------------------------------------
+-- СТАТИЧНЫЙ UI (заголовок, рамка, сортировка)
+--------------------------------------------------------------------
 local function drawStaticUI()
   gpu.setBackground(COLOR_HEADER_BG)
   gpu.fill(1, 1, WIDTH, 3, " ")
@@ -186,7 +201,9 @@ local function updateSortLabel()
   gpu.set(2, 2, sortText)
 end
 
----------------------- ОБНОВЛЕНИЕ ОБЛАСТЕЙ ----------------------
+--------------------------------------------------------------------
+-- ОБНОВЛЕНИЕ ОБЛАСТЕЙ (таблица и кнопки)
+--------------------------------------------------------------------
 local function drawTableSection()
   for row = TABLE_BODY_START_Y, BUTTONS_Y - 1 do
     gpu.setBackground(BG_MAIN)
@@ -210,7 +227,9 @@ local function drawTableSection()
       colorText = COLOR_MEDIUM
     end
     local rowBg = ((i - scroll) % 2 == 0) and BG_MAIN or BG_ALT
-    if posSelect and (i == posSelect) then rowBg = COLOR_HIGHLIGHT end
+    if posSelect and (i == posSelect) then
+      rowBg = COLOR_HIGHLIGHT
+    end
     gpu.setBackground(rowBg)
     local rowStr = "|" .. padOrTrimRight(i, COL_WIDTH_IDX) .. "|" ..
                          padOrTrim(item.name, COL_WIDTH_NAME) .. "|" ..
@@ -230,18 +249,24 @@ local function drawTableSection()
   local indicatorColor = COLOR_HIGHLIGHT
   
   gpu.setBackground(trackColor)
-  for i = y, y + height - 1 do gpu.set(x, i, "│") end
+  for i = y, y + height - 1 do
+    gpu.set(x, i, "│")
+  end
   
   if total > VISIBLE_TABLE_ROWS then
     local barHeight = math.max(1, math.floor(height * height / total))
     local pos = math.floor((scroll - 1) * (height - barHeight) / (total - VISIBLE_TABLE_ROWS)) + y
     gpu.setBackground(indicatorColor)
     for i = pos, pos + barHeight - 1 do
-      if i >= y and i < y + height then gpu.set(x, i, "█") end
+      if i >= y and i < y + height then
+        gpu.set(x, i, "█")
+      end
     end
   else
     gpu.setBackground(indicatorColor)
-    for i = y, y + height - 1 do gpu.set(x, i, "█") end
+    for i = y, y + height - 1 do
+      gpu.set(x, i, "█")
+    end
   end
 end
 
@@ -251,10 +276,8 @@ local function drawButtonSection()
   drawButtons()
 end
 
-local function fullRedraw()
+local function redrawUI()
   if logsVisible then
-    gpu.setBackground(BG_MAIN)
-    gpu.fill(1, 1, WIDTH, HEIGHT, " ")
     drawFloatingLogs()
   else
     drawStaticUI()
@@ -263,19 +286,9 @@ local function fullRedraw()
   end
 end
 
-local function immediateRedraw(force)
-  if inputActive then return end
-  if force then
-    if logsVisible then
-      drawFloatingLogs()
-    else
-      drawTableSection()
-      drawButtonSection()
-    end
-  end
-end
-
----------------------- ОБНОВЛЕНИЕ ДАННЫХ ----------------------
+--------------------------------------------------------------------
+-- ОБНОВЛЕНИЕ ДАННЫХ И КЭША
+--------------------------------------------------------------------
 local function updateContent()
   content = {}
   for i, item in ipairs(dataItems) do
@@ -301,7 +314,7 @@ end
 local function updateCachedCounts()
   for i, item in ipairs(dataItems) do
     local key = item.id .. ":" .. item.dmg
-    local detail = me.getItemDetail({id = item.id, dmg = item.dmg})
+    local detail = me.getItemDetail({ id = item.id, dmg = item.dmg })
     if detail and detail.basic() then
       cachedCounts[key] = detail.basic().qty or 0
     else
@@ -310,7 +323,9 @@ local function updateCachedCounts()
   end
 end
 
----------------------- ОКНО ВВОДА ----------------------
+--------------------------------------------------------------------
+-- ОКНО ВВОДА
+--------------------------------------------------------------------
 local function inputOverlay(promptMessage)
   inputActive = true
   local boxW, boxH = 60, 3
@@ -326,11 +341,13 @@ local function inputOverlay(promptMessage)
   local input = term.read()
   term.setCursorBlink(false)
   inputActive = false
-  fullRedraw()
+  redrawUI()
   return input:sub(1, -2)
 end
 
----------------------- РАБОТА С ПРЕДМЕТАМИ ----------------------
+--------------------------------------------------------------------
+-- РАБОТА С ПРЕДМЕТАМИ
+--------------------------------------------------------------------
 local function addItem()
   local stack = me.getStackInSlot(1)
   if stack then
@@ -356,7 +373,7 @@ local function addItem()
   updateContent()
   scroll = 1
   posSelect = nil
-  immediateRedraw(true)
+  redrawUI()
 end
 
 local function removeItem()
@@ -368,7 +385,7 @@ local function removeItem()
     posSelect = nil
     dataItems = oc.loadf(dataFile) or {}
     updateContent()
-    immediateRedraw(true)
+    redrawUI()
   end
 end
 
@@ -395,17 +412,23 @@ local function editItem()
     updateContent()
     addLog("[Edit] Изменён: " .. item.name, COLOR_MEDIUM)
     posSelect = nil
-    immediateRedraw(true)
+    redrawUI()
   end
 end
 
----------------------- ЛОГИРОВАНИЕ ----------------------
+--------------------------------------------------------------------
+-- ЛОГИРОВАНИЕ
+--------------------------------------------------------------------
 local function addLog(msg, color)
   table.insert(craftLogs, { text = msg, color = color })
-  if #craftLogs > MAX_LOGS then table.remove(craftLogs, 1) end
+  if #craftLogs > MAX_LOGS then
+    table.remove(craftLogs, 1)
+  end
 end
 
----------------------- АВТО-КРАФТ ----------------------
+--------------------------------------------------------------------
+-- АВТО-КРАФТ
+--------------------------------------------------------------------
 local function autoCraftCheck()
   if not craftingActive then return end
   
@@ -419,7 +442,7 @@ local function autoCraftCheck()
   for i, item in ipairs(dataQueue) do
     if not item.craft or item.craft.isDone() or item.craft.isCanceled() then
       item.craft = nil
-      local detail = me.getItemDetail({id = item.id, dmg = item.dmg})
+      local detail = me.getItemDetail({ id = item.id, dmg = item.dmg })
       if detail then
         local currentQty = (detail.basic() and detail.basic().qty) or 0
         local reqCount = tonumber(item.count) or 0
@@ -430,7 +453,7 @@ local function autoCraftCheck()
           local foundCPU = false
           for _, cpu in ipairs(cpus) do
             if not cpu.busy and cpu.storage == 262144 then
-              local craftables = me.getCraftables({name = item.id, damage = item.dmg})
+              local craftables = me.getCraftables({ name = item.id, damage = item.dmg })
               if craftables.n and craftables.n >= 1 then
                 item.craft = craftables[1].request(batch, false, tostring(item.cpu))
                 logIfChanged(item, "[Craft] Запуск " .. item.name .. " x" .. batch, COLOR_HIGH)
@@ -456,19 +479,21 @@ local function autoCraftCheck()
   end
 end
 
----------------------- ОБРАБОТКА СОБЫТИЙ ----------------------
+--------------------------------------------------------------------
+-- ОБРАБОТКА СОБЫТИЙ
+--------------------------------------------------------------------
 local function onTouch(_, _, x, y, _, nick)
   if ADM[nick] then
     for _, button in ipairs(buttons) do
-      if x >= button.x and x <= (button.x + button.w - 1)
-         and y >= button.y and y <= (button.y + button.h - 1) then
-          button.action()
-          drawButtonSection()
-          return true
+      if x >= button.x and x <= (button.x + button.w - 1) and
+         y >= button.y and y <= (button.y + button.h - 1) then
+        button.action()
+        drawButtonSection()
+        return true
       end
     end
-    if x >= TABLE_X and x <= (TABLE_X + TABLE_WIDTH - 1)
-       and y >= TABLE_BODY_START_Y and y < BUTTONS_Y then
+    if x >= TABLE_X and x <= (TABLE_X + TABLE_WIDTH - 1) and
+       y >= TABLE_BODY_START_Y and y < BUTTONS_Y then
       posSelect = scroll + (y - TABLE_BODY_START_Y)
       drawTableSection()
     end
@@ -486,7 +511,9 @@ local function onScroll(_, _, _, _, dir, nick)
   end
 end
 
----------------------- ИНИЦИАЛИЗАЦИЯ КНОПОК ----------------------
+--------------------------------------------------------------------
+-- ИНИЦИАЛИЗАЦИЯ КНОПОК
+--------------------------------------------------------------------
 local function initButtons()
   buttons = {
     {
@@ -547,21 +574,24 @@ local function initButtons()
       action = function()
         logsVisible = not logsVisible
         if logsVisible then
+          -- Устанавливаем быстрый таймер (0.2 сек) для обновления логового окна
           if logTimerId then event.cancel(logTimerId) end
-          logTimerId = event.timer(1.0, function()
+          logTimerId = event.timer(0.2, function()
             if logsVisible then drawFloatingLogs() end
           end, math.huge)
           drawFloatingLogs()
         else
           if logTimerId then event.cancel(logTimerId) logTimerId = nil end
-          fullRedraw()
+          redrawUI()
         end
       end
     },
   }
 end
 
----------------------- ЛОГИ (ОКНО ЛОГОВ) ----------------------
+--------------------------------------------------------------------
+-- ЛОГОВОЕ ОКНО
+--------------------------------------------------------------------
 local function drawFloatingLogs()
   local overlayWidth = 70
   local overlayHeight = 20
@@ -585,7 +615,9 @@ local function drawFloatingLogs()
   end
 end
 
----------------------- ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ ----------------------
+--------------------------------------------------------------------
+-- ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ
+--------------------------------------------------------------------
 local touchEvent, scrollEvent
 local function LoadSystem()
   dataItems = oc.loadf(dataFile) or {}
@@ -594,13 +626,15 @@ local function LoadSystem()
   touchEvent = event.listen("touch", onTouch)
   scrollEvent = event.listen("scroll", onScroll)
   dataQueue = dataItems
-  fullRedraw()
+  redrawUI()
   updateCachedCounts()
   lastCountUpdate = os.time()
   return true
 end
 
----------------------- ФОН. ОБНОВЛЕНИЕ (каждые 20 сек для количеств) ----------------------
+--------------------------------------------------------------------
+-- ФОН. ОБНОВЛЕНИЕ (каждые 20 сек для количеств)
+--------------------------------------------------------------------
 local function checkBackgroundUpdate()
   if inputActive then return end
   local now = os.time()
@@ -614,8 +648,10 @@ end
 local backgroundUpdateTimer = event.timer(1.0, checkBackgroundUpdate, math.huge)
 local craftTimer = event.timer(1.0, autoCraftCheck, math.huge)
 
----------------------- ГЛАВНЫЙ ЦИКЛ ----------------------
+--------------------------------------------------------------------
+-- ГЛАВНЫЙ ЦИКЛ
+--------------------------------------------------------------------
 LoadSystem()
 while running do
-  event.pull(0.05)
+  event.pull(0.01)
 end
