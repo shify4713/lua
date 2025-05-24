@@ -1,7 +1,6 @@
 -- PreCraft Auto-Crafting Tool (OpenOS 1.6.1, Lua 5.2)
--- Переработанная версия для разрешения 120×50.
--- Авто-проверка предметов и автокрафт каждые 8 секунд.
--- Обработчики событий (touch/scroll) работают через event.listen, без блокирующих event.pull в главном цикле.
+-- Обновлённая версия с явной логикой состояний крафта, улучшенным обновлением кэша,
+-- новой градацией цветового выделения и доработанными обработчиками кнопок.
 
 local component = require("component")
 local fs = require("filesystem")
@@ -29,25 +28,25 @@ end
 --------------------------------------------------------------------
 -- ГЛОБАЛЫЕ ПЕРЕМЕННЫЕ
 --------------------------------------------------------------------
-local ADM = { ["LiwMorgan"] = true, ["Максим"] = true }  -- Проверка ADM для реальных условий можно вернуть
-local dataItems = {}         -- Список предметов (загружается из файла)
-local dataQueue = {}         -- Очередь автокрафта (используем те же данные)
-local scroll = 1             -- Текущая позиция таблицы
-local posSelect = nil        -- Выбранная строка таблицы
-local craftingActive = false -- Режим автокрафта (ON/OFF)
-local running = true         -- Флаг работы программы
-local maxScroll = 1          -- Максимальное смещение таблицы
-local content = {}           -- Отфильтрованный/отсортированный список
-local sortCriteria = "name"  -- Возможные: "name", "category", "count"
+local ADM = { ["LiwMorgan"] = true, ["Максим"] = true }  -- проверка ADM (опционально)
+local dataItems = {}         -- список предметов (загружается из файла)
+local dataQueue = {}         -- очередь автокрафта (будет совпадать с dataItems)
+local scroll = 1             -- текущее смещение таблицы
+local posSelect = nil        -- выбранная строка таблицы
+local craftingActive = false -- режим автокрафта (ON/OFF)
+local running = true         -- флаг работы программы
+local maxScroll = 1          -- максимальное смещение таблицы
+local content = {}           -- отфильтрованный/отсортированный список
+local sortCriteria = "name"  -- возможные: "name", "category", "count"
 local sortCriteriaDisplay = { name = "Имя", category = "Категория", count = "Количество" }
-local craftLogs = {}         -- Массив логов
-local MAX_LOGS = 100         -- Максимальное число логов
-local logsVisible = false    -- Флаг отображения логового окна
-local buttons = {}           -- Таблица кнопок
-local lastCountUpdate = 0    -- Время последнего обновления количеств
-local COUNT_UPDATE_INTERVAL = 8  -- Интервал обновления (8 секунд)
-local inputActive = false    -- Блокировка обновлений во время ввода
-local cachedCounts = {}      -- Кэш количественных значений
+local craftLogs = {}         -- массив логов
+local MAX_LOGS = 100         -- максимальное число логов
+local logsVisible = false    -- флаг отображения логового окна
+local buttons = {}           -- таблица кнопок
+local lastCountUpdate = 0    -- время последнего обновления количеств
+local COUNT_UPDATE_INTERVAL = 8  -- интервал обновления (8 секунд)
+local inputActive = false    -- блокировка обновлений во время ввода
+local cachedCounts = {}      -- кэш количественных значений
 
 --------------------------------------------------------------------
 -- РАЗМЕРЫ UI (разрешение 120×50)
@@ -78,9 +77,13 @@ local COLOR_BUTTON        = 0x4A90E2
 local COLOR_BUTTON_TEXT   = 0xFFFFFF
 local COLOR_HIGHLIGHT     = 0xFF4500
 local COLOR_HIGHLIGHT_TEXT= 0x000000
-local COLOR_LOW           = 0xFF4C4C
-local COLOR_MEDIUM        = 0xFFCC00
-local COLOR_HIGH          = 0x00FF66
+
+-- Новая система цветов для отображения результата:
+local COLOR_NONE          = 0xFF0000   -- Красный: нет предметов
+local COLOR_ORANGE        = 0xFFA500   -- Оранжевый: меньше 25% от требуемого
+local COLOR_YELLOW        = 0xFFFF00   -- Жёлтый: меньше 50% от требуемого
+local COLOR_GREEN         = 0x00FF66   -- Зелёный: есть нужное количество
+
 local BG_ROW_1            = 0x1A1A1A
 local BG_ROW_2            = 0x2A2A2A
 local COLOR_HEADER_BG     = 0x333333
@@ -125,7 +128,7 @@ local function drawBorder(x, y, w, h, fgColor)
 end
 
 --------------------------------------------------------------------
--- ОТРИСОВКА КНОПКИ
+-- ФУНКЦИЯ ОТРИСОВКИ КНОПКИ
 --------------------------------------------------------------------
 local function drawCustomButton(x, y, w, h, bgColor, textColor, text)
   gpu.setBackground(bgColor)
@@ -254,14 +257,17 @@ local function redrawTable()
     local key = item.id .. ":" .. item.dmg
     local currentQty = cachedCounts[key] or 0
     local reqCount = tonumber(item.count) or 0
-    local diff = reqCount - currentQty
     local textColor = CTEXT
     if currentQty >= reqCount then
-      textColor = COLOR_HIGH
-    elseif diff >= math.floor(reqCount * 0.5) then
-      textColor = COLOR_LOW
+      textColor = COLOR_GREEN
+    elseif currentQty == 0 then
+      textColor = COLOR_NONE
+    elseif currentQty < 0.25 * reqCount then
+      textColor = COLOR_ORANGE
+    elseif currentQty < 0.5 * reqCount then
+      textColor = COLOR_YELLOW
     else
-      textColor = COLOR_MEDIUM
+      textColor = COLOR_YELLOW
     end
     local rowBg = ((i - scroll) % 2 == 0) and BG_ROW_1 or BG_ROW_2
     if posSelect and (i == posSelect) then
@@ -321,7 +327,7 @@ local function redrawLogs()
   end
 end
 
-function updateUI()
+local function updateUI()
   gpu.setBackground(BG_MAIN)
   gpu.fill(1, 1, WIDTH, HEIGHT, " ")
   redrawHeader()
@@ -359,6 +365,7 @@ local function updateContent()
 end
 
 local function updateCachedCounts()
+  cachedCounts = {}  -- очищаем кэш перед обновлением
   for i, item in ipairs(dataItems) do
     local key = item.id .. ":" .. item.dmg
     local detail = me.getItemDetail({ id = item.id, dmg = item.dmg })
@@ -393,7 +400,10 @@ local function addItem()
       dmg = stack.dmg,
       count = count,
       craftSize = craftSize,
-      cpu = 262144
+      cpu = 262144,
+      state = "waiting",  -- начальное состояние
+      craft = nil,
+      lastMsg = nil
     })
     oc.savef(dataFile, dataItems)
     table.insert(craftLogs, { text = "[Add] Добавлен: " .. name, color = CTEXT })
@@ -467,63 +477,68 @@ local function addLog(msg)
 end
 
 --------------------------------------------------------------------
--- АВТО-КРАФТ (каждые 8 секунд)
+-- ЛОГИКА АВТО-КРАФТА С ИСПОЛЬЗОВАНИЕМ СОСТОЯНИЙ
 --------------------------------------------------------------------
 local function autoCraftCheck()
   if not craftingActive then return end
+
   local function logIfChanged(item, newMsg)
     if item.lastMsg ~= newMsg then
       addLog(newMsg)
       item.lastMsg = newMsg
     end
   end
+
   for _, item in ipairs(dataQueue) do
-    if not item.craft or item.craft.isDone() or item.craft.isCanceled() then
-      item.craft = nil
+    -- Если крафт запущен, проверяем, завершён ли он
+    if item.craft then
+      if item.craft.isDone() or item.craft.isCanceled() then
+        item.craft = nil
+        item.state = "waiting"
+      end
+    end
+
+    if not item.craft then  -- состояние "waiting"
       local detail = me.getItemDetail({ id = item.id, dmg = item.dmg })
-      if detail then
-        local currentQty = (detail.basic() and detail.basic().qty) or 0
-        local reqCount = tonumber(item.count) or 0
-        local delta = reqCount - currentQty
-        if delta > 0 then
-          local batch = math.min(delta, tonumber(item.craftSize) or delta)
-          local cpus = me.getCpus()
-          local foundCPU = false
-          for _, cpu in ipairs(cpus) do
-            if not cpu.busy and cpu.storage == 262144 then
-              local craftables = me.getCraftables({ name = item.id, damage = item.dmg })
-              if craftables.n and craftables.n >= 1 then
-                item.craft = craftables[1].request(batch, false, tostring(item.cpu))
-                logIfChanged(item, "[Craft] Запуск " .. item.name .. " x" .. batch)
-                foundCPU = true
-                break
-              else
-                logIfChanged(item, "[Craft] " .. item.name .. " отсутствует рецепт")
-                foundCPU = true
-                break
-              end
+      local currentQty = detail and (detail.basic() and detail.basic().qty) or 0
+      local reqCount = tonumber(item.count) or 0
+      local delta = reqCount - currentQty
+      if delta > 0 then
+        local batch = math.min(delta, tonumber(item.craftSize) or delta)
+        local cpus = me.getCpus()
+        local foundCPU = false
+        for _, cpu in ipairs(cpus) do
+          if not cpu.busy and cpu.storage == 262144 then
+            local craftables = me.getCraftables({ name = item.id, damage = item.dmg })
+            if craftables.n and craftables.n >= 1 then
+              item.craft = craftables[1].request(batch, false, tostring(item.cpu))
+              item.state = "processing"
+              logIfChanged(item, "[Craft] Запуск " .. item.name .. " x" .. batch)
+              foundCPU = true
+              break
+            else
+              logIfChanged(item, "[Craft] " .. item.name .. " отсутствует рецепт")
+              foundCPU = true
+              break
             end
           end
-          if not foundCPU then
-            logIfChanged(item, "[Craft] Нет свободных CPU для " .. item.name)
-          end
-        else
-          item.lastMsg = nil
+        end
+        if not foundCPU then
+          logIfChanged(item, "[Craft] Нет свободных CPU для " .. item.name)
         end
       else
-        logIfChanged(item, "[Craft] Нет данных по " .. item.name)
+        item.state = "finished"
+        item.lastMsg = nil
       end
     end
   end
 end
 
 --------------------------------------------------------------------
--- ОБРАБОТКА СОБЫТИЙ: ОБРАБОТА КАСАНИЙ И СКРОЛЛА
+-- ОБРАБОТКА СОБЫТИЙ: КАСАНИЙ И СКРОЛЛА
 --------------------------------------------------------------------
--- Функция для обработки касаний (touch)
 local function handleTouch(x, y, nick)
-  -- Для отладки убрана проверка ADM; при необходимости вернуть условие:
-  -- if not ADM[nick] then return false end
+  -- Если требуется проверка ADM – можно добавить условие здесь.
   for _, button in ipairs(buttons) do
     if x >= button.x and x <= (button.x + button.w - 1) and
        y >= button.y and y <= (button.y + button.h - 1) then
@@ -539,10 +554,8 @@ local function handleTouch(x, y, nick)
   return false
 end
 
--- Функция для обработки скролла (scroll)
 local function handleScroll(dir, nick)
-  -- Для отладки убрана проверка ADM; при необходимости вернуть условие:
-  -- if not ADM[nick] then return end
+  -- Если требуется проверка ADM – можно добавить условие здесь.
   if dir == 1 and scroll > 1 then
     scroll = scroll - 1
   elseif dir == -1 and scroll < maxScroll then
@@ -550,7 +563,6 @@ local function handleScroll(dir, nick)
   end
 end
 
--- Единый обработчик событий
 local function onUIEvent(eventName, ...)
   if inputActive then return end
   if eventName == "touch" then
@@ -640,7 +652,7 @@ local function LoadSystem()
   initButtons()
   event.listen("touch", onUIEvent)
   event.listen("scroll", onUIEvent)
-  dataQueue = dataItems
+  dataQueue = dataItems   -- используем один и тот же список для автокрафта
   updateCachedCounts()
   lastCountUpdate = os.time()
   addLog("[System] Система запущена")
