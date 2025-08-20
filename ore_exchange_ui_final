@@ -1,5 +1,3 @@
--- Обменник руды: финал с автосохранением и автовыбором адаптеров, современной цветовой схемой и надёжным обменом
-
 local com = require("component")
 local event = require("event")
 local unicode = require("unicode")
@@ -76,16 +74,6 @@ local function load_adapters()
             adapters[k] = com.proxy(v)
         end
     end
-end
-
--- Автовыбор первого попавшегося адаптера нужного типа
-local function auto_choose_adapter(kind, ctype)
-    for address in com.list(ctype) do
-        adapters[kind] = com.proxy(address)
-        save_adapters()
-        return true
-    end
-    return false
 end
 
 local function add_log(msg, color)
@@ -267,7 +255,6 @@ local function give_items_with_logs(ore, qty)
     stats.exchanged[ore.displayNameOre] = (stats.exchanged[ore.displayNameOre] or 0) + qty
 end
 
--- Авто-сохранение адаптеров при каждом выборе!
 local function drawChooseAdapter(kind, ctype, title, exclude_address)
     gpu.setBackground(COLOR_BG)
     gpu.fill(1,1,w,h," ")
@@ -304,25 +291,19 @@ local function drawChooseAdapter(kind, ctype, title, exclude_address)
     end
 end
 
--- --- АВТОВЫБОР + ручной выбор если не найден ---
+-- Проверка и выбор адаптеров (без автосохранения на первом запуске)
 load_adapters()
 if not adapters.buffer then
-    if not auto_choose_adapter("buffer", "crystal") then
-        drawChooseAdapter("buffer", "crystal", "Выберите crystal сундук (буфер)")
-        save_adapters()
-    end
+    drawChooseAdapter("buffer", "crystal", "Выберите crystal сундук (буфер)")
+    save_adapters()
 end
 if not adapters.check then
-    if not auto_choose_adapter("check", "diamond") then
-        drawChooseAdapter("check", "diamond", "Выберите diamond сундук (проверочный)")
-        save_adapters()
-    end
+    drawChooseAdapter("check", "diamond", "Выберите diamond сундук (проверочный)")
+    save_adapters()
 end
 if not adapters.interface then
-    if not auto_choose_adapter("interface", "me_interface") then
-        drawChooseAdapter("interface", "me_interface", "Выберите ME интерфейс")
-        save_adapters()
-    end
+    drawChooseAdapter("interface", "me_interface", "Выберите ME интерфейс")
+    save_adapters()
 end
 
 local function main_exchange_loop()
