@@ -38,19 +38,19 @@ local stats = {
 }
 
 local items = {
-    {count = "2.5", displayNameOre = "Медная",oreId = "IC2:copperOre", oreDmg = "0", productId = "IC2:itemitemIngotCopper", productDmg = "0", displayNameProduct = "Медный слиток", ore_dict_product = "ingotCopper"},
+    {count = "2.5", displayNameOre = "Медная",oreId = "IC2:copperOre", oreDmg = "0", productId = "IC2:item.itemIngotCopper", productDmg = "0", displayNameProduct = "Медный слиток", ore_dict_product = "ingotCopper"},
     {count = "8", displayNameOre = "Красная",oreId = "minecraft:redstone_ore", oreDmg = "0", productId = "minecraft:redstone", productDmg = "0", displayNameProduct = "Красная пыль", ore_dict_product = "dustRedstone"},
     {count = "2.5", displayNameOre = "Золотая",oreId = "minecraft:gold_ore", oreDmg = "0", productId = "minecraft:gold_ingot", productDmg = "0", displayNameProduct = "Золотой слиток", ore_dict_product = "ingotGold"},
     {count = "2.5", displayNameOre = "Железная",oreId = "minecraft:iron_ore", oreDmg = "0", productId = "minecraft:iron_ingot", productDmg = "0", displayNameProduct = "Железный слиток", ore_dict_product = "ingotIron"},
     {count = "2.5", displayNameOre = "Алмазная", oreId = "minecraft:diamond_ore", oreDmg = "0", productId = "minecraft:diamond", productDmg = "0", displayNameProduct = "Алмаз", ore_dict_product = "gemDiamond"},
     {count = "2.5", displayNameOre = "Угольная",oreId = "minecraft:coal_ore", oreDmg = "0", productId = "minecraft:coal", productDmg = "0", displayNameProduct = "Уголь", ore_dict_product = "coal"},
     {count = "2", displayNameOre = "Ториевая",oreId = "dwcity:Thorium_ore", oreDmg = "0", productId = "dwcity:Thorium_ingot", productDmg = "0", displayNameProduct = "Ториевый слиток", ore_dict_product = "Thorium_ingot"},
-    {count = "2.5", displayNameOre = "Оловянная",oreId = "IC2:tinOre", oreDmg = "0", productId = "IC2:itemitemIngotTin", productDmg = "0", displayNameProduct = "Оловяный слиток", ore_dict_product = "ingotTin"},
+    {count = "2.5", displayNameOre = "Оловянная",oreId = "IC2:tinOre", oreDmg = "0", productId = "IC2:item.itemIngotTin", productDmg = "0", displayNameProduct = "Оловяный слиток", ore_dict_product = "ingotTin"},
     {count = "2.5", displayNameOre = "Свинцовая",oreId = "ThermalFoundation:Ore", oreDmg = "3", productId = "ThermalFoundation:material", productDmg = "67", displayNameProduct = "Свинцовый слиток", ore_dict_product = "ingotLead"},
     {count = "2.5", displayNameOre = "Никелевая",oreId = "ThermalFoundation:Ore", oreDmg = "4", productId = "ThermalFoundation:material", productDmg = "68", displayNameProduct = "Никелевый слиток", ore_dict_product = "ingotNickel"},
     {count = "2.5", displayNameOre = "Кварцевая",oreId = "minecraft:quartz_ore", oreDmg = "0", productId = "minecraft:quartz", productDmg = "0", displayNameProduct = "Кварц", ore_dict_product = "gemQuartz"},
     {count = "2.5", displayNameOre = "Изумрудная", oreId = "minecraft:emerald_ore", oreDmg = "0", productId = "minecraft:emerald", productDmg = "0", displayNameProduct = "Изумруд", ore_dict_product = "gemEmerald"},
-    {count = "2.5", displayNameOre = "Серебряная",oreId = "ThermalFoundation:Ore", oreDmg = "2", productId = "IC2:itemitemIngotSilver", productDmg = "0", displayNameProduct = "Серебряный слиток", ore_dict_product = "ingotSilver"},
+    {count = "2.5", displayNameOre = "Серебряная",oreId = "ThermalFoundation:Ore", oreDmg = "2", productId = "IC2:item.itemIngotSilver", productDmg = "0", displayNameProduct = "Серебряный слиток", ore_dict_product = "ingotSilver"},
     {count = "2.0", displayNameOre = "Платиновая",oreId = "ThermalFoundation:Ore", oreDmg = "5", productId = "ThermalFoundation:material", productDmg = "69", displayNameProduct = "Платиновый слиток", ore_dict_product = "ingotPlatinum"},
     {count = "8", displayNameOre = "Лазуритовая",oreId = "minecraft:lapis_ore", oreDmg = "0", productId = "minecraft:dye", productDmg = "4", displayNameProduct = "Лазурит", ore_dict_product = "dye"},
     {count = "2.0", displayNameOre = "Дракониевая", oreId = "DraconicEvolution:draconiumOre", oreDmg = "0", productId = "DraconicEvolution:draconiumIngot", productDmg = "0", displayNameProduct = "Дракониевая пыль", ore_dict_product = "ingotDraconium"},
