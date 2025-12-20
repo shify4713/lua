@@ -79,18 +79,30 @@ local function are_adapters_available()
     return adapters.buffer and adapters.check and adapters.interface and db
 end
 
--- НОВАЯ: Проверка наличия ресурсов в ME системе (без логирования)
-local function check_resources_available(ore, quantity)
-    if not adapters.interface then return false end
-    
-    local needed = math.floor(tonumber(ore.count) * (quantity or 1))
-    if needed <= 0 then return false end
+-- НОВАЯ: Получение точного количества доступных ресурсов в ME системе
+local function get_available_resources(ore)
+    if not adapters.interface then return 0 end
     
     local networkItemRaw = adapters.interface.getItemDetail({id = ore.productId, dmg = tonumber(ore.productDmg)})
-    if not networkItemRaw then return false end
+    if not networkItemRaw then return 0 end
     
     local networkItem = networkItemRaw.all()
-    return networkItem.qty >= needed
+    return networkItem.qty or 0
+end
+
+-- НОВАЯ: Вычисление сколько руды можно обменять исходя из наличия слитков
+local function calculate_available_exchange(ore)
+    if not adapters.interface then return 0 end
+    
+    local available_resources = get_available_resources(ore)
+    local needed_per_ore = tonumber(ore.count) or 1
+    
+    if needed_per_ore <= 0 then return 0 end
+    
+    -- Сколько руды можно обменять имеющимися слитками
+    local max_ore_by_resources = math.floor(available_resources / needed_per_ore)
+    
+    return max_ore_by_resources
 end
 
 -- НОВАЯ: Обновление кэша статусов предметов
@@ -385,7 +397,7 @@ local function is_buffer_full()
     return true
 end
 
--- НОВАЯ: Оптимизированная функция обмена с предварительными проверками
+-- НОВАЯ: Улучшенная функция обмена с точным учетом количества
 local function give_items_with_logs(ore, qty)
     if not are_adapters_available() then
         add_log("Ошибка: отсутствуют необходимые компоненты", COLOR_ERROR)
@@ -398,10 +410,12 @@ local function give_items_with_logs(ore, qty)
         return false
     end
     
-    -- Проверяем наличие предметов в системе (используем кэш)
-    local status = get_item_status(ore)
-    if not status.available or status.quantity < give then
-        return false -- Не логируем сообщение о недостатке
+    -- Проверяем наличие предметов в системе
+    local available = get_available_resources(ore)
+    if available < give then
+        add_log(string.format("Недостаточно ресурсов: %s (нужно %d, есть %d)", 
+            ore.displayNameProduct, give, available), COLOR_ERROR)
+        return false
     end
     
     -- Выполняем обмен с защитой от ошибок
@@ -411,7 +425,7 @@ local function give_items_with_logs(ore, qty)
         adapters.interface.setInterfaceConfiguration(1, db.address, 1, give)
         
         local left = give
-        local maxTries = 50 -- Уменьшили количество попыток
+        local maxTries = 50
         local tries = 0
         
         while left > 0 and tries < maxTries do
@@ -425,7 +439,7 @@ local function give_items_with_logs(ore, qty)
                     tries = 0
                 else
                     tries = tries + 1
-                    os.sleep(0.1) -- Уменьшили задержку
+                    os.sleep(0.1)
                 end
             end
         end
@@ -540,7 +554,7 @@ local function safe_get_stack(adapter, slot)
     end
 end
 
--- НОВАЯ: Оптимизированная обработка буфера - НЕ берем руду если нет ресурсов
+-- ГЛАВНОЕ ИЗМЕНЕНИЕ: Обработка буфера с учетом доступных ресурсов
 local function process_buffer()
     if not adapters.buffer or not adapters.check or not adapters.interface then
         return false
@@ -558,35 +572,58 @@ local function process_buffer()
         if stack then
             local ore = find_ore(stack)
             if ore then
-                local qty = stack.qty or stack.size or stack.count or 1
-                if qty > 0 then
-                    -- Проверяем наличие ресурсов ДО перемещения
-                    if check_resources_available(ore, qty) then
-                        -- Проверяем, не полон ли буфер на приемной стороне
+                local total_qty = stack.qty or stack.size or stack.count or 1
+                if total_qty > 0 then
+                    -- Вычисляем сколько руды можно обменять исходя из наличия слитков
+                    local can_exchange = calculate_available_exchange(ore)
+                    
+                    if can_exchange > 0 then
+                        -- Берем минимум из: сколько можем обменять, сколько есть в стаке
+                        local to_take = math.min(can_exchange, total_qty)
+                        
+                        -- Ограничиваем максимальное количество за один раз (не больше 64)
+                        to_take = math.min(to_take, 64)
+                        
+                        -- Проверяем, есть ли свободное место в проверочном сундуке
                         local checkSize = adapters.check.getInventorySize()
                         local checkFree = false
+                        local freeSlots = 0
+                        
                         if checkSize then
                             for checkSlot = 1, checkSize do
                                 local checkStack = safe_get_stack(adapters.check, checkSlot)
                                 if not checkStack then
                                     checkFree = true
-                                    break
+                                    freeSlots = freeSlots + 1
+                                    break -- Нужен хотя бы один свободный слот
                                 end
                             end
                         end
                         
-                        if checkFree then
-                            local pushed = adapters.buffer.pushItem("DOWN", slot, qty)
+                        if checkFree and to_take > 0 then
+                            local pushed = adapters.buffer.pushItem("DOWN", slot, to_take)
                             if pushed and pushed > 0 then
                                 eventHappened = true
-                                add_log(string.format("Перемещено в обработку: %dx %s", qty, ore.displayNameOre), COLOR_OK)
+                                
+                                -- Логируем детали
+                                local available_resources = get_available_resources(ore)
+                                local needed_per_ore = tonumber(ore.count) or 1
+                                local will_give = math.floor(pushed * needed_per_ore)
+                                
+                                add_log(string.format("Взято %d/%d %s (будет выдано %d %s из %d доступных)", 
+                                    pushed, total_qty, ore.displayNameOre, 
+                                    will_give, ore.displayNameProduct, available_resources), COLOR_OK)
                             end
                         else
                             -- Проверочный сундук полон, не перемещаем
-                            add_log("Проверочный сундук полон, ожидание...", COLOR_ALERT)
+                            if not checkFree then
+                                add_log("Проверочный сундук полон, ожидание...", COLOR_ALERT)
+                            end
                         end
+                    else
+                        -- Нельзя обменять ни одной руды (нет ресурсов)
+                        -- Не логируем чтобы не засорять журнал
                     end
-                    -- Если ресурсов нет - просто ничего не делаем (не логируем, не перемещаем)
                 end
             end
         end
@@ -595,7 +632,7 @@ local function process_buffer()
     return eventHappened
 end
 
--- НОВАЯ: Оптимизированная обработка проверочного сундука
+-- НОВАЯ: Обработка проверочного сундука с учетом доступных ресурсов
 local function process_check_chest()
     if not adapters.check or not adapters.interface or not adapters.buffer then
         return false
@@ -613,24 +650,34 @@ local function process_check_chest()
             
             if qty > 0 then
                 if ore then
-                    -- Двойная проверка: есть ли ресурсы
-                    if check_resources_available(ore, qty) then
-                        -- Пытаемся выполнить обмен
-                        if give_items_with_logs(ore, qty) then
-                            -- Если обмен успешен, удаляем руду из проверочного сундука
-                            adapters.check.pushItem("DOWN", slot, qty)
-                            eventHappened = true
-                        else
-                            -- Если обмен не удался, возвращаем руду в буфер
-                            adapters.check.pushItem("UP", slot, qty)
-                            add_log("Возвращено в буфер из-за ошибки обмена: " .. ore.displayNameOre, COLOR_ALERT)
-                            eventHappened = true
+                    -- Проверяем сколько можем обменять с текущими ресурсами
+                    local can_exchange = calculate_available_exchange(ore)
+                    
+                    if can_exchange > 0 then
+                        -- Берем столько, сколько можем обменять (но не больше чем в стаке)
+                        local to_exchange = math.min(can_exchange, qty)
+                        
+                        if to_exchange > 0 then
+                            -- Пытаемся выполнить обмен
+                            if give_items_with_logs(ore, to_exchange) then
+                                -- Если обмен успешен, удаляем обработанную руду из проверочного сундука
+                                adapters.check.pushItem("DOWN", slot, to_exchange)
+                                eventHappened = true
+                                
+                                -- Если осталась руда в стаке (мы взяли не всё), она останется в проверочном сундуке
+                                -- для следующей итерации
+                            else
+                                -- Если обмен не удался, возвращаем ВСЮ руду в буфер
+                                adapters.check.pushItem("UP", slot, qty)
+                                add_log("Возвращено в буфер из-за ошибки обмена: " .. ore.displayNameOre, COLOR_ALERT)
+                                eventHappened = true
+                            end
                         end
                     else
-                        -- Ресурсов нет, возвращаем в буфер
+                        -- Не хватает ресурсов для обмена, возвращаем в буфер
                         adapters.check.pushItem("UP", slot, qty)
                         eventHappened = true
-                        -- Не логируем сообщение о недостатке ресурсов
+                        -- Не логируем чтобы не засорять журнал
                     end
                 else
                     -- Неизвестный предмет - возвращаем
@@ -656,7 +703,7 @@ local function main_exchange_loop()
                 draw_logs()
             end
         else
-            print_items(false) -- false = не форсируем перерисовку если не нужно
+            print_items(false)
         end
 
         -- Обработка буфера и проверочного сундука
@@ -669,7 +716,7 @@ local function main_exchange_loop()
         end
 
         -- Обработка событий ввода
-        local ev = {event.pull(0.3)} -- Уменьшили время ожидания
+        local ev = {event.pull(0.3)}
         
         if ev[1] == "touch" then
             local x, y = ev[3], ev[4]
@@ -685,7 +732,7 @@ local function main_exchange_loop()
                 local btn = drawLogsButton()
                 if x >= btn.x1 and x <= btn.x2 and y == btn.y1 then
                     showTab = nil
-                    needRedrawMain = true -- Перерисовываем основной экран при выходе из логов
+                    needRedrawMain = true
                 end
                 if showTab=="events" then
                     if y == h-3 then logScroll = logScroll + 3; needRedrawLogs = true end
@@ -735,7 +782,7 @@ end
 update_item_status_cache()
 
 -- Первоначальная отрисовка
-print_items(true) -- true = форсируем полную перерисовку
+print_items(true)
 
 -- Запускаем основной цикл
 main_exchange_loop()
