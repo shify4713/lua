@@ -1,0 +1,13 @@
+﻿local shell = require("shell")
+
+
+shell.execute("wget -f https://raw.githubusercontent.com/IgorTimofeev/GUI/master/GUI.lua /lib/GUI.lua")
+shell.execute("wget -f https://raw.githubusercontent.com/IgorTimofeev/AdvancedLua/master/AdvancedLua.lua /lib/advancedLua.lua")
+shell.execute("wget -f https://raw.githubusercontent.com/IgorTimofeev/Color/master/Color.lua /lib/color.lua")
+shell.execute("wget -f https://raw.githubusercontent.com/IgorTimofeev/Image/master/Image.lua /lib/image.lua")
+shell.execute("mkdir /lib/FormatModules/ ")
+shell.execute("wget -f https://raw.githubusercontent.com/IgorTimofeev/Image/master/OCIF.lua /lib/FormatModules/OCIF.lua")
+shell.execute("wget -f https://raw.githubusercontent.com/IgorTimofeev/DoubleBuffering/master/DoubleBuffering.lua /lib/doubleBuffering.lua")
+
+
+print("Installing finished")
