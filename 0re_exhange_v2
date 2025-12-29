@@ -70,8 +70,12 @@ local items = {
     {count = "2.5", displayNameOre = "Серебряная", oreId = "ThermalFoundation:Ore", oreDmg = "2", productId = "IC2:item.itemIngotSilver", productDmg = "0", displayNameProduct = "Серебряный слиток", ore_dict_product = "ingotSilver"},
     {count = "2.0", displayNameOre = "Платиновая", oreId = "ThermalFoundation:Ore", oreDmg = "5", productId = "ThermalFoundation:material", productDmg = "69", displayNameProduct = "Платиновый слиток", ore_dict_product = "ingotPlatinum"},
     {count = "8", displayNameOre = "Лазуритовая", oreId = "minecraft:lapis_ore", oreDmg = "0", productId = "minecraft:dye", productDmg = "4", displayNameProduct = "Лазурит", ore_dict_product = "dye"},
-    {count = "2.0", displayNameOre = "Дракониевая", oreId = "DraconicEvolution:draconiumOre", oreDmg = "0", productId = "DraconicEvolution:draconiumIngot", productDmg = "0", displayNameProduct = "Дракониевая пыль", ore_dict_product = "ingotDraconium"},
-    {count = "2.5", displayNameOre = "Истинного кварца", oreId = "appliedenergistics2:tile.OreQuartz", oreDmg = "0", productId = "appliedenergistics2:item.ItemMultiMaterial", productDmg = "0", displayNameProduct = "Истинный кварц", ore_dict_product = "crystalCertusQuartz"}
+    {count = "2.0", displayNameOre = "Дракониевая", oreId = "DraconicEvolution:draconiumOre", oreDmg = "0", productId = "DraconicEvolution:draconiumIngot", productDmg = "0", displayNameProduct = "Дракониевая слиток", ore_dict_product = "ingotDraconium"},
+    {count = "2.5", displayNameOre = "Истинного кварца", oreId = "appliedenergistics2:tile.OreQuartz", oreDmg = "0", productId = "appliedenergistics2:item.ItemMultiMaterial", productDmg = "0", displayNameProduct = "Истинный кварц", ore_dict_product = "crystalCertusQuartz"},
+    {count = "15", displayNameOre = "Темная ториевая", oreId = "mcs_addons:tile.black_thorium", oreDmg = "0", productId = "dwcity:Thorium_ingot", productDmg = "0", displayNameProduct = "Торий", ore_dict_product = "Thorium_ingot"},
+    {count = "60", displayNameOre = "Темная Дракониевая", oreId = "mcs_addons:tile.black_draconium", oreDmg = "0", productId = "DraconicEvolution:draconiumIngot", productDmg = "0", displayNameProduct = "Дракониевый слиток", ore_dict_product = "ingotDraconium"}
+
+
 }
 
 -- Функция для проверки доступности адаптеров
