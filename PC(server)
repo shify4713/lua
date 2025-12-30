@@ -1,0 +1,63 @@
+local component = require("component")
+local event = require("event")
+local serial = require("serialization")
+local os = require("os")
+local m = component.modem
+
+m.open(123)
+local visHistory = {}
+local TRACKED_ITEMS = {
+  {name = "dwcity:Vis_materia", label = "Vis", color = 0xFF55FF},
+  {name = "minecraft:iron_ingot", label = "Iron", color = 0xAAAAAA},
+  {name = "minecraft:gold_ingot", label = "Gold", color = 0xFFFF55}
+}
+
+local function formatNum(n)
+  if not n or n ~= n then return "0" end
+  if n >= 1000000 then return string.format("%.1fM", n/1000000) end
+  if n >= 1000 then return string.format("%.1fK", n/1000) end
+  return tostring(math.floor(n))
+end
+
+while true do
+  local stats = {reactors = {}, items = {}}
+  for addr in component.list("draconic_reactor") do
+    local r = component.proxy(addr).getReactorInfo()
+    if r then
+      local fConv, fMax = r.fuelConversion or 0, r.maxFuelConversion or 0
+      table.insert(stats.reactors, {
+        rf = formatNum(r.generationRate or 0),
+        t = math.floor(r.temperature or 0),
+        f = string.format("%.1f", (fMax > 0) and (fConv / fMax * 100) or 0),
+        crit = ((fConv / fMax * 100) > 80)
+      })
+    end
+  end
+
+  local me = component.proxy(component.list("me_interface")() or component.list("me_controller")() or "")
+  if me then
+    for i, it in ipairs(TRACKED_ITEMS) do
+      local d = me.getItemsInNetwork({name = it.name})
+      local count = (d and d[1]) and d[1].size or 0
+      local speed = 0
+      if it.name == "dwcity:Vis_materia" then
+        table.insert(visHistory, count)
+        if #visHistory > 10 then table.remove(visHistory, 1) end
+        if #visHistory > 1 then speed = math.floor((visHistory[#visHistory] - visHistory[1]) / #visHistory * 10) / 10 end
+      end
+      table.insert(stats.items, {val = formatNum(count), lbl = it.label, clr = it.color, s = speed})
+    end
+  end
+
+  m.broadcast(123, "STATS", serial.serialize(stats))
+
+  local _, _, nick, msg = event.pull(0.5, "chat_message")
+  if nick and msg then
+    local isGlobal = msg:sub(1,1) == "!"
+    local chatMsg = {
+      n = nick, m = isGlobal and msg:sub(2) or msg, 
+      t = os.date("%H:%M"), tag = isGlobal and "&6[G]" or "&9[L]"
+    }
+    m.broadcast(123, "CHAT_MSG", serial.serialize(chatMsg))
+  end
+end
