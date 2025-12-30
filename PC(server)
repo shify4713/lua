@@ -7,12 +7,16 @@ local m = component.modem
 
 m.open(123)
 local visHistory = {}
+local lastStatsTime = 0
+local statsInterval = 5 -- СТАТИСТИКА РАЗ В 5 СЕКУНД (очень экономно)
 
 local function getRealServerTime()
   local tmp = "/tmp/time_check.txt"
   local f = io.open(tmp, "w")
-  if f then f:write(" "); f:close()
-    local last = fs.lastModified(tmp) / 1000
+  if f then 
+    f:write(" ")
+    f:close()
+    local last = (fs.lastModified(tmp) / 1000) + 7200 -- +2 часа
     local t = os.date("*t", last)
     return string.format("%02d:%02d", t.hour, t.min)
   end
@@ -32,48 +36,64 @@ local function formatNum(n)
   return tostring(math.floor(n))
 end
 
+print("Eco-Server Started (+2h correction)")
+
 while true do
-  local stats = {reactors = {}, items = {}}
-  for addr in component.list("draconic_reactor") do
-    local r = component.proxy(addr).getReactorInfo()
-    if r then
-      local fConv, fMax = r.fuelConversion or 0, r.maxFuelConversion or 0
-      table.insert(stats.reactors, {
-        rf = formatNum(r.generationRate or 0),
-        t = math.floor(r.temperature or 0),
-        f = string.format("%.1f", (fMax > 0) and (fConv / fMax * 100) or 0),
-        crit = (r.temperature > 8000)
-      })
-    end
-  end
-
-  local me_addr = component.list("me_interface")() or component.list("me_controller")()
-  if me_addr then
-    local me = component.proxy(me_addr)
-    for i, it in ipairs(TRACKED_ITEMS) do
-      local d = me.getItemsInNetwork({name = it.name})
-      local count = (d and d[1]) and d[1].size or 0
-      local speed = 0
-      if it.label == "Vis" then
-        table.insert(visHistory, count)
-        if #visHistory > 10 then table.remove(visHistory, 1) end
-        if #visHistory > 1 then speed = math.floor((visHistory[#visHistory] - visHistory[1]) / #visHistory * 10) / 10 end
+  -- 1. Сбор статистики (только если прошло 5 секунд)
+  local currentTime = os.time()
+  if currentTime - lastStatsTime > statsInterval then
+    local stats = {reactors = {}, items = {}}
+    
+    -- Сбор реакторов
+    for addr in component.list("draconic_reactor") do
+      local r = component.proxy(addr).getReactorInfo()
+      if r then
+        local fConv, fMax = r.fuelConversion or 0, r.maxFuelConversion or 0
+        table.insert(stats.reactors, {
+          rf = formatNum(r.generationRate or 0),
+          t = math.floor(r.temperature or 0),
+          f = string.format("%.1f", (fMax > 0) and (fConv / fMax * 100) or 0),
+          crit = (r.temperature > 8000)
+        })
       end
-      table.insert(stats.items, {val = formatNum(count), lbl = it.label, s = speed})
     end
+
+    -- Сбор МЭ
+    local me_addr = component.list("me_interface")() or component.list("me_controller")()
+    if me_addr then
+      local me = component.proxy(me_addr)
+      for i, it in ipairs(TRACKED_ITEMS) do
+        local d = me.getItemsInNetwork({name = it.name})
+        local count = (d and d[1]) and d[1].size or 0
+        local speed = 0
+        if it.label == "Vis" then
+          table.insert(visHistory, count)
+          if #visHistory > 10 then table.remove(visHistory, 1) end
+          if #visHistory > 1 then speed = math.floor((visHistory[#visHistory] - visHistory[1]) / #visHistory * 10) / 10 end
+        end
+        table.insert(stats.items, {val = formatNum(count), lbl = it.label, s = speed})
+      end
+    end
+
+    m.broadcast(123, "STATS", serial.serialize(stats))
+    lastStatsTime = currentTime
   end
 
-  m.broadcast(123, "STATS", serial.serialize(stats))
-
-  local _, _, nick, msg = event.pull(0.5, "chat_message")
+  -- 2. ГЛАВНАЯ ПАУЗА И ОЖИДАНИЕ ЧАТА
+  -- event.pull(1, ...) — это и есть замена os.sleep(1). 
+  -- Программа "висит" 1 секунду и ждет чата. Если чата нет - идет на новый круг.
+  -- Это самый нетребовательный способ для CPU сервера.
+  local _, _, nick, msg = event.pull(1, "chat_message")
+  
   if nick and msg then
     local isGlobal = msg:sub(1,1) == "!"
-    -- Тег [L] теперь &7 (серый), а [G] &6 (золотой)
     local chatData = {
       n = nick, m = isGlobal and msg:sub(2) or msg, 
       t = getRealServerTime(), tag = isGlobal and "&6[G]" or "&7[L]"
     }
     m.broadcast(123, "CHAT_MSG", serial.serialize(chatData))
   end
-os.sleep(2)
+  
+  -- Дополнительный микро-сон для стабильности
+  os.sleep(0.1)
 end
