@@ -75,4 +75,5 @@ while true do
     }
     m.broadcast(123, "CHAT_MSG", serial.serialize(chatData))
   end
+os.sleep(2)
 end
