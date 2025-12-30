@@ -2,9 +2,9 @@ local component = require("component")
 local event = require("event")
 local serial = require("serialization")
 local os = require("os")
+local computer = require("computer")
 local gpu = component.gpu
 local m = component.modem
-local keyboard = require("keyboard")
 
 local function get(n)
   local a = component.list(n)()
@@ -21,7 +21,12 @@ m.open(PORT)
 local w, h = gpu.getResolution()
 local cfg = { target = 200 * 10^9, maxDiff = 25000, step = 10000 }
 local lastE, filVal, lastStats = 0, 0, 0
-local visHistory = {}
+
+-- Переменные для стабильного расчета Вис-материи
+local lastVisCount = 0
+local lastVisTime = computer.uptime()
+local visPerSecond = 0
+local firstRun = true
 
 local function format(n)
   if not n or n ~= n then return "0" end
@@ -36,7 +41,6 @@ local function drawServerGUI(data)
   gpu.setBackground(0x000000)
   gpu.fill(1, 1, w, h, " ")
   
-  -- Батарея
   local bH = h - 10
   local maxE = (rf and rf.getMaxEnergyStored() or 1)
   local fill = math.floor((lastE / maxE) * bH)
@@ -55,7 +59,6 @@ local function drawServerGUI(data)
   gpu.set(10, 6, ">> TARGET: " .. format(cfg.target) .. " <<")
   
   gpu.setBackground(0x444444)
-  gpu.setForeground(0xFFFFFF)
   gpu.set(10, 8, "  [ + ]  ") 
   gpu.set(20, 8, "  [ - ]  ") 
   gpu.setBackground(0x000000)
@@ -72,7 +75,7 @@ local function drawServerGUI(data)
   if data.items and data.items[1] then
     local it = data.items[1]
     gpu.set(40, 4, "Vis: " .. it.val)
-    gpu.set(40, 5, "Flow: " .. (it.s>=0 and "+" or "")..it.s.."/s")
+    gpu.set(40, 5, "Flow: " .. (it.s>=0 and "+" or "").. string.format("%.1f", it.s) .. "/s")
   end
   gpu.setForeground(0x5555FF)
   gpu.set(40, h-1, "GATE: " .. data.energy.gateOut .. "/t")
@@ -81,6 +84,7 @@ end
 local function gatherStats()
   local flow = gate and gate.getFlow() or 0
   local st = { reactors = {}, items = {}, energy = {cur=format(lastE), rawTarget=cfg.target, diff=filVal, gateOut=format(flow)} }
+  
   for addr in component.list("draconic_reactor") do
     local r = component.proxy(addr).getReactorInfo()
     if r then
@@ -89,21 +93,29 @@ local function gatherStats()
     end
   end
   while #st.reactors < 5 do table.insert(st.reactors, {gen="OFFLINE", fuel=0}) end
+  
   if me then
     local d = me.getItemsInNetwork({label="Vis Materia"})
     if not d or #d == 0 then d = me.getItemsInNetwork({name="dwcity:Vis_materia"}) end
     local countV = (d and d[1]) and d[1].size or 0
-    table.insert(visHistory, countV)
-    if #visHistory > 20 then table.remove(visHistory, 1) end
-    local speed = #visHistory > 1 and (visHistory[#visHistory] - visHistory[1]) or 0
-    table.insert(st.items, {val=format(countV), s=speed})
+    
+    if firstRun then lastVisCount = countV; firstRun = false end
+
+    local curTime = computer.uptime()
+    if curTime - lastVisTime >= 5 then
+      visPerSecond = (countV - lastVisCount) / (curTime - lastVisTime)
+      lastVisCount = countV
+      lastVisTime = curTime
+    end
+    table.insert(st.items, {val=format(countV), s=visPerSecond})
   end
   return st
 end
 
 gpu.fill(1,1,w,h," ")
 while true do
-  local res = {event.pull(0.5)}
+  -- Пауза 1 секунда для снижения нагрузки
+  local res = {event.pull(1)}
   local ev = res[1]
   
   if rf and gate then
@@ -123,25 +135,25 @@ while true do
   if ev == "touch" then
     local x, y = res[3], res[4]
     if y == 8 then
-      local step = keyboard.isShiftDown() and 100*10^9 or (keyboard.isControlDown() and 50*10^9 or 10^9)
+      local step = 10^9
+      if require("keyboard").isShiftDown() then step = 100*10^9 
+      elseif require("keyboard").isControlDown() then step = 50*10^9 end
       if x >= 10 and x <= 18 then cfg.target = cfg.target + step
       elseif x >= 20 and x <= 28 then cfg.target = cfg.target - step end
     end
   elseif ev == "chat_message" then
-    -- ИСПРАВЛЕНО: Теперь отправляем ПРАВИЛЬНЫЙ заголовок CHAT_MSG
     local tag = res[4]:sub(1,1) == "!" and "&9[G]" or "&7[L]"
     local msg = {n=res[3], m=res[4], t=os.date("%H:%M"), tag=tag}
     m.broadcast(PORT, "CHAT_MSG", serial.serialize(msg))
   elseif ev == "modem_message" then
-    local ok, data = pcall(serial.unserialize, tostring(res[6]))
-    if ok and data and data.cmd == "SET_ENERGY" and data.user == ADMIN then 
-      cfg.target = data.val 
-    end
+    local ok, d = pcall(serial.unserialize, tostring(res[6]))
+    if ok and d and d.cmd == "SET_ENERGY" and d.user == ADMIN then cfg.target = d.val end
   end
 
-  if os.time() - lastStats > 1.2 then
+  -- Обновление GUI и отправка на планшет раз в 2 секунды
+  if computer.uptime() - lastStats > 2 then
     drawServerGUI(currentData)
     m.broadcast(PORT, "STATS", serial.serialize(currentData))
-    lastStats = os.time()
+    lastStats = computer.uptime()
   end
 end
