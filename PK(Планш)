@@ -6,15 +6,16 @@ local gpu = component.gpu
 
 component.modem.open(123)
 local w, h = gpu.getResolution()
-local splitX = math.floor(w * 0.67) 
+local splitX = math.floor(w * 0.65) 
 
--- Установка ПРАВИЛЬНОЙ палитры для Tier 2 (чтобы &b не был зеленым)
 local codes = {
-  ["0"]=0x000000, ["1"]=0x0000FF, ["2"]=0x00AA00, ["3"]=0x008080,
+  ["0"]=0x000000, ["1"]=0x0000AA, ["2"]=0x00AA00, ["3"]=0x00AAAA, -- Тот самый бирюзовый
   ["4"]=0xAA0000, ["5"]=0xAA00AA, ["6"]=0xFFAA00, ["7"]=0xAAAAAA,
-  ["8"]=0x555555, ["9"]=0x5555FF, ["a"]=0x55FF55, ["b"]=0x33DBFF, -- Голубой
+  ["8"]=0x555555, ["9"]=0x5555FF, ["a"]=0x55FF55, ["b"]=0x33DBFF, 
   ["c"]=0xFF5555, ["d"]=0xFF55FF, ["e"]=0xFFFF55, ["f"]=0xFFFFFF
 }
+
+local bg_color = 0x1A1A1A
 
 local function clean(t) return tostring(t or ""):gsub("&.", "") end
 
@@ -34,14 +35,11 @@ local function writeColor(x, y, text)
   end
 end
 
--- Функция разбивки сообщения на любое количество строк
 local function wrapText(text, limit)
   local words = {}
   for word in text:gmatch("%S+") do table.insert(words, word) end
-  
   local lines = {}
   local currentLine = ""
-  
   for _, word in ipairs(words) do
     local testLine = currentLine == "" and word or (currentLine .. " " .. word)
     if unicode.len(clean(testLine)) <= limit then
@@ -51,60 +49,60 @@ local function wrapText(text, limit)
       currentLine = word
     end
   end
-  table.insert(lines, currentLine)
+  if currentLine ~= "" then table.insert(lines, currentLine) end
   return lines
 end
 
 local function pushChat(data)
-  local prefix = string.format("&8[%s] %s &a%s: ", data.t, data.tag, clean(data.n))
+  -- Время теперь &7 (серый), чтобы было видно на темном фоне
+  local prefix = string.format("&7[%s] %s &a%s: ", data.t, data.tag, clean(data.n))
   local msgText = "&f" .. data.m
   local maxW = splitX - 2
-  
-  -- Сначала склеиваем, потом рубим на части
   local fullMsg = prefix .. msgText
   local rawLines = wrapText(fullMsg, maxW)
   
   local n = #rawLines
-  -- Сдвигаем экран на столько строк, сколько заняло сообщение
   gpu.copy(1, n + 1, splitX - 1, h - n, 0, -n)
   gpu.fill(1, h - n + 1, splitX - 1, n, " ")
   
-  -- Пишем каждую строку
   for i, line in ipairs(rawLines) do
     writeColor(1, h - n + i, line)
   end
 end
 
 local function drawStats(data)
+  gpu.setBackground(bg_color)
   gpu.fill(splitX + 1, 1, w - splitX, h, " ")
-  gpu.setForeground(0x55FF55); gpu.set(splitX + 2, 1, "СИСТЕМА")
+  
+  gpu.setForeground(0x33DBFF); gpu.set(splitX + 2, 1, "Reactors")
   if data.reactors then
     for i, r in ipairs(data.reactors) do
-      writeColor(splitX + 2, 1 + i, string.format("&7R%d: &6%s &e%dC &%s%s%%", i, r.rf, r.t, r.crit and "c" or "a", r.f))
+      local rStat = string.format("&7R%d: &6%s &e%dC &%s%s%%", i, r.rf, r.t, r.crit and "c" or "b", r.f)
+      writeColor(splitX + 2, 1 + i, rStat)
     end
   end
-  gpu.setForeground(0x55FFFF); gpu.set(splitX + 2, 7, "СКЛАД")
+
+  gpu.setForeground(0x00AAAA); gpu.set(splitX + 2, 7, "ME Storage")
   if data.items then
     for i, it in ipairs(data.items) do
-      local s = it.s ~= 0 and (" ("..(it.s>0 and "+" or "")..it.s..")") or ""
+      local s = it.s ~= 0 and (" &8("..(it.s>0 and "&a+" or "&c")..it.s.."&8)") or ""
       writeColor(splitX + 2, 7 + i, string.format("&f%s: &7%s%s", it.lbl, it.val, s))
     end
   end
 end
 
--- Инициализация: чистим и рисуем полоску
+-- Инициализация экрана
+gpu.setBackground(bg_color)
 gpu.fill(1, 1, w, h, " ")
-gpu.setForeground(0x444444)
+gpu.setForeground(0x555555) -- Яркий серый для линии
 for i=1, h do gpu.set(splitX, i, "┃") end
 
 while true do
   local _, _, _, _, _, msgType, raw = event.pull("modem_message")
   local ok, data = pcall(serial.unserialize, raw)
   if ok and data then
-    if msgType == "STATS" then 
-      drawStats(data) 
-    elseif msgType == "CHAT_MSG" then 
-      pushChat(data) 
-    end
+    gpu.setBackground(bg_color)
+    if msgType == "STATS" then drawStats(data) 
+    elseif msgType == "CHAT_MSG" then pushChat(data) end
   end
 end
