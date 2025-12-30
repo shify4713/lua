@@ -2,6 +2,7 @@ local component = require("component")
 local event = require("event")
 local serial = require("serialization")
 local unicode = require("unicode")
+local computer = require("computer")
 local gpu = component.gpu
 
 component.modem.open(123)
@@ -9,9 +10,9 @@ local w, h = gpu.getResolution()
 local splitX = math.floor(w * 0.65) 
 
 local codes = {
-  ["0"]=0x000000, ["1"]=0x0000AA, ["2"]=0x00AA00, ["3"]=0x008080, -- Тот самый бирюзовый
+  ["0"]=0x000000, ["1"]=0x2244FF, ["2"]=0x00AA00, ["3"]=0x008080, 
   ["4"]=0xAA0000, ["5"]=0xAA00AA, ["6"]=0xFFAA00, ["7"]=0xAAAAAA,
-  ["8"]=0x555555, ["9"]=0x5555FF, ["a"]=0x55FF55, ["b"]=0x4444FF, 
+  ["8"]=0x555555, ["9"]=0x5555FF, ["a"]=0x55FF55, ["b"]=0x33DBFF, 
   ["c"]=0xFF5555, ["d"]=0xFF55FF, ["e"]=0xFFFF55, ["f"]=0xFFFFFF
 }
 
@@ -42,59 +43,53 @@ local function wrapText(text, limit)
   local currentLine = ""
   for _, word in ipairs(words) do
     local testLine = currentLine == "" and word or (currentLine .. " " .. word)
-    if unicode.len(clean(testLine)) <= limit then
-      currentLine = testLine
-    else
-      table.insert(lines, currentLine)
-      currentLine = word
-    end
+    if unicode.len(clean(testLine)) <= limit then currentLine = testLine
+    else table.insert(lines, currentLine); currentLine = word end
   end
   if currentLine ~= "" then table.insert(lines, currentLine) end
   return lines
 end
 
 local function pushChat(data)
-  -- Время теперь &7 (серый), чтобы было видно на темном фоне
-  local prefix = string.format("&7[%s] %s &a%s: ", data.t, data.tag, clean(data.n))
+  local prefix = string.format("&8[%s] %s &a%s: ", data.t, data.tag, clean(data.n))
   local msgText = "&f" .. data.m
   local maxW = splitX - 2
   local fullMsg = prefix .. msgText
   local rawLines = wrapText(fullMsg, maxW)
-  
   local n = #rawLines
   gpu.copy(1, n + 1, splitX - 1, h - n, 0, -n)
   gpu.fill(1, h - n + 1, splitX - 1, n, " ")
-  
-  for i, line in ipairs(rawLines) do
-    writeColor(1, h - n + i, line)
-  end
+  for i, line in ipairs(rawLines) do writeColor(1, h - n + i, line) end
+  computer.beep(800, 0.05)
 end
 
 local function drawStats(data)
   gpu.setBackground(bg_color)
   gpu.fill(splitX + 1, 1, w - splitX, h, " ")
   
-  gpu.setForeground(0x33DBFF); gpu.set(splitX + 2, 1, "Reactors")
+  -- Заголовок Reactors
+  writeColor(splitX + 2, 1, "&6Reactors")
   if data.reactors then
     for i, r in ipairs(data.reactors) do
-      local rStat = string.format("&7R%d: &6%s &e%dC &%s%s%%", i, r.rf, r.t, r.crit and "c" or "b", r.f)
+      local rStat = string.format("&7R%d: &f%s &e%dC &%s%s%%", i, r.rf, r.t, r.crit and "c" or "a", r.f)
       writeColor(splitX + 2, 1 + i, rStat)
     end
   end
 
-  gpu.setForeground(0x00AAAA); gpu.set(splitX + 2, 7, "ME Storage")
+  -- Заголовок ME Storage (теперь бирюзовый &b)
+  writeColor(splitX + 2, 7, "&bME Storage")
   if data.items then
     for i, it in ipairs(data.items) do
+      local nameClr = (it.lbl == "Vis") and "&d" or "&7"
       local s = it.s ~= 0 and (" &8("..(it.s>0 and "&a+" or "&c")..it.s.."&8)") or ""
-      writeColor(splitX + 2, 7 + i, string.format("&f%s: &7%s%s", it.lbl, it.val, s))
+      writeColor(splitX + 2, 7 + i, string.format("%s%s: &f%s%s", nameClr, it.lbl, it.val, s))
     end
   end
 end
 
--- Инициализация экрана
 gpu.setBackground(bg_color)
 gpu.fill(1, 1, w, h, " ")
-gpu.setForeground(0x555555) -- Яркий серый для линии
+gpu.setForeground(0x555555) 
 for i=1, h do gpu.set(splitX, i, "┃") end
 
 while true do
