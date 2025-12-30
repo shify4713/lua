@@ -2,26 +2,18 @@ local component = require("component")
 local event = require("event")
 local serial = require("serialization")
 local unicode = require("unicode")
-local computer = require("computer")
-local term = require("term")
+local keyboard = require("keyboard")
 local gpu = component.gpu
-
 local m = component.modem
-m.open(123)
+local PORT = 5347
+local ADMIN = "LiwMorgan"
+m.open(PORT)
+
 local w, h = gpu.getResolution()
-local splitX = math.floor(w * 0.65) 
-
-local codes = {
-  ["0"]=0x000000, ["1"]=0x2244FF, ["2"]=0x00AA00, ["3"]=0x008080, 
-  ["4"]=0xAA0000, ["5"]=0xAA00AA, ["6"]=0xFFAA00, ["7"]=0xAAAAAA,
-  ["8"]=0x555555, ["9"]=0x5555FF, ["a"]=0x55FF55, ["b"]=0x33DBFF, 
-  ["c"]=0xFF5555, ["d"]=0xFF55FF, ["e"]=0xFFFF55, ["f"]=0xFFFFFF
-}
-
-local bg_color = 0x1A1A1A
-local last_stats_data = nil
-
-local function clean(t) return tostring(t or ""):gsub("&.", "") end
+local splitX = math.floor(w * 0.70)
+local last_stats = nil
+local old_reactors = {}
+local codes = {["0"]=0x000000, ["1"]=0x2244FF, ["2"]=0x00AA00, ["4"]=0xAA0000, ["6"]=0xFFAA00, ["7"]=0xAAAAAA, ["8"]=0x555555, ["9"]=0x5555FF, ["a"]=0x55FF55, ["b"]=0x33DBFF, ["c"]=0xFF5555, ["e"]=0xFFFF55, ["f"]=0xFFFFFF}
 
 local function writeColor(x, y, text)
   local curX, i = x, 1
@@ -36,81 +28,98 @@ local function writeColor(x, y, text)
   end
 end
 
-local function drawSeparator()
-  gpu.setForeground(0x555555)
-  for i=1, h do gpu.set(splitX, i, "┃") end
+local function wrapChat(text)
+  local lines = {}
+  while unicode.len(text) > (splitX - 1) do
+    table.insert(lines, unicode.sub(text, 1, splitX - 1))
+    text = unicode.sub(text, splitX, -1)
+  end
+  table.insert(lines, text)
+  return lines
 end
 
-local function drawStats(data)
-  if data then last_stats_data = data end
-  if not last_stats_data then return end
-  gpu.setBackground(bg_color)
+local function drawStatic()
+  gpu.setBackground(0x212121)
+  gpu.fill(1, 1, splitX, h, " ")
+  gpu.setBackground(0x111111)
   gpu.fill(splitX + 1, 1, w - splitX, h, " ")
-  writeColor(splitX + 2, 1, "&6Reactors")
-  for i, r in ipairs(last_stats_data.reactors or {}) do
-    writeColor(splitX + 2, 1 + i, string.format("&7R%d: &f%s &e%dC &%s%s%%", i, r.rf, r.t, r.crit and "c" or "a", r.f))
-  end
-  writeColor(splitX + 2, 7, "&bME Storage")
-  for i, it in ipairs(last_stats_data.items or {}) do
-    local nameClr = (it.lbl == "Vis") and "&d" or "&7"
-    local speedStr = ""
-    if it.s and it.s ~= 0 then
-      local sClr = (it.s > 0) and "&a+" or "&c"
-      speedStr = string.format(" &8(%s%s&8)", sClr, tostring(it.s))
+  gpu.setForeground(0x00FF99)
+  for i=1, h do gpu.set(splitX, i, "┃") end
+  writeColor(splitX+2, 6, "&6REACTORS")
+  writeColor(splitX+2, 13, "&bVIS MATERIA")
+end
+
+local function updateUI(data)
+  gpu.setBackground(0x111111)
+  local e = data.energy
+  gpu.fill(splitX+2, 1, w-splitX-1, 5, " ")
+  writeColor(splitX+2, 1, "&eE: &f" .. e.cur)
+  writeColor(splitX+2, 2, "&8Out: &b" .. e.gateOut .. "/t")
+  writeColor(splitX+2, 3, "&8T: &7" .. math.floor(e.rawTarget/10^9) .. "b")
+  
+  gpu.setBackground(0x333333)
+  gpu.set(splitX+2, 4, " [+] ")
+  gpu.set(splitX+9, 4, " [-] ")
+  gpu.setBackground(0x111111)
+
+  for i=1, 5 do
+    local r = data.reactors[i]
+    local info = r.gen == "OFFLINE" and "&8OFFLINE" or ("&f"..r.gen.." &e"..r.fuel.."%")
+    if old_reactors[i] ~= info then
+      gpu.fill(splitX+5, 6+i, w-splitX-5, 1, " ")
+      writeColor(splitX+2, 6+i, "&7"..i..": "..info)
+      old_reactors[i] = info
     end
-    writeColor(splitX + 2, 7 + i, string.format("%s%s: &f%s%s", nameClr, it.lbl, it.val, speedStr))
   end
+
+  gpu.fill(splitX+2, 14, w-splitX-2, 2, " ")
+  if data.items and data.items[1] then
+    local it = data.items[1]
+    writeColor(splitX+2, 14, "&fC: " .. it.val)
+    writeColor(splitX+2, 15, "&7S: " .. (it.s >= 0 and "&a+" or "&c") .. it.s .. "/s")
+  end
+  last_stats = data
 end
 
-local function pushChat(data, silent)
-  local prefix = string.format("&8[%s] %s &a%s: ", data.t, data.tag, clean(data.n))
-  local fullMsg = prefix .. "&f" .. data.m
-  local words, lines, currentLine = {}, {}, ""
-  for word in fullMsg:gmatch("%S+") do table.insert(words, word) end
-  for _, word in ipairs(words) do
-    local testLine = currentLine == "" and word or (currentLine .. " " .. word)
-    if unicode.len(clean(testLine)) <= splitX - 2 then currentLine = testLine
-    else table.insert(lines, currentLine); currentLine = word end
-  end
-  if currentLine ~= "" then table.insert(lines, currentLine) end
-  local n = #lines
-  gpu.copy(1, n + 1, splitX - 1, h - n, 0, -n)
-  gpu.fill(1, h - n + 1, splitX - 1, n, " ")
-  for i, line in ipairs(lines) do writeColor(1, h - n + i, line) end
-  drawSeparator()
-  if not silent then computer.beep(800, 0.05) end
-end
-
-gpu.setBackground(bg_color)
-gpu.fill(1, 1, w, h, " ")
-drawSeparator()
-m.broadcast(123, serial.serialize({cmd="GET_HISTORY"}))
+drawStatic()
+m.broadcast(PORT, serial.serialize({cmd="PING"}))
 
 while true do
+  -- Получаем событие. Важно: модемное сообщение на планшете ловится так
   local res = {event.pull()}
-  local ev = res[1]
-  
-  if ev == "touch" and res[3] < splitX then
-    gpu.setBackground(0x333333)
-    gpu.fill(1, 1, splitX - 1, 1, " ")
-    gpu.set(1, 1, "Chat: ")
-    term.setCursor(7, 1)
-    local msg = term.read()
-    if msg and msg ~= "" then
-      m.broadcast(123, serial.serialize({cmd="SEND_CHAT", msg=msg:gsub("\n","")}))
-    end
-    gpu.setBackground(bg_color)
-    gpu.fill(1, 1, splitX - 1, 1, " ")
-    drawSeparator()
-    drawStats()
+  local evType = res[1]
+
+  if evType == "modem_message" then
+    -- res[6] - это заголовок (STATS или CHAT_MSG), res[7] - это сериализованные данные
+    local header = res[6]
+    local ok, data = pcall(serial.unserialize, tostring(res[7]))
     
-  elseif ev == "modem_message" then
-    local msgType, raw = res[6], res[7]
-    local ok, data = pcall(serial.unserialize, tostring(raw))
     if ok and data then
-      if msgType == "STATS" then drawStats(data) 
-      elseif msgType == "CHAT_MSG" then pushChat(data, false)
-      elseif msgType == "CHAT_HIST" then pushChat(data, true) end
+      if header == "STATS" then
+        updateUI(data)
+      elseif header == "CHAT_MSG" then
+        gpu.setBackground(0x212121)
+        local full = string.format("&8%s %s &f%s: &7%s", data.t, data.tag, data.n, data.m)
+        local wrapped = wrapChat(full)
+        for _, line in ipairs(wrapped) do
+          gpu.copy(1, 2, splitX-1, h-1, 0, -1)
+          gpu.fill(1, h, splitX-1, 1, " ")
+          writeColor(1, h, line)
+        end
+      end
+    end
+
+  elseif evType == "touch" then
+    local x, y, user = res[3], res[4], res[6] or res[5]
+    if x > splitX and y == 4 and last_stats then
+      if user == ADMIN then
+        local step = 10^9
+        if keyboard.isShiftDown() then step = 100 * 10^9 
+        elseif keyboard.isControlDown() then step = 50 * 10^9 end
+        
+        local val = (x < splitX+8) and last_stats.energy.rawTarget + step or last_stats.energy.rawTarget - step
+        m.broadcast(PORT, serial.serialize({cmd="SET_ENERGY", val=val, user=user}))
+      end
     end
   end
 end
