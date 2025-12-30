@@ -76,27 +76,23 @@ local function updateUI(data)
   if data.items and data.items[1] then
     local it = data.items[1]
     writeColor(splitX+2, 14, "&fC: " .. it.val)
-    writeColor(splitX+2, 15, "&7S: " .. (it.s >= 0 and "&a+" or "&c") .. it.s .. "/s")
+    local sStr = string.format("%.1f", it.s)
+    writeColor(splitX+2, 15, "&7S: " .. (it.s >= 0 and "&a+" or "&c") .. sStr .. "/s")
   end
   last_stats = data
 end
 
 drawStatic()
-m.broadcast(PORT, serial.serialize({cmd="PING"}))
 
 while true do
-  -- Получаем событие. Важно: модемное сообщение на планшете ловится так
   local res = {event.pull()}
   local evType = res[1]
 
   if evType == "modem_message" then
-    -- res[6] - это заголовок (STATS или CHAT_MSG), res[7] - это сериализованные данные
     local header = res[6]
     local ok, data = pcall(serial.unserialize, tostring(res[7]))
-    
     if ok and data then
-      if header == "STATS" then
-        updateUI(data)
+      if header == "STATS" then updateUI(data)
       elseif header == "CHAT_MSG" then
         gpu.setBackground(0x212121)
         local full = string.format("&8%s %s &f%s: &7%s", data.t, data.tag, data.n, data.m)
@@ -108,18 +104,14 @@ while true do
         end
       end
     end
-
   elseif evType == "touch" then
     local x, y, user = res[3], res[4], res[6] or res[5]
-    if x > splitX and y == 4 and last_stats then
-      if user == ADMIN then
-        local step = 10^9
-        if keyboard.isShiftDown() then step = 100 * 10^9 
-        elseif keyboard.isControlDown() then step = 50 * 10^9 end
-        
-        local val = (x < splitX+8) and last_stats.energy.rawTarget + step or last_stats.energy.rawTarget - step
-        m.broadcast(PORT, serial.serialize({cmd="SET_ENERGY", val=val, user=user}))
-      end
+    if x > splitX and y == 4 and last_stats and user == ADMIN then
+      local step = 10^9
+      if keyboard.isShiftDown() then step = 100 * 10^9 
+      elseif keyboard.isControlDown() then step = 50 * 10^9 end
+      local val = (x < splitX+8) and last_stats.energy.rawTarget + step or last_stats.energy.rawTarget - step
+      m.broadcast(PORT, serial.serialize({cmd="SET_ENERGY", val=val, user=user}))
     end
   end
 end
