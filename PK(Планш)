@@ -1,0 +1,110 @@
+local component = require("component")
+local event = require("event")
+local serial = require("serialization")
+local unicode = require("unicode")
+local gpu = component.gpu
+
+component.modem.open(123)
+local w, h = gpu.getResolution()
+local splitX = math.floor(w * 0.67) 
+
+-- Установка ПРАВИЛЬНОЙ палитры для Tier 2 (чтобы &b не был зеленым)
+local codes = {
+  ["0"]=0x000000, ["1"]=0x0000AA, ["2"]=0x00AA00, ["3"]=0x00AAAA,
+  ["4"]=0xAA0000, ["5"]=0xAA00AA, ["6"]=0xFFAA00, ["7"]=0xAAAAAA,
+  ["8"]=0x555555, ["9"]=0x5555FF, ["a"]=0x55FF55, ["b"]=0x55FFFF, -- Голубой
+  ["c"]=0xFF5555, ["d"]=0xFF55FF, ["e"]=0xFFFF55, ["f"]=0xFFFFFF
+}
+
+local function clean(t) return tostring(t or ""):gsub("&.", "") end
+
+local function writeColor(x, y, text)
+  local curX = x
+  local i = 1
+  gpu.setForeground(0xFFFFFF)
+  while i <= unicode.len(text) do
+    local char = unicode.sub(text, i, i)
+    if char == "&" then
+      local c = unicode.sub(text, i+1, i+1)
+      if codes[c] then gpu.setForeground(codes[c]); i = i + 2
+      else gpu.set(curX, y, char); curX = curX + 1; i = i + 1 end
+    else
+      gpu.set(curX, y, char); curX = curX + 1; i = i + 1
+    end
+  end
+end
+
+-- Функция разбивки сообщения на любое количество строк
+local function wrapText(text, limit)
+  local words = {}
+  for word in text:gmatch("%S+") do table.insert(words, word) end
+  
+  local lines = {}
+  local currentLine = ""
+  
+  for _, word in ipairs(words) do
+    local testLine = currentLine == "" and word or (currentLine .. " " .. word)
+    if unicode.len(clean(testLine)) <= limit then
+      currentLine = testLine
+    else
+      table.insert(lines, currentLine)
+      currentLine = word
+    end
+  end
+  table.insert(lines, currentLine)
+  return lines
+end
+
+local function pushChat(data)
+  local prefix = string.format("&8[%s] %s &a%s: ", data.t, data.tag, clean(data.n))
+  local msgText = "&f" .. data.m
+  local maxW = splitX - 2
+  
+  -- Сначала склеиваем, потом рубим на части
+  local fullMsg = prefix .. msgText
+  local rawLines = wrapText(fullMsg, maxW)
+  
+  local n = #rawLines
+  -- Сдвигаем экран на столько строк, сколько заняло сообщение
+  gpu.copy(1, n + 1, splitX - 1, h - n, 0, -n)
+  gpu.fill(1, h - n + 1, splitX - 1, n, " ")
+  
+  -- Пишем каждую строку
+  for i, line in ipairs(rawLines) do
+    writeColor(1, h - n + i, line)
+  end
+end
+
+local function drawStats(data)
+  gpu.fill(splitX + 1, 1, w - splitX, h, " ")
+  gpu.setForeground(0x55FF55); gpu.set(splitX + 2, 1, "СИСТЕМА")
+  if data.reactors then
+    for i, r in ipairs(data.reactors) do
+      writeColor(splitX + 2, 1 + i, string.format("&7R%d: &6%s &e%dC &%s%s%%", i, r.rf, r.t, r.crit and "c" or "a", r.f))
+    end
+  end
+  gpu.setForeground(0x55FFFF); gpu.set(splitX + 2, 7, "СКЛАД")
+  if data.items then
+    for i, it in ipairs(data.items) do
+      local s = it.s ~= 0 and (" ("..(it.s>0 and "+" or "")..it.s..")") or ""
+      writeColor(splitX + 2, 7 + i, string.format("&f%s: &7%s%s", it.lbl, it.val, s))
+    end
+  end
+end
+
+-- Инициализация: чистим и рисуем полоску
+gpu.fill(1, 1, w, h, " ")
+gpu.setForeground(0x444444)
+for i=1, h do gpu.set(splitX, i, "┃") end
+
+while true do
+  local _, _, _, _, _, msgType, raw = event.pull("modem_message")
+  local ok, data = pcall(serial.unserialize, raw)
+  if ok and data then
+    if msgType == "STATS" then 
+      drawStats(data) 
+    elseif msgType == "CHAT_MSG" then 
+      pushChat(data) 
+    end
+  end
+end
