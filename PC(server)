@@ -21,6 +21,7 @@ end
 
 while true do
   local stats = {reactors = {}, items = {}}
+  -- Реакторы
   for addr in component.list("draconic_reactor") do
     local r = component.proxy(addr).getReactorInfo()
     if r then
@@ -33,7 +34,7 @@ while true do
       })
     end
   end
-
+  -- МЭ
   local me = component.proxy(component.list("me_interface")() or component.list("me_controller")() or "")
   if me then
     for i, it in ipairs(TRACKED_ITEMS) do
@@ -51,13 +52,16 @@ while true do
 
   m.broadcast(123, "STATS", serial.serialize(stats))
 
+  -- РЕАЛЬНОЕ ВРЕМЯ ОТПРАВКИ
   local _, _, nick, msg = event.pull(0.5, "chat_message")
   if nick and msg then
+    local t = os.date("*t") -- Берем системное время ПК
+    local timeStr = string.format("%02d:%02d", t.hour, t.min)
     local isGlobal = msg:sub(1,1) == "!"
-    local chatMsg = {
+    local chatData = {
       n = nick, m = isGlobal and msg:sub(2) or msg, 
-      t = os.date("%H:%M"), tag = isGlobal and "&6[G]" or "&9[L]"
+      t = timeStr, tag = isGlobal and "&6[G]" or "&9[L]"
     }
-    m.broadcast(123, "CHAT_MSG", serial.serialize(chatMsg))
+    m.broadcast(123, "CHAT_MSG", serial.serialize(chatData))
   end
 end
