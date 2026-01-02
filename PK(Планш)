@@ -9,8 +9,14 @@ local PORT = 5347
 local ADMIN = "LiwMorgan"
 m.open(PORT)
 
+-- Настройка под монитор 4x2 (широкий формат)
+-- 3 уровень позволяет высокие разрешения, выберем оптимальное для читаемости
+local screenW, screenH = 120, 30 
+gpu.setResolution(screenW, screenH)
 local w, h = gpu.getResolution()
-local splitX = math.floor(w * 0.70)
+
+-- Линия раздела (панель управления сверху занимает 8 строк)
+local splitY = 8
 local last_stats = nil
 local old_reactors = {}
 local codes = {["0"]=0x000000, ["1"]=0x2244FF, ["2"]=0x00AA00, ["4"]=0xAA0000, ["6"]=0xFFAA00, ["7"]=0xAAAAAA, ["8"]=0x555555, ["9"]=0x5555FF, ["a"]=0x55FF55, ["b"]=0x33DBFF, ["c"]=0xFF5555, ["e"]=0xFFFF55, ["f"]=0xFFFFFF}
@@ -30,54 +36,61 @@ end
 
 local function wrapChat(text)
   local lines = {}
-  while unicode.len(text) > (splitX - 1) do
-    table.insert(lines, unicode.sub(text, 1, splitX - 1))
-    text = unicode.sub(text, splitX, -1)
+  -- Оставляем небольшие поля по бокам чата
+  local maxW = w - 4
+  while unicode.len(text) > maxW do
+    table.insert(lines, unicode.sub(text, 1, maxW))
+    text = unicode.sub(text, maxW + 1, -1)
   end
   table.insert(lines, text)
   return lines
 end
 
 local function drawStatic()
-  gpu.setBackground(0x212121)
-  gpu.fill(1, 1, splitX, h, " ")
-  gpu.setBackground(0x111111)
-  gpu.fill(splitX + 1, 1, w - splitX, h, " ")
-  gpu.setForeground(0x00FF99)
-  for i=1, h do gpu.set(splitX, i, "┃") end
-  writeColor(splitX+2, 6, "&6REACTORS")
-  writeColor(splitX+2, 13, "&bVIS MATERIA")
+  -- Фон чата
+  gpu.setBackground(0x181818)
+  gpu.fill(1, splitY + 1, w, h - splitY, " ")
+  -- Фон верхней панели
+  gpu.setBackground(0x0F0F0F)
+  gpu.fill(1, 1, w, splitY, " ")
+  -- Тонкая линия-разделитель
+  gpu.setForeground(0x333333)
+  gpu.set(1, splitY, string.rep("─", w))
+  
+  writeColor(2, 2, "&6&lСИСТЕМА КОНТРОЛЯ РЕАКТОРОВ")
+  writeColor(w - 25, 2, "&bVIS MATERIA STATUS")
 end
 
 local function updateUI(data)
-  gpu.setBackground(0x111111)
+  gpu.setBackground(0x0F0F0F)
   local e = data.energy
-  gpu.fill(splitX+2, 1, w-splitX-1, 5, " ")
-  writeColor(splitX+2, 1, "&eE: &f" .. e.cur)
-  writeColor(splitX+2, 2, "&8Out: &b" .. e.gateOut .. "/t")
-  writeColor(splitX+2, 3, "&8T: &7" .. math.floor(e.rawTarget/10^9) .. "b")
   
-  gpu.setBackground(0x333333)
-  gpu.set(splitX+2, 4, " [+] ")
-  gpu.set(splitX+9, 4, " [-] ")
-  gpu.setBackground(0x111111)
+  -- Энергия и управление таргетом
+  gpu.fill(2, 4, 70, 1, " ")
+  writeColor(2, 4, "&eRF: &f" .. e.cur .. " &8| &7Target: &e" .. math.floor(e.rawTarget/10^9) .. "b")
+  
+  gpu.setBackground(0x222222)
+  gpu.set(2, 5, "  [ + ]  ")
+  gpu.set(12, 5, "  [ - ]  ")
+  gpu.setBackground(0x0F0F0F)
+  writeColor(23, 5, "&8Out: &b" .. e.gateOut .. " RF/t")
 
+  -- Реакторы в одну строку горизонтально
   for i=1, 5 do
     local r = data.reactors[i]
-    local info = r.gen == "OFFLINE" and "&8OFFLINE" or ("&f"..r.gen.." &e"..r.fuel.."%")
-    if old_reactors[i] ~= info then
-      gpu.fill(splitX+5, 6+i, w-splitX-5, 1, " ")
-      writeColor(splitX+2, 6+i, "&7"..i..": "..info)
-      old_reactors[i] = info
-    end
+    local status = r.gen == "OFFLINE" and "&8OFF" or ("&a" .. r.fuel .. "%")
+    local xPos = 2 + (i-1) * 15
+    gpu.fill(xPos, 7, 14, 1, " ")
+    writeColor(xPos, 7, "&7R" .. i .. ": " .. status)
   end
 
-  gpu.fill(splitX+2, 14, w-splitX-2, 2, " ")
+  -- Предметы/Vis справа
   if data.items and data.items[1] then
     local it = data.items[1]
-    writeColor(splitX+2, 14, "&fC: " .. it.val)
+    gpu.fill(w - 25, 4, 24, 2, " ")
+    writeColor(w - 25, 4, "&fКол-во: &e" .. it.val)
     local sStr = string.format("%.1f", it.s)
-    writeColor(splitX+2, 15, "&7S: " .. (it.s >= 0 and "&a+" or "&c") .. sStr .. "/s")
+    writeColor(w - 25, 5, "&fСкорость: " .. (it.s >= 0 and "&a+" or "&c") .. sStr .. "/s")
   end
   last_stats = data
 end
@@ -94,23 +107,25 @@ while true do
     if ok and data then
       if header == "STATS" then updateUI(data)
       elseif header == "CHAT_MSG" then
-        gpu.setBackground(0x212121)
+        gpu.setBackground(0x181818)
         local full = string.format("&8%s %s &f%s: &7%s", data.t, data.tag, data.n, data.m)
         local wrapped = wrapChat(full)
         for _, line in ipairs(wrapped) do
-          gpu.copy(1, 2, splitX-1, h-1, 0, -1)
-          gpu.fill(1, h, splitX-1, 1, " ")
-          writeColor(1, h, line)
+          -- Скроллинг только нижней зоны
+          gpu.copy(1, splitY + 2, w, h - splitY - 1, 0, -1)
+          gpu.fill(1, h, w, 1, " ")
+          writeColor(3, h, line)
         end
       end
     end
   elseif evType == "touch" then
     local x, y, user = res[3], res[4], res[6] or res[5]
-    if x > splitX and y == 4 and last_stats and user == ADMIN then
+    -- Координаты кнопок + и -
+    if y == 5 and x < 22 and last_stats and user == ADMIN then
       local step = 10^9
       if keyboard.isShiftDown() then step = 100 * 10^9 
       elseif keyboard.isControlDown() then step = 50 * 10^9 end
-      local val = (x < splitX+8) and last_stats.energy.rawTarget + step or last_stats.energy.rawTarget - step
+      local val = (x < 11) and last_stats.energy.rawTarget + step or last_stats.energy.rawTarget - step
       m.broadcast(PORT, serial.serialize({cmd="SET_ENERGY", val=val, user=user}))
     end
   end
