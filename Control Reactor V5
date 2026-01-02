@@ -12,7 +12,8 @@ local ADMIN_NAME = "LiwMorgan"
 local SAVE_FILE = "/home/reactors.cfg"
 local UPDATE_INTERVAL = 0.5 
 local maxW, maxH = gpu.maxResolution()
-local W, H = math.min(132, maxW), math.min(38, maxH)
+-- Увеличили ширину до 145 для нормального отображения всех колонок
+local W, H = math.min(145, maxW), math.min(38, maxH)
 gpu.setResolution(W, H)
 
 local cfg = {
@@ -35,7 +36,7 @@ local COLORS = {
   label = 0x555555, good = 0x00FF44, warn = 0xFFCC00,
   bad = 0xFF2222, cold = 0x00CCFF,
   btn_sel = 0x004466, btn_cancel = 0x441111, btn_inc = 0x224422,
-  btn_chg_active = 0xFFCC00, -- Ярко-желтый для зарядки
+  btn_chg_active = 0xFFCC00, 
   btn_inactive = 0x222222
 }
 
@@ -98,49 +99,90 @@ end
 
 local function render()
   buttons = {}
+  -- Шапка
   gpu.setBackground(COLORS.panel); gpu.fill(1, 1, W, 3, " "); gpu.setForeground(COLORS.cold); gpu.set(2, 2, "DRACONIC SYSTEM | " .. ADMIN_NAME)
   local profitStr = "TOTAL PROFIT: " .. string.format("%.1fK RF/t", totalProfit / 1000)
   gpu.setForeground(totalProfit > 0 and COLORS.good or COLORS.bad); gpu.set(W - #profitStr - 2, 2, profitStr)
 
   local tableStartY = 4
   gpu.setBackground(COLORS.bg); gpu.fill(1, tableStartY, W, H - tableStartY, " ")
-  gpu.setForeground(COLORS.label); gpu.set(2, tableStartY, "ID   STATUS      STATE            TEMP      SHIELD/SAT      PROFIT   GEN      FLOW")
+  
+  -- Заголовки таблицы (откалиброванные координаты)
+  gpu.setForeground(COLORS.label)
+  gpu.set(2,  tableStartY, "ID")
+  gpu.set(6,  tableStartY, "STATUS")
+  gpu.set(18, tableStartY, "STATE")
+  gpu.set(34, tableStartY, "TEMP")
+  gpu.set(44, tableStartY, "SHIELD/SAT")
+  gpu.set(58, tableStartY, "FUEL USED")
+  gpu.set(70, tableStartY, "PROFIT")
+  gpu.set(81, tableStartY, "GEN")
+  gpu.set(90, tableStartY, "OUT FLOW")
+  gpu.set(102, tableStartY, "CONTROLS")
+  
   gpu.set(1, tableStartY + 1, string.rep("─", W))
   
   local currentTotal = 0
   for i, r in ipairs(reactors) do
     local y = tableStartY + 2 + (i-1)*2
     gpu.setBackground(COLORS.bg)
+    
     if r.online and r.info then
+      -- ID
       gpu.setForeground(COLORS.text); gpu.set(2, y, "#"..i)
-      local status = tostring(r.info.status or "???"):upper()
-      gpu.setForeground((status == "RUNNING" or status == "ONLINE") and COLORS.good or COLORS.warn); gpu.set(7, y, status:sub(1,10))
-      gpu.setForeground(r.auto and COLORS.good or COLORS.text); gpu.set(19, y, r.state or "---")
-      local temp = tonumber(r.info.temperature) or 0
-      gpu.setForeground(temp > 8000 and COLORS.bad or COLORS.good); gpu.set(35, y, string.format("%.0fC", temp))
       
+      -- STATUS
+      local status = tostring(r.info.status or "???"):upper()
+      gpu.setForeground((status == "RUNNING" or status == "ONLINE") and COLORS.good or COLORS.warn); gpu.set(6, y, status:sub(1,10))
+      
+      -- STATE
+      gpu.setForeground(r.auto and COLORS.good or COLORS.text); gpu.set(18, y, (r.state or "---"):sub(1,14))
+      
+      -- TEMP
+      local temp = tonumber(r.info.temperature) or 0
+      gpu.setForeground(temp > 8000 and COLORS.bad or (temp > 7000 and COLORS.warn or COLORS.good))
+      gpu.set(34, y, string.format("%.0fC", temp))
+      
+      -- SHIELD / SATURATION
       local sP = math.floor(((tonumber(r.info.fieldStrength) or 0)/(tonumber(r.info.maxFieldStrength) or 1))*100)
       local satP = math.floor(((tonumber(r.info.energySaturation) or 0)/(tonumber(r.info.maxEnergySaturation) or 1))*100)
-      gpu.setForeground(sP < 25 and COLORS.bad or COLORS.good); gpu.set(45, y, sP.."%/"..satP.."%")
+      gpu.setForeground(sP < 25 and COLORS.bad or COLORS.good); gpu.set(44, y, sP.."%/"..satP.."%")
       
-      local gen = tonumber(r.info.generationRate) or 0; local rProfit = (gen - safeNum(r.gateIn))
+      -- FUEL (Расход топлива)
+      local fConv = tonumber(r.info.fuelConversion) or 0
+      local fMax = tonumber(r.info.maxFuelConversion) or 1
+      local fuelPerc = (fConv / fMax) * 100
+      gpu.setForeground(fuelPerc > 85 and COLORS.bad or (fuelPerc > 50 and COLORS.warn or COLORS.text))
+      gpu.set(58, y, string.format("%.2f%%", fuelPerc))
+      
+      -- PROFIT / GEN / FLOW
+      local gen = tonumber(r.info.generationRate) or 0
+      local rProfit = (gen - safeNum(r.gateIn))
       currentTotal = currentTotal + rProfit
-      gpu.setForeground(rProfit > 0 and COLORS.good or COLORS.bad); gpu.set(61, y, string.format("%.1fK", rProfit/1000))
-      gpu.setForeground(COLORS.warn); gpu.set(70, y, math.floor(gen/1000).."K"); gpu.setForeground(COLORS.cold); gpu.set(78, y, math.floor(safeNum(r.gateOut)/1000).."K")
       
-      drawBtn("minus_"..i, 87, y, 2, 1, "-", 0x441111, true)
-      drawBtn("plus_"..i, 90, y, 2, 1, "+", 0x114411, true)
+      gpu.setForeground(rProfit > 0 and COLORS.good or COLORS.bad); gpu.set(70, y, string.format("%.1fK", rProfit/1000))
+      gpu.setForeground(COLORS.warn); gpu.set(81, y, math.floor(gen/1000).."K")
+      gpu.setForeground(COLORS.cold); gpu.set(90, y, math.floor(safeNum(r.gateOut)/1000).."K")
       
-      -- ЛОГИКА КНОПКИ ЗАРЯДКИ
+      -- BUTTONS (Смещены вправо для красоты)
+      drawBtn("minus_"..i, 102, y, 2, 1, "-", 0x441111, true)
+      drawBtn("plus_"..i, 105, y, 2, 1, "+", 0x114411, true)
+      
       local canCharge = (status == "COLD" or status == "OFF" or status == "CHARGING")
-      drawBtn("chg_"..i, 94, y, 5, 1, "CHG", COLORS.btn_chg_active, canCharge)
+      drawBtn("chg_"..i, 109, y, 5, 1, "CHG", COLORS.btn_chg_active, canCharge)
       
-      drawBtn("auto_"..i, 101, y, 6, 1, "AUTO", COLORS.btn_sel, r.auto)
-      local active = (status == "RUNNING" or status == "ONLINE" or status == "STARTING")
-      drawBtn("pow_"..i, 109, y, 5, 1, "PWR", active and COLORS.bad or COLORS.good, true)
+      drawBtn("auto_"..i, 116, y, 6, 1, "AUTO", COLORS.btn_sel, r.auto)
+      
+      local isActive = (status == "RUNNING" or status == "ONLINE" or status == "STARTING")
+      drawBtn("pow_"..i, 124, y, 5, 1, "PWR", isActive and COLORS.bad or COLORS.good, true)
+      
+      drawBtn("del_"..i, W-3, y, 2, 1, "X", 0x441111, true)
+    else
+      gpu.setForeground(COLORS.bad); gpu.set(6, y, "OFFLINE / DISCONNECTED")
       drawBtn("del_"..i, W-3, y, 2, 1, "X", 0x441111, true)
     end
   end
+  
   totalProfit = currentTotal
   drawBtn("add", 2, H, 12, 1, "[+] ADD", 0x333333, true)
   drawBtn("exit", W-10, H, 9, 1, "EXIT", 0x441111, true)
@@ -214,10 +256,12 @@ if filesystem.exists(SAVE_FILE) then
 end
 
 gpu.setBackground(0); gpu.fill(1, 1, W, H, " ")
+
 while running do
   if computer.uptime() - lastUpdateTime >= UPDATE_INTERVAL then
     for _, r in ipairs(reactors) do controlReactor(r) end
-    render(); lastUpdateTime = computer.uptime()
+    render()
+    lastUpdateTime = computer.uptime()
   end
   
   local e, _, x, y = event.pull(0.1, "touch")
@@ -231,7 +275,12 @@ while running do
           idx = tonumber(idx)
           if idx and reactors[idx] then
             local r = reactors[idx]
-            if act == "del" then table.remove(reactors, idx)
+            if act == "del" then 
+              table.remove(reactors, idx)
+              -- Сохранение после удаления
+              local data = {}
+              for _, rct in ipairs(reactors) do table.insert(data, {rAddr=rct.proxy.address, inAddr=rct.gateIn.address, outAddr=rct.gateOut.address, auto=rct.auto}) end
+              local f = io.open(SAVE_FILE, "w"); f:write(serialization.serialize(data)); f:close()
             elseif act == "auto" then r.auto = not r.auto
             elseif act == "chg" then pcall(r.proxy.chargeReactor); pcall(r.gateIn.setSignalLowFlow, 500000)
             elseif act == "pow" then 
@@ -248,4 +297,5 @@ while running do
     end
   end
 end
+
 gpu.setBackground(0); gpu.fill(1, 1, W, H, " "); gpu.setResolution(maxW, maxH)
