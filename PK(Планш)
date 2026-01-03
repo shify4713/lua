@@ -3,23 +3,35 @@ local event = require("event")
 local serial = require("serialization")
 local unicode = require("unicode")
 local keyboard = require("keyboard")
+local computer = require("computer")
 local gpu = component.gpu
 local m = component.modem
 local PORT = 5347
 local ADMIN = "LiwMorgan"
 m.open(PORT)
 
--- Настройка под монитор 4x2 (широкий формат)
--- 3 уровень позволяет высокие разрешения, выберем оптимальное для читаемости
+-- Настройка под монитор 4x2
 local screenW, screenH = 120, 30 
 gpu.setResolution(screenW, screenH)
 local w, h = gpu.getResolution()
 
--- Линия раздела (панель управления сверху занимает 8 строк)
 local splitY = 8
 local last_stats = nil
-local old_reactors = {}
 local codes = {["0"]=0x000000, ["1"]=0x2244FF, ["2"]=0x00AA00, ["4"]=0xAA0000, ["6"]=0xFFAA00, ["7"]=0xAAAAAA, ["8"]=0x555555, ["9"]=0x5555FF, ["a"]=0x55FF55, ["b"]=0x33DBFF, ["c"]=0xFF5555, ["e"]=0xFFFF55, ["f"]=0xFFFFFF}
+
+-- [[ ФУНКЦИЯ СЕРВЕРНОГО ВРЕМЕНИ С КОРРЕКЦИЕЙ ]]
+local function getRealTime(t)
+  local s = t or computer.uptime()
+  
+  -- КОРРЕКЦИЯ: Вычитаем 6 часов (6 * 3600 = 21600 секунд)
+  -- Добавляем проверку через остаток от деления, чтобы время не уходило в минус
+  s = (s - 21600) % (24 * 3600)
+  
+  local hours = math.floor(s / 3600) % 24
+  local mins = math.floor(s / 60) % 60
+  local secs = math.floor(s % 60)
+  return string.format("%02d:%02d:%02d", hours, mins, secs)
+end
 
 local function writeColor(x, y, text)
   local curX, i = x, 1
@@ -35,9 +47,8 @@ local function writeColor(x, y, text)
 end
 
 local function wrapChat(text)
-  local lines = {}
-  -- Оставляем небольшие поля по бокам чата
   local maxW = w - 4
+  local lines = {}
   while unicode.len(text) > maxW do
     table.insert(lines, unicode.sub(text, 1, maxW))
     text = unicode.sub(text, maxW + 1, -1)
@@ -47,13 +58,10 @@ local function wrapChat(text)
 end
 
 local function drawStatic()
-  -- Фон чата
   gpu.setBackground(0x181818)
   gpu.fill(1, splitY + 1, w, h - splitY, " ")
-  -- Фон верхней панели
   gpu.setBackground(0x0F0F0F)
   gpu.fill(1, 1, w, splitY, " ")
-  -- Тонкая линия-разделитель
   gpu.setForeground(0x333333)
   gpu.set(1, splitY, string.rep("─", w))
   
@@ -65,7 +73,10 @@ local function updateUI(data)
   gpu.setBackground(0x0F0F0F)
   local e = data.energy
   
-  -- Энергия и управление таргетом
+  -- Часы в углу панели
+  gpu.fill(w - 15, 1, 14, 1, " ")
+  writeColor(w - 15, 1, "&7" .. getRealTime())
+
   gpu.fill(2, 4, 70, 1, " ")
   writeColor(2, 4, "&eRF: &f" .. e.cur .. " &8| &7Target: &e" .. math.floor(e.rawTarget/10^9) .. "b")
   
@@ -75,7 +86,6 @@ local function updateUI(data)
   gpu.setBackground(0x0F0F0F)
   writeColor(23, 5, "&8Out: &b" .. e.gateOut .. " RF/t")
 
-  -- Реакторы в одну строку горизонтально
   for i=1, 5 do
     local r = data.reactors[i]
     local status = r.gen == "OFFLINE" and "&8OFF" or ("&a" .. r.fuel .. "%")
@@ -84,7 +94,6 @@ local function updateUI(data)
     writeColor(xPos, 7, "&7R" .. i .. ": " .. status)
   end
 
-  -- Предметы/Vis справа
   if data.items and data.items[1] then
     local it = data.items[1]
     gpu.fill(w - 25, 4, 24, 2, " ")
@@ -98,20 +107,30 @@ end
 drawStatic()
 
 while true do
-  local res = {event.pull()}
+  local res = {event.pull(1)}
+  local currentTime = computer.uptime() 
   local evType = res[1]
+
+  if not evType and last_stats then
+    gpu.setBackground(0x0F0F0F)
+    gpu.fill(w - 15, 1, 14, 1, " ")
+    writeColor(w - 15, 1, "&7" .. getRealTime(currentTime))
+  end
 
   if evType == "modem_message" then
     local header = res[6]
     local ok, data = pcall(serial.unserialize, tostring(res[7]))
     if ok and data then
-      if header == "STATS" then updateUI(data)
+      if header == "STATS" then 
+        updateUI(data)
       elseif header == "CHAT_MSG" then
         gpu.setBackground(0x181818)
-        local full = string.format("&8%s %s &f%s: &7%s", data.t, data.tag, data.n, data.m)
+        
+        local sTime = getRealTime(currentTime)
+        local full = string.format("&8[%s] %s &f%s: &7%s", sTime, data.tag, data.n, data.m)
+        
         local wrapped = wrapChat(full)
         for _, line in ipairs(wrapped) do
-          -- Скроллинг только нижней зоны
           gpu.copy(1, splitY + 2, w, h - splitY - 1, 0, -1)
           gpu.fill(1, h, w, 1, " ")
           writeColor(3, h, line)
@@ -120,7 +139,6 @@ while true do
     end
   elseif evType == "touch" then
     local x, y, user = res[3], res[4], res[6] or res[5]
-    -- Координаты кнопок + и -
     if y == 5 and x < 22 and last_stats and user == ADMIN then
       local step = 10^9
       if keyboard.isShiftDown() then step = 100 * 10^9 
