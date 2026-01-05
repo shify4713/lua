@@ -3,6 +3,7 @@ local event = require("event")
 local serial = require("serialization")
 local unicode = require("unicode")
 local computer = require("computer")
+local fs = require("filesystem")
 local gpu = component.gpu
 local m = component.modem
 
@@ -14,6 +15,33 @@ local chat_history, log_history = {}, {}
 local max_chat_lines = 19
 local splitY = 10
 local last_ui_update = 0
+
+-- [[ ЛОГИКА TPS (ИЗ ТВОЕГО КОДА) ]]
+local tSlot = 1
+local TPS_LIST = {}
+for i=1,10 do TPS_LIST[i]=20 end
+local current_tps_val = 20
+
+local function getFileTime()
+  local f = fs.open("/tmp/timeFile","w")
+  f:write("test")
+  f:close()
+  return fs.lastModified("/tmp/timeFile")
+end
+
+local function updateTPS()
+  local realTimeOld = getFileTime()
+  os.sleep(1) -- Замер разницы за 1 секунду
+  local realTimeNew = getFileTime()
+  local realTimeDiff = realTimeNew - realTimeOld
+  if realTimeDiff > 0 then
+    TPS_LIST[tSlot] = 20000 / realTimeDiff
+    if TPS_LIST[tSlot] > 20 then TPS_LIST[tSlot] = 20 end
+  end
+  current_tps_val = TPS_LIST[tSlot]
+  tSlot = tSlot + 1
+  if tSlot > 10 then tSlot = 1 end
+end
 
 local sensor = component.isAvailable("openperipheral_sensor") and component.openperipheral_sensor 
               or (component.isAvailable("sensor") and component.sensor or nil)
@@ -27,7 +55,7 @@ local known_players = {}
 local last_stats = nil
 local codes = {["0"]=0x000000, ["1"]=0x2244FF, ["2"]=0x00AA00, ["4"]=0xAA0000, ["6"]=0xFFAA00, ["7"]=0xAAAAAA, ["8"]=0x555555, ["9"]=0x5555FF, ["a"]=0x55FF55, ["b"]=0x33DBFF, ["c"]=0xFF5555, ["e"]=0xFFFF55, ["f"]=0xFFFFFF}
 
--- [[ СЛУЖЕБНЫЕ ФУНКЦИИ ]]
+-- [[ ФУНКЦИИ ОТРИСОВКИ ]]
 local function writeColor(x, y, text)
   local curX, i = x, 1
   while i <= unicode.len(text) do
@@ -41,9 +69,10 @@ local function writeColor(x, y, text)
 end
 
 local function addLog(name, status)
-  local color = status == "IN" and "&a+" or "&c-"
-  table.insert(log_history, 1, string.format("%s &f%s", color, unicode.sub(name, 1, 10)))
-  if #log_history > 5 then table.remove(log_history) end
+  if status == "IN" then
+    table.insert(log_history, 1, string.format("&a+ &f%s", unicode.sub(name, 1, 10)))
+    if #log_history > 5 then table.remove(log_history) end
+  end
 end
 
 local function addChat(msg)
@@ -57,21 +86,19 @@ local function addChat(msg)
   end
 end
 
--- [[ GUI ]]
 local function drawStatic()
   gpu.setBackground(0x111111); gpu.fill(1, 1, w, h, " ")
   gpu.setBackground(0x3366FF); gpu.fill(1, 1, w, 1, " ")
   gpu.setForeground(0xFFFFFF); gpu.set(2, 1, "CORE SYSTEM v3.3 | ADMIN: " .. ADMIN)
-  
+  gpu.set(w - 15, 1, "TPS: --.--")
+
   gpu.setBackground(0x0F0F0F)
   gpu.setForeground(0x3366FF)
   gpu.set(1, 2, "╔" .. string.rep("═", w-2) .. "╗")
   for i=3, 9 do gpu.set(1, i, "║"); gpu.set(w, i, "║") end
   gpu.set(1, 10, "╚" .. string.rep("═", w-2) .. "╝")
-  
   for i=3, 8 do gpu.set(78, i, "│"); gpu.set(96, i, "│") end
-  
-  writeColor(83, 2, "&7[ &fЛОГИ &7]")
+  writeColor(83, 2, "&7[ &fВХОДЫ &7]")
   writeColor(101, 2, "&7[ &fТАЙМЕР &7]")
 end
 
@@ -81,17 +108,14 @@ local function updateTimerUI()
   gpu.setBackground(0x333333)
   writeColor(tx, ty, " &a+ &0") 
   writeColor(tx+4, ty, " &c- &0")
-  
   if not timer.active then
-    gpu.setBackground(0x22AA22)
-    gpu.set(tx+9, ty, " START ")
+    gpu.setBackground(0x22AA22); gpu.set(tx+9, ty, " START ")
     gpu.setBackground(0x0F0F0F)
     local h, m = math.floor(timer.set/3600), math.floor((timer.set%3600)/60)
     writeColor(tx + 1, ty + 2, "&7ЗАДАНО:") 
     writeColor(tx + 3, ty + 3, string.format("&e%02d:%02d", h, m))
   else
-    gpu.setBackground(0xAA2222)
-    gpu.set(tx+9, ty, " STOP  ") 
+    gpu.setBackground(0xAA2222); gpu.set(tx+9, ty, " STOP  ") 
     gpu.setBackground(0x0F0F0F)
     local h, m = math.floor(timer.rem/3600), math.floor((timer.rem%3600)/60)
     writeColor(tx + 1, ty + 2, "&6ВРЕМЯ:") 
@@ -101,27 +125,25 @@ end
 
 local function updateSensorsUI()
   gpu.setBackground(0x0F0F0F)
-  local current, players_str = {}, ""
+  local current, names = {}, {}
   if sensor then
     local ok, raw = pcall(function() return sensor.getPlayers() or sensor.scan(16) end)
     if ok and raw then
       for _, p in ipairs(raw) do
         current[p.name] = true
-        players_str = players_str .. p.name .. ", "
+        table.insert(names, p.name)
         if not known_players[p.name] then addLog(p.name, "IN") end
       end
-      for name, _ in pairs(known_players) do
-        if not current[name] then addLog(name, "OUT") end
-      end
-      known_players = current
     end
   end
+  known_players = current
   for i=1, 5 do
     gpu.set(80, 3+i, string.rep(" ", 15))
     if log_history[i] then writeColor(80, 3+i, log_history[i]) end
   end
-  players_str = players_str ~= "" and players_str:sub(1, -3) or "Никого"
-  writeColor(3, 9, "&bРЯДОМ: &f" .. unicode.sub(players_str, 1, 70) .. string.rep(" ", 10))
+  local p_str = #names > 0 and table.concat(names, ", ") or "Никого"
+  gpu.set(3, 9, string.rep(" ", 75))
+  writeColor(3, 9, "&bРЯДОМ: &f" .. unicode.sub(p_str, 1, 70))
 end
 
 local function updateStatsUI(data)
@@ -170,39 +192,31 @@ while true do
   if res[1] == "modem_message" then
     local ok, data = pcall(serial.unserialize, tostring(res[7]))
     if ok and data then
-      if res[6] == "STATS" then 
-        updateStatsUI(data)
-        last_stats = data
+      if res[6] == "STATS" then last_stats = data; updateStatsUI(data)
       elseif res[6] == "CHAT_MSG" then
         local rawMsg = tostring(data.m or "")
-        -- ПРОВЕРКА: Если сообщение начинается с !, то это Глобал
         local isGlobal = (rawMsg:sub(1,1) == "!")
         local tag = isGlobal and "&6[G]" or "&7[L]"
-        
-        -- Убираем ! из текста для красоты, если он там был
         local cleanMsg = isGlobal and rawMsg:sub(2) or rawMsg
-        
         addChat(string.format("%s &b%s&8: &7%s", tag, data.n or "User", cleanMsg))
       end
     end
   elseif res[1] == "touch" then
     local x, y = res[3], res[4]
     if y == timer.y then
-      if x >= timer.x and x <= timer.x+3 then 
-        timer.set = math.min(MAX_TIME, timer.set + 3600)
-        if timer.active then timer.rem = timer.rem + 3600 end
-      elseif x >= timer.x+4 and x <= timer.x+7 then 
-        timer.set = math.max(0, timer.set - 3600)
-        if timer.active then timer.rem = math.max(0, timer.rem - 3600) end
-      elseif x >= timer.x+9 and x <= timer.x+16 then 
-        timer.active = not timer.active
-        if timer.active then timer.rem = timer.set end
+      if x >= timer.x and x <= timer.x+3 then timer.set = timer.set + 3600
+      elseif x >= timer.x+4 and x <= timer.x+7 then timer.set = math.max(0, timer.set - 3600)
+      elseif x >= timer.x+9 and x <= timer.x+16 then timer.active = not timer.active; if timer.active then timer.rem = timer.set end
       end
+      updateTimerUI()
     end
-    updateTimerUI()
   end
 
-  if computer.uptime() - last_ui_update > 1 then
+  if computer.uptime() - last_ui_update > 0.5 then
+    updateTPS()
+    gpu.setBackground(0x3366FF)
+    local tpsCol = current_tps_val < 15 and "&c" or (current_tps_val < 18 and "&e" or "&a")
+    writeColor(w - 10, 1, string.format("%s%.2f", tpsCol, current_tps_val))
     updateSensorsUI()
     if last_stats then updateStatsUI(last_stats) end
     last_ui_update = computer.uptime()
