@@ -3,6 +3,7 @@ local event = require("event")
 local serial = require("serialization")
 local os = require("os")
 local computer = require("computer")
+local keyboard = require("keyboard")
 local gpu = component.gpu
 local m = component.modem
 
@@ -22,7 +23,6 @@ local w, h = gpu.getResolution()
 local cfg = { target = 200 * 10^9, maxDiff = 25000, step = 10000 }
 local lastE, filVal, lastStats = 0, 0, 0
 
--- Переменные для стабильного расчета Вис-материи
 local lastVisCount = 0
 local lastVisTime = computer.uptime()
 local visPerSecond = 0
@@ -43,7 +43,7 @@ local function drawServerGUI(data)
   
   local bH = h - 10
   local maxE = (rf and rf.getMaxEnergyStored() or 1)
-  local fill = math.floor((lastE / maxE) * bH)
+  local fill = math.min(bH, math.floor((lastE / maxE) * bH))
   gpu.setForeground(0x333333)
   gpu.set(2, 2, "┌──┐")
   for i=0, bH do gpu.set(2, 3+i, "│  │") end
@@ -74,8 +74,8 @@ local function drawServerGUI(data)
   gpu.set(40, 2, "NETWORK INFO")
   if data.items and data.items[1] then
     local it = data.items[1]
-    gpu.set(40, 4, "Vis: " .. it.val)
-    gpu.set(40, 5, "Flow: " .. (it.s>=0 and "+" or "").. string.format("%.1f", it.s) .. "/s")
+    gpu.set(40, 4, "Vis: " .. format(it.count))
+    gpu.set(40, 5, "Flow: " .. (it.itemsPerSecond >= 0 and "+" or "").. string.format("%.1f", it.itemsPerSecond) .. "/s")
   end
   gpu.setForeground(0x5555FF)
   gpu.set(40, h-1, "GATE: " .. data.energy.gateOut .. "/t")
@@ -100,22 +100,20 @@ local function gatherStats()
     local countV = (d and d[1]) and d[1].size or 0
     
     if firstRun then lastVisCount = countV; firstRun = false end
-
     local curTime = computer.uptime()
     if curTime - lastVisTime >= 5 then
       visPerSecond = (countV - lastVisCount) / (curTime - lastVisTime)
       lastVisCount = countV
       lastVisTime = curTime
     end
-    table.insert(st.items, {val=format(countV), s=visPerSecond})
+    table.insert(st.items, {id="Vis_materia", count=countV, itemsPerSecond=visPerSecond})
   end
   return st
 end
 
 gpu.fill(1,1,w,h," ")
 while true do
-  -- Пауза 1 секунда для снижения нагрузки
-  local res = {event.pull(1)}
+  local res = {event.pull(0.5)}
   local ev = res[1]
   
   if rf and gate then
@@ -136,8 +134,8 @@ while true do
     local x, y = res[3], res[4]
     if y == 8 then
       local step = 10^9
-      if require("keyboard").isShiftDown() then step = 100*10^9 
-      elseif require("keyboard").isControlDown() then step = 50*10^9 end
+      if keyboard.isShiftDown() then step = 100*10^9 
+      elseif keyboard.isControlDown() then step = 50*10^9 end
       if x >= 10 and x <= 18 then cfg.target = cfg.target + step
       elseif x >= 20 and x <= 28 then cfg.target = cfg.target - step end
     end
@@ -145,12 +143,8 @@ while true do
     local tag = res[4]:sub(1,1) == "!" and "&9[G]" or "&7[L]"
     local msg = {n=res[3], m=res[4], t=os.date("%H:%M"), tag=tag}
     m.broadcast(PORT, "CHAT_MSG", serial.serialize(msg))
-  elseif ev == "modem_message" then
-    local ok, d = pcall(serial.unserialize, tostring(res[6]))
-    if ok and d and d.cmd == "SET_ENERGY" and d.user == ADMIN then cfg.target = d.val end
   end
 
-  -- Обновление GUI и отправка на планшет раз в 2 секунды
   if computer.uptime() - lastStats > 2 then
     drawServerGUI(currentData)
     m.broadcast(PORT, "STATS", serial.serialize(currentData))
