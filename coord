@@ -4,6 +4,7 @@
 #stuck_timer = 0;
 #ika = 0;
 #is_turning = 0;
+#border_cooldown = 0; 
 
 if(automine);
     log("&c[Bot] Stopping...");
@@ -22,32 +23,37 @@ else;
     elseif(DIRECTION == "W"); #target_yaw = 270;
     elseif(DIRECTION == "E"); #target_yaw = 90;
     endif;
-   
+    
     do;
         if(!automine); break; endif;
         key(attack);
+
+        if(#border_cooldown > 0); dec(#border_cooldown); endif;
 
         if(#stuck_timer > 0);
             looks(%#target_yaw%,60,0.2);
             dec(#stuck_timer);
         else;
-            looks(%#target_yaw%,0,0.1);  // Точно как у тебя было — мягкий контроль
+            looks(%#target_yaw%,0,0.1);
 
-            if(#is_turning == 0);
+            if((#is_turning == 0) && (#border_cooldown == 0));
                 if((ZPOS > 5975) || (ZPOS < -5975) || (XPOS > 5975) || (XPOS < -5975));
+                    // 1. Остановка и подготовка
                     keyup(forward); keyup(sprint);
-                    wait(2t);
+                    cleardir(); 
+                    wait(5t);
 
-                    // Определяем боковой yaw
+                    // 2. Поворот камеры вбок для смещения змейки
                     if((#target_yaw == 0) || (#target_yaw == 270));
                         #side_yaw = %#target_yaw% + 90;
                     else;
                         #side_yaw = %#target_yaw% - 90;
                     endif;
 
-                    // Поворот на 90° и короткий шаг вперёд (~7 блоков)
                     looks(%#side_yaw%,0,1);
-                    wait(5t);
+                    wait(10t);
+
+                    // 3. Проход 7 блоков вбок (новая линия)
                     #start_x = XPOS;
                     #start_z = ZPOS;
                     keydown(forward);
@@ -58,51 +64,45 @@ else;
                         #dist_sq = (#dx * #dx) + (#dz * #dz);
                         key(attack);
                         wait(1t);
-                    until(#dist_sq >= 49);  // ровно 7 блоков
+                    until(#dist_sq >= 49); 
                     keyup(forward);
+                    wait(5t);
 
-                    // Разворот на 180°
+                    // 4. Разворот камеры на 180 градусов (смотрим "домой")
                     #target_yaw = %#target_yaw% + 180;
                     if(#target_yaw >= 360); #target_yaw = %#target_yaw% - 360; endif;
                     if(#target_yaw < 0); #target_yaw = %#target_yaw% + 360; endif;
+                    
                     looks(%#target_yaw%,0,1);
-                    wait(20t);
+                    wait(15t); // Даем камере довернуться
 
-                    // Снова на бок и небольшой sneak-шаг назад для точной центровки
-                    looks(%#side_yaw%,0,1);
-                    wait(5t);
-                    keydown(sneak);
-                    keydown(forward);
-                    wait(18t);  // ~0.9-1 блок назад
-                    keyup(forward);
-                    keyup(sneak);
-                    wait(10t);
+                    // 5. ТЕПЕРЬ СЕТХОМ И ХОМ (когда уже смотрим прямо обратно)
+                    log("&e[Bot] Фиксация на новой линии...");
+                    echo("/sethome"); 
+                    wait(25t); 
+                    echo("/home");
+                    wait(30t); 
 
-                    // Финальная центровка на основное направление
-                    looks(%#target_yaw%,0,1);
-                    wait(10t);
-
-                    #is_turning = 140;  // блокировка на время стабилизации
+                    // 6. Запуск таймеров защиты
+                    #border_cooldown = 100; // 5 сек не чекать границы
+                    #is_turning = 20; 
                 endif;
             else;
-                dec(#is_turning);
+                if(#is_turning > 0); dec(#is_turning); endif;
             endif;
         endif;
 
-        // Движение
-        if(automine);
+        // ДВИЖЕНИЕ
+        if(automine && #is_turning == 0);
             keydown(forward);
             keydown(sprint);
-        else;
-            keyup(forward);
-            keyup(sprint);
         endif;
 
-        // Антистак
+        // АНТИСТАК
         inc(#ika);
         if(#ika > #stuck_check_delay);
             if((#last_x == XPOS) && (#last_z == ZPOS));
-                if((#stuck_timer == 0) && (#is_turning == 0));
+                if((#stuck_timer == 0) && (#is_turning == 0) && (#border_cooldown == 0));
                     #stuck_timer = 20;
                 endif;
             endif;
