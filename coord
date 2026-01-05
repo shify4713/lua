@@ -1,0 +1,121 @@
+#pri = 10;
+@ghost = false;
+#stuck_check_delay = 30;
+#stuck_timer = 0;
+#ika = 0;
+#is_turning = 0;
+
+if(automine);
+    log("&c[Bot] Stopping...");
+    unset(automine);
+    keyup(forward);
+    keyup(sprint);
+    keyup(attack);
+    cleardir();
+    stop();
+else;
+    log("&a[Bot] Snake Mode Enabled");
+    set(automine);
+
+    if(DIRECTION == "N"); #target_yaw = 0;
+    elseif(DIRECTION == "S"); #target_yaw = 180;
+    elseif(DIRECTION == "W"); #target_yaw = 270;
+    elseif(DIRECTION == "E"); #target_yaw = 90;
+    endif;
+   
+    do;
+        if(!automine); break; endif;
+        key(attack);
+
+        if(#stuck_timer > 0);
+            looks(%#target_yaw%,60,0.2);
+            dec(#stuck_timer);
+        else;
+            looks(%#target_yaw%,0,0.1);  // Точно как у тебя было — мягкий контроль
+
+            if(#is_turning == 0);
+                if((ZPOS > 5975) || (ZPOS < -5975) || (XPOS > 5975) || (XPOS < -5975));
+                    keyup(forward); keyup(sprint);
+                    wait(2t);
+
+                    // Определяем боковой yaw
+                    if((#target_yaw == 0) || (#target_yaw == 270));
+                        #side_yaw = %#target_yaw% + 90;
+                    else;
+                        #side_yaw = %#target_yaw% - 90;
+                    endif;
+
+                    // Поворот на 90° и короткий шаг вперёд (~7 блоков)
+                    looks(%#side_yaw%,0,1);
+                    wait(5t);
+                    #start_x = XPOS;
+                    #start_z = ZPOS;
+                    keydown(forward);
+                    do;
+                        if(!automine); keyup(forward); break; endif;
+                        #dx = XPOS - #start_x;
+                        #dz = ZPOS - #start_z;
+                        #dist_sq = (#dx * #dx) + (#dz * #dz);
+                        key(attack);
+                        wait(1t);
+                    until(#dist_sq >= 49);  // ровно 7 блоков
+                    keyup(forward);
+
+                    // Разворот на 180°
+                    #target_yaw = %#target_yaw% + 180;
+                    if(#target_yaw >= 360); #target_yaw = %#target_yaw% - 360; endif;
+                    if(#target_yaw < 0); #target_yaw = %#target_yaw% + 360; endif;
+                    looks(%#target_yaw%,0,1);
+                    wait(20t);
+
+                    // Снова на бок и небольшой sneak-шаг назад для точной центровки
+                    looks(%#side_yaw%,0,1);
+                    wait(5t);
+                    keydown(sneak);
+                    keydown(forward);
+                    wait(18t);  // ~0.9-1 блок назад
+                    keyup(forward);
+                    keyup(sneak);
+                    wait(10t);
+
+                    // Финальная центровка на основное направление
+                    looks(%#target_yaw%,0,1);
+                    wait(10t);
+
+                    #is_turning = 140;  // блокировка на время стабилизации
+                endif;
+            else;
+                dec(#is_turning);
+            endif;
+        endif;
+
+        // Движение
+        if(automine);
+            keydown(forward);
+            keydown(sprint);
+        else;
+            keyup(forward);
+            keyup(sprint);
+        endif;
+
+        // Антистак
+        inc(#ika);
+        if(#ika > #stuck_check_delay);
+            if((#last_x == XPOS) && (#last_z == ZPOS));
+                if((#stuck_timer == 0) && (#is_turning == 0));
+                    #stuck_timer = 20;
+                endif;
+            endif;
+            #last_x = XPOS;
+            #last_z = ZPOS;
+            #ika = 0;
+        endif;
+
+        wait(1t);
+    while(automine);
+
+    keyup(forward);
+    keyup(sprint);
+    keyup(attack);
+    cleardir();
+endif;
