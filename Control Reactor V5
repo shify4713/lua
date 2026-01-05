@@ -99,15 +99,20 @@ end
 
 local function render()
   buttons = {}
-  -- Шапка
-  gpu.setBackground(COLORS.panel); gpu.fill(1, 1, W, 3, " "); gpu.setForeground(COLORS.cold); gpu.set(2, 2, "DRACONIC SYSTEM | " .. ADMIN_NAME)
+  -- Шапка (рисуем без полной очистки экрана)
+  gpu.setBackground(COLORS.panel)
+  gpu.fill(1, 1, W, 3, " ")
+  gpu.setForeground(COLORS.cold)
+  gpu.set(2, 2, "DRACONIC SYSTEM | " .. ADMIN_NAME)
+  
   local profitStr = "TOTAL PROFIT: " .. string.format("%.1fK RF/t", totalProfit / 1000)
-  gpu.setForeground(totalProfit > 0 and COLORS.good or COLORS.bad); gpu.set(W - #profitStr - 2, 2, profitStr)
+  gpu.setForeground(totalProfit > 0 and COLORS.good or COLORS.bad)
+  gpu.set(W - #profitStr - 2, 2, profitStr)
 
   local tableStartY = 4
-  gpu.setBackground(COLORS.bg); gpu.fill(1, tableStartY, W, H - tableStartY, " ")
   
-  -- Заголовки таблицы (откалиброванные координаты)
+  -- Заголовки таблицы
+  gpu.setBackground(COLORS.bg)
   gpu.setForeground(COLORS.label)
   gpu.set(2,  tableStartY, "ID")
   gpu.set(6,  tableStartY, "STATUS")
@@ -119,24 +124,29 @@ local function render()
   gpu.set(81, tableStartY, "GEN")
   gpu.set(90, tableStartY, "OUT FLOW")
   gpu.set(102, tableStartY, "CONTROLS")
-  
   gpu.set(1, tableStartY + 1, string.rep("─", W))
   
   local currentTotal = 0
   for i, r in ipairs(reactors) do
     local y = tableStartY + 2 + (i-1)*2
+    
+    -- АНТИ-МЕРЦАНИЕ: Очищаем только область данных текущего реактора
     gpu.setBackground(COLORS.bg)
+    gpu.fill(1, y, 101, 1, " ") 
     
     if r.online and r.info then
+      local status = tostring(r.info.status or "???"):upper()
+      
       -- ID
       gpu.setForeground(COLORS.text); gpu.set(2, y, "#"..i)
       
       -- STATUS
-      local status = tostring(r.info.status or "???"):upper()
-      gpu.setForeground((status == "RUNNING" or status == "ONLINE") and COLORS.good or COLORS.warn); gpu.set(6, y, status:sub(1,10))
+      gpu.setForeground((status == "RUNNING" or status == "ONLINE") and COLORS.good or COLORS.warn)
+      gpu.set(6, y, status:sub(1,11))
       
       -- STATE
-      gpu.setForeground(r.auto and COLORS.good or COLORS.text); gpu.set(18, y, (r.state or "---"):sub(1,14))
+      gpu.setForeground(r.auto and COLORS.good or COLORS.text)
+      gpu.set(18, y, (r.state or "---"):sub(1,14))
       
       -- TEMP
       local temp = tonumber(r.info.temperature) or 0
@@ -148,7 +158,7 @@ local function render()
       local satP = math.floor(((tonumber(r.info.energySaturation) or 0)/(tonumber(r.info.maxEnergySaturation) or 1))*100)
       gpu.setForeground(sP < 25 and COLORS.bad or COLORS.good); gpu.set(44, y, sP.."%/"..satP.."%")
       
-      -- FUEL (Расход топлива)
+      -- FUEL
       local fConv = tonumber(r.info.fuelConversion) or 0
       local fMax = tonumber(r.info.maxFuelConversion) or 1
       local fuelPerc = (fConv / fMax) * 100
@@ -164,11 +174,12 @@ local function render()
       gpu.setForeground(COLORS.warn); gpu.set(81, y, math.floor(gen/1000).."K")
       gpu.setForeground(COLORS.cold); gpu.set(90, y, math.floor(safeNum(r.gateOut)/1000).."K")
       
-      -- BUTTONS (Смещены вправо для красоты)
+      -- CONTROLS
       drawBtn("minus_"..i, 102, y, 2, 1, "-", 0x441111, true)
       drawBtn("plus_"..i, 105, y, 2, 1, "+", 0x114411, true)
       
-      local canCharge = (status == "COLD" or status == "OFF" or status == "CHARGING")
+      -- КНОПКА CHG: горит желтым, если реактор выключен, остыл или заряжается
+      local canCharge = (status == "COLD" or status == "OFF" or status == "CHARGING" or status == "FAILSAFE" or status == "BEYOND_HOPE")
       drawBtn("chg_"..i, 109, y, 5, 1, "CHG", COLORS.btn_chg_active, canCharge)
       
       drawBtn("auto_"..i, 116, y, 6, 1, "AUTO", COLORS.btn_sel, r.auto)
@@ -277,7 +288,6 @@ while running do
             local r = reactors[idx]
             if act == "del" then 
               table.remove(reactors, idx)
-              -- Сохранение после удаления
               local data = {}
               for _, rct in ipairs(reactors) do table.insert(data, {rAddr=rct.proxy.address, inAddr=rct.gateIn.address, outAddr=rct.gateOut.address, auto=rct.auto}) end
               local f = io.open(SAVE_FILE, "w"); f:write(serialization.serialize(data)); f:close()
