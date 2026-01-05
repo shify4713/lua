@@ -11,42 +11,35 @@ local m = component.modem
 local PORT = 5347
 local ADMIN = "LiwMorgan"
 local MAX_TIME = 86400
-local chat_history, log_history = {}, {}
-local max_chat_lines = 19
+local chat_history = {}
+local log_history = {}
 local splitY = 10
 local last_ui_update = 0
 
--- [[ ЛОГИКА TPS (ИЗ ТВОЕГО КОДА) ]]
-local tSlot = 1
-local TPS_LIST = {}
-for i=1,10 do TPS_LIST[i]=20 end
+-- Координаты и размеры чата
+local chatX = 3
+local chatStartY = splitY + 1
+local chatMaxHeight = 30 - chatStartY - 1 
+
+-- [[ ЛОГИКА TPS ]]
 local current_tps_val = 20
-
-local function getFileTime()
-  local f = fs.open("/tmp/timeFile","w")
-  f:write("test")
-  f:close()
-  return fs.lastModified("/tmp/timeFile")
-end
-
 local function updateTPS()
-  local realTimeOld = getFileTime()
-  os.sleep(1) -- Замер разницы за 1 секунду
-  local realTimeNew = getFileTime()
-  local realTimeDiff = realTimeNew - realTimeOld
-  if realTimeDiff > 0 then
-    TPS_LIST[tSlot] = 20000 / realTimeDiff
-    if TPS_LIST[tSlot] > 20 then TPS_LIST[tSlot] = 20 end
+  local f = fs.open("/tmp/tps.tmp", "w"); f:write(" "); f:close()
+  local t1 = fs.lastModified("/tmp/tps.tmp")
+  os.sleep(0.05) 
+  local f = fs.open("/tmp/tps.tmp", "w"); f:write(" "); f:close()
+  local t2 = fs.lastModified("/tmp/tps.tmp")
+  local diff = t2 - t1
+  if diff > 0 then
+    current_tps_val = 1000 / diff
+    if current_tps_val > 20 then current_tps_val = 20 end
   end
-  current_tps_val = TPS_LIST[tSlot]
-  tSlot = tSlot + 1
-  if tSlot > 10 then tSlot = 1 end
 end
 
 local sensor = component.isAvailable("openperipheral_sensor") and component.openperipheral_sensor 
               or (component.isAvailable("sensor") and component.sensor or nil)
 
-m.open(PORT)
+if m then m.open(PORT) end
 gpu.setResolution(120, 30)
 local w, h = gpu.getResolution()
 
@@ -68,58 +61,17 @@ local function writeColor(x, y, text)
   end
 end
 
-local function addLog(name, status)
-  if status == "IN" then
-    table.insert(log_history, 1, string.format("&a+ &f%s", unicode.sub(name, 1, 10)))
-    if #log_history > 5 then table.remove(log_history) end
-  end
-end
-
 local function addChat(msg)
-  table.insert(chat_history, msg)
-  if #chat_history > max_chat_lines then table.remove(chat_history, 1) end
   gpu.setBackground(0x111111)
-  gpu.fill(2, splitY + 1, w - 2, h - splitY, " ")
-  local startY = h - 1
-  for i = #chat_history, 1, -1 do
-    if startY > splitY then writeColor(3, startY, chat_history[i]); startY = startY - 1 end
-  end
-end
-
-local function drawStatic()
-  gpu.setBackground(0x111111); gpu.fill(1, 1, w, h, " ")
-  gpu.setBackground(0x3366FF); gpu.fill(1, 1, w, 1, " ")
-  gpu.setForeground(0xFFFFFF); gpu.set(2, 1, "CORE SYSTEM v3.3 | ADMIN: " .. ADMIN)
-  gpu.set(w - 15, 1, "TPS: --.--")
-
-  gpu.setBackground(0x0F0F0F)
-  gpu.setForeground(0x3366FF)
-  gpu.set(1, 2, "╔" .. string.rep("═", w-2) .. "╗")
-  for i=3, 9 do gpu.set(1, i, "║"); gpu.set(w, i, "║") end
-  gpu.set(1, 10, "╚" .. string.rep("═", w-2) .. "╝")
-  for i=3, 8 do gpu.set(78, i, "│"); gpu.set(96, i, "│") end
-  writeColor(83, 2, "&7[ &fВХОДЫ &7]")
-  writeColor(101, 2, "&7[ &fТАЙМЕР &7]")
-end
-
-local function updateTimerUI()
-  local tx, ty = timer.x, timer.y
-  gpu.setBackground(0x0F0F0F)
-  gpu.setBackground(0x333333)
-  writeColor(tx, ty, " &a+ &0") 
-  writeColor(tx+4, ty, " &c- &0")
-  if not timer.active then
-    gpu.setBackground(0x22AA22); gpu.set(tx+9, ty, " START ")
-    gpu.setBackground(0x0F0F0F)
-    local h, m = math.floor(timer.set/3600), math.floor((timer.set%3600)/60)
-    writeColor(tx + 1, ty + 2, "&7ЗАДАНО:") 
-    writeColor(tx + 3, ty + 3, string.format("&e%02d:%02d", h, m))
+  if #chat_history < chatMaxHeight then
+    table.insert(chat_history, msg)
+    writeColor(chatX, chatStartY + #chat_history - 1, msg)
   else
-    gpu.setBackground(0xAA2222); gpu.set(tx+9, ty, " STOP  ") 
-    gpu.setBackground(0x0F0F0F)
-    local h, m = math.floor(timer.rem/3600), math.floor((timer.rem%3600)/60)
-    writeColor(tx + 1, ty + 2, "&6ВРЕМЯ:") 
-    writeColor(tx + 3, ty + 3, string.format("&f%02d:%02d", h, m))
+    gpu.copy(2, chatStartY + 1, w - 2, chatMaxHeight - 1, 0, -1)
+    gpu.fill(2, chatStartY + chatMaxHeight - 1, w - 2, 1, " ")
+    writeColor(chatX, chatStartY + chatMaxHeight - 1, msg)
+    table.remove(chat_history, 1)
+    table.insert(chat_history, msg)
   end
 end
 
@@ -132,7 +84,10 @@ local function updateSensorsUI()
       for _, p in ipairs(raw) do
         current[p.name] = true
         table.insert(names, p.name)
-        if not known_players[p.name] then addLog(p.name, "IN") end
+        if not known_players[p.name] then 
+          table.insert(log_history, 1, "&a+ &f" .. unicode.sub(p.name, 1, 10))
+          if #log_history > 5 then table.remove(log_history) end
+        end
       end
     end
   end
@@ -151,14 +106,19 @@ local function updateStatsUI(data)
   gpu.setBackground(0x0F0F0F)
   local rStr = ""
   for i=1, 5 do
-    local r = data.reactors[i]
+    local r = data.reactors and data.reactors[i]
     if r then
       local col = (r.gen == "OFFLINE" and "&8" or "&a")
       rStr = rStr .. string.format("&7R%d:%s%s  ", i, col, (r.gen == "OFFLINE" and "OFF" or (tonumber(r.fuel) or 0).."%"))
     end
   end
-  writeColor(3, 4, rStr .. string.rep(" ", 5))
-  writeColor(3, 6, string.format("&eENERGY: &f%s &7/ &e%sb RF", data.energy.cur or 0, math.floor((data.energy.rawTarget or 1)/10^9)) .. string.rep(" ", 5))
+  writeColor(3, 4, rStr .. string.rep(" ", 10))
+  
+  if data.energy then
+    writeColor(3, 6, string.format("&eENERGY: &f%s &7/ &e%sb RF", data.energy.cur or 0, math.floor((data.energy.rawTarget or 1)/10^9)) .. string.rep(" ", 5))
+    writeColor(45, 7, "&8GATE: &b" .. (data.energy.gateOut or 0) .. " RF/t")
+  end
+
   local visStr = "&7VIS: &8НЕТ ДАННЫХ"
   if data.items then
     for _, it in ipairs(data.items) do
@@ -169,7 +129,42 @@ local function updateStatsUI(data)
     end
   end
   writeColor(3, 7, visStr .. string.rep(" ", 15))
-  writeColor(45, 7, "&8GATE: &b" .. (data.energy.gateOut or 0) .. " RF/t")
+end
+
+local function updateTimerUI()
+  local tx, ty = timer.x, timer.y
+  gpu.setBackground(0x0F0F0F)
+  gpu.setBackground(0x333333)
+  writeColor(tx, ty, " &a+ &0") 
+  writeColor(tx+4, ty, " &c- &0")
+  if not timer.active then
+    gpu.setBackground(0x22AA22); gpu.set(tx+9, ty, " START ")
+    gpu.setBackground(0x0F0F0F)
+    local h_set, m_set = math.floor(timer.set/3600), math.floor((timer.set%3600)/60)
+    writeColor(tx + 1, ty + 2, "&7ЗАДАНО:") 
+    writeColor(tx + 3, ty + 3, string.format("&e%02d:%02d  ", h_set, m_set))
+  else
+    gpu.setBackground(0xAA2222); gpu.set(tx+9, ty, " STOP  ") 
+    gpu.setBackground(0x0F0F0F)
+    local h_rem, m_rem = math.floor(timer.rem/3600), math.floor((timer.rem%3600)/60)
+    writeColor(tx + 1, ty + 2, "&6ВРЕМЯ: ") 
+    writeColor(tx + 3, ty + 3, string.format("&f%02d:%02d  ", h_rem, m_rem))
+  end
+end
+
+local function drawStatic()
+  gpu.setBackground(0x111111); gpu.fill(1, 1, w, h, " ")
+  gpu.setBackground(0x3366FF); gpu.fill(1, 1, w, 1, " ")
+  gpu.setForeground(0xFFFFFF); gpu.set(2, 1, "CORE SYSTEM v3.7 | ADMIN: " .. ADMIN)
+  
+  gpu.setBackground(0x0F0F0F)
+  gpu.setForeground(0x3366FF)
+  gpu.set(1, 2, "╔" .. string.rep("═", w-2) .. "╗")
+  for i=3, 9 do gpu.set(1, i, "║"); gpu.set(w, i, "║") end
+  gpu.set(1, 10, "╚" .. string.rep("═", w-2) .. "╝")
+  for i=3, 8 do gpu.set(78, i, "│"); gpu.set(96, i, "│") end
+  writeColor(83, 2, "&7[ &fВХОДЫ &7]")
+  writeColor(101, 2, "&7[ &fТАЙМЕР &7]")
 end
 
 -- [[ ЦИКЛ ]]
@@ -178,7 +173,7 @@ updateTimerUI()
 
 while true do
   local startLoop = computer.uptime()
-  local res = {event.pull(0.1)}
+  local res = {event.pull(0.05)}
 
   if timer.active then
     timer.rem = timer.rem - (computer.uptime() - startLoop)
@@ -192,7 +187,8 @@ while true do
   if res[1] == "modem_message" then
     local ok, data = pcall(serial.unserialize, tostring(res[7]))
     if ok and data then
-      if res[6] == "STATS" then last_stats = data; updateStatsUI(data)
+      if res[6] == "STATS" then 
+        last_stats = data; updateStatsUI(data)
       elseif res[6] == "CHAT_MSG" then
         local rawMsg = tostring(data.m or "")
         local isGlobal = (rawMsg:sub(1,1) == "!")
@@ -206,7 +202,8 @@ while true do
     if y == timer.y then
       if x >= timer.x and x <= timer.x+3 then timer.set = timer.set + 3600
       elseif x >= timer.x+4 and x <= timer.x+7 then timer.set = math.max(0, timer.set - 3600)
-      elseif x >= timer.x+9 and x <= timer.x+16 then timer.active = not timer.active; if timer.active then timer.rem = timer.set end
+      elseif x >= timer.x+9 and x <= timer.x+16 then 
+        timer.active = not timer.active; if timer.active then timer.rem = timer.set end
       end
       updateTimerUI()
     end
@@ -214,9 +211,13 @@ while true do
 
   if computer.uptime() - last_ui_update > 0.5 then
     updateTPS()
+    -- Фикс отображения TPS: очистка и форматирование
     gpu.setBackground(0x3366FF)
+    gpu.set(w - 20, 1, string.rep(" ", 18)) -- Предварительная очистка места под TPS
     local tpsCol = current_tps_val < 15 and "&c" or (current_tps_val < 18 and "&e" or "&a")
-    writeColor(w - 10, 1, string.format("%s%.2f", tpsCol, current_tps_val))
+    -- Вывод с фиксированной шириной %.2f
+    writeColor(w - 18, 1, string.format("&fTPS: %s%.2f", tpsCol, current_tps_val))
+    
     updateSensorsUI()
     if last_stats then updateStatsUI(last_stats) end
     last_ui_update = computer.uptime()
