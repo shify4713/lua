@@ -2,7 +2,7 @@ local component = require("component")
 local event = require("event")
 local serialization = require("serialization")
 local filesystem = require("filesystem")
-local computer = require("computer") 
+local computer = require("computer")
 local gpu = component.gpu
 
 --------------------------------------------------------------------------------
@@ -11,6 +11,7 @@ local gpu = component.gpu
 local ADMIN_NAME = "LiwMorgan"
 local SAVE_FILE = "/home/reactors.cfg"
 local UPDATE_INTERVAL = 0.5 
+local RECONNECT_INTERVAL = 3 -- Пытаться чинить связи раз в 3 сек
 local maxW, maxH = gpu.maxResolution()
 local W, H = math.min(160, maxW), math.min(38, maxH)
 gpu.setResolution(W, H)
@@ -22,6 +23,9 @@ local cfg = {
   tempCrit = 8100,
   initialFlow = 535000,
   manualStep = 10000,
+  -- Настройки авто-поиска
+  detectOutMin = 530000, -- Если больше этого -> считаем выходом
+  detectInMax = 500000   -- Если меньше этого -> считаем входом
 }
 
 local reactors = {}
@@ -29,6 +33,7 @@ local buttons = {}
 local lastState = {}
 local running = true
 local lastUpdateTime = 0 
+local lastReconnectTime = 0
 local totalProfit = 0
 
 local COLORS = {
@@ -45,17 +50,117 @@ local STATUS_MAP = {
 }
 
 --------------------------------------------------------------------------------
--- [ЛОГИКА]
+-- [ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ]
 --------------------------------------------------------------------------------
+local function saveConfig()
+  local data = {}
+  for _, r in ipairs(reactors) do
+    -- Сохраняем только если компоненты живы, либо сохраняем старые адреса
+    local rA = r.proxy.address
+    local iA = r.gateIn.address
+    local oA = r.gateOut.address
+    table.insert(data, {rAddr=rA, inAddr=iA, outAddr=oA, auto=r.auto})
+  end
+  local f = io.open(SAVE_FILE, "w")
+  f:write(serialization.serialize(data)); f:close()
+end
+
 local function safeNum(proxy)
   if not proxy then return 0 end
   local ok, val = pcall(proxy.getSignalLowFlow)
   return (ok and tonumber(val)) or 0
 end
 
+--------------------------------------------------------------------------------
+-- [АВТО-РЕКОННЕКТ (НОВАЯ ЛОГИКА)]
+--------------------------------------------------------------------------------
+local function getUsedAddresses()
+  local used = {}
+  for _, r in ipairs(reactors) do
+    -- Помечаем адреса как занятые, даже если они сейчас оффлайн (чтобы не дублировать)
+    if r.proxy then used[r.proxy.address] = true end
+    if r.gateIn then used[r.gateIn.address] = true end
+    if r.gateOut then used[r.gateOut.address] = true end
+  end
+  return used
+end
+
+local function tryAutoRepair()
+  local brokenIdx = nil
+  -- 1. Ищем сломанный реактор в списке
+  for i, r in ipairs(reactors) do
+    if not r.online then
+      brokenIdx = i
+      break
+    end
+  end
+  if not brokenIdx then return end -- Все работают исправно
+
+  -- 2. Сканируем свободное железо
+  local used = getUsedAddresses()
+  local freeReactors = {}
+  local freeGates = {}
+
+  for addr in component.list("draconic_reactor") do
+    if not used[addr] then table.insert(freeReactors, addr) end
+  end
+  for addr in component.list("flux_gate") do
+    if not used[addr] then table.insert(freeGates, addr) end
+  end
+
+  -- 3. Пытаемся сопоставить (Нужен 1 Реатор и 2 Гейта)
+  if #freeReactors >= 1 and #freeGates >= 2 then
+    local newR = component.proxy(freeReactors[1])
+    local g1 = component.proxy(freeGates[1])
+    local g2 = component.proxy(freeGates[2])
+
+    -- Читаем потоки
+    local f1 = safeNum(g1)
+    local f2 = safeNum(g2)
+    
+    local found = false
+    local newIn, newOut
+
+    -- ЛОГИКА ОПРЕДЕЛЕНИЯ:
+    -- Гейт 1 большой, Гейт 2 маленький -> 1=Выход, 2=Вход
+    if f1 > cfg.detectOutMin and f2 < cfg.detectInMax then
+      newOut = g1; newIn = g2; found = true
+    -- Гейт 2 большой, Гейт 1 маленький -> 2=Выход, 1=Вход
+    elseif f2 > cfg.detectOutMin and f1 < cfg.detectInMax then
+      newOut = g2; newIn = g1; found = true
+    end
+
+    if found then
+       -- Применяем новые компоненты к сломанной записи
+       local r = reactors[brokenIdx]
+       r.proxy = newR
+       r.gateIn = newIn
+       r.gateOut = newOut
+       r.online = true
+       r.info = {}
+       r.state = "ВОССТАНОВЛЕН"
+       
+       -- Уведомление на экран (через state) и звук
+       computer.beep(1000, 0.2)
+       saveConfig() -- Сразу сохраняем новые адреса
+    end
+  end
+end
+
+--------------------------------------------------------------------------------
+-- [ЛОГИКА УПРАВЛЕНИЯ]
+--------------------------------------------------------------------------------
 local function controlReactor(r)
+  -- Проверка жизни компонента
+  if not r.proxy.address then r.online = false; return end -- защита от null
   local success, inf = pcall(r.proxy.getReactorInfo)
-  if not success or not inf then r.online = false return end
+  
+  if not success or not inf then 
+    r.online = false 
+    r.state = "ПОИСК..." -- Пишем, что ищем замену
+    return 
+  end
+  
   r.info, r.online = inf, true
   local status = tostring(inf.status or ""):lower()
   local temp = tonumber(inf.temperature) or 0
@@ -63,22 +168,39 @@ local function controlReactor(r)
   if status ~= "off" then
     local drain = tonumber(inf.fieldDrainRate) or 0
     local targetIn = math.ceil(drain / (1 - (cfg.targetShield / 100)))
-    pcall(r.gateIn.setSignalLowFlow, status == "charging" and 500000 or targetIn)
+    pcall(r.gateIn.setSignalLowFlow, status == "charging" and 1000000 or targetIn)
   end
 
   if r.auto then
     local currentOut = safeNum(r.gateOut)
     if status == "running" or status == "online" or status == "starting" then
       local genRate = tonumber(inf.generationRate) or 0
-      if temp < cfg.forceModeTemp then r.state = "УДЕРЖ. 535К"
-        if currentOut > cfg.initialFlow then pcall(r.gateOut.setSignalLowFlow, cfg.initialFlow) end
-      elseif temp < cfg.safeModeTemp then r.state = "СТАБИЛЬНО"
+      
+      -- Логика плавного подхвата (как в прошлом коде)
+      if temp < cfg.forceModeTemp then 
+        if currentOut > (cfg.initialFlow + 50000) then
+            r.state = "ВОССТАНОВЛ." -- Мы видим большой поток и не трогаем его
+            if (currentOut - genRate) < 1000 then pcall(r.gateOut.setSignalLowFlow, currentOut + 1000) end
+        else
+            r.state = "УДЕРЖ. 535К"
+            if currentOut > cfg.initialFlow then pcall(r.gateOut.setSignalLowFlow, cfg.initialFlow) end
+        end
+      elseif temp < cfg.safeModeTemp then 
+        r.state = "СТАБИЛЬНО"
         if (currentOut - genRate) < 1000 then pcall(r.gateOut.setSignalLowFlow, currentOut + 500) end
-      elseif temp > cfg.tempCrit then r.state = "КРИТИЧНО"
+      elseif temp > cfg.tempCrit then 
+        r.state = "КРИТИЧНО"
         pcall(r.gateOut.setSignalLowFlow, cfg.initialFlow)
-      else r.state = "ОПТИМАЛЬНО" end
-    else r.state = "ОЖИДАНИЕ" end
-  else r.state = "РУЧНОЙ" end
+      else 
+        r.state = "ОПТИМАЛЬНО" 
+      end
+    else 
+      r.state = "ОЖИДАНИЕ" 
+      if currentOut ~= cfg.initialFlow then pcall(r.gateOut.setSignalLowFlow, cfg.initialFlow) end
+    end
+  else 
+    r.state = "РУЧНОЙ" 
+  end
 end
 
 --------------------------------------------------------------------------------
@@ -104,7 +226,7 @@ local function render()
 
   gpu.setBackground(COLORS.bg)
   gpu.setForeground(COLORS.label)
-  gpu.set(2, 4, "ID   СТАТУС      РЕЖИМ            ТЕМП.      ЩИТ / НАСЫЩ      ТОПЛИВО    ПРИБЫЛЬ    ГЕНЕР.    ВЫХОД     УПРАВЛЕНИЕ")
+  gpu.set(2, 4, "ID   СТАТУС      РЕЖИМ             ТЕМП.      ЩИТ / НАСЫЩ      ТОПЛИВО    ПРИБЫЛЬ    ГЕНЕР.    ВЫХОД     УПРАВЛЕНИЕ")
   gpu.set(1, 5, string.rep("─", W))
   
   local currentTotal = 0
@@ -147,7 +269,9 @@ local function render()
         drawBtn("pow_"..i, 137, y, 7, 1, isActive and "СТОП" or "ПУСК", isActive and COLORS.bad or COLORS.good, true)
         drawBtn("del_"..i, W-4, y, 3, 1, "X", 0x441111, true)
       else
-        gpu.setForeground(COLORS.bad); gpu.set(7, y, "ОФФЛАЙН / НЕТ СВЯЗИ")
+        -- ОТОБРАЖЕНИЕ ЕСЛИ НЕТ СВЯЗИ
+        gpu.setForeground(COLORS.bad); gpu.set(7, y, "НЕТ СВЯЗИ / ПОИСК...")
+        gpu.setForeground(0x555555); gpu.set(36, y, "Ожидание потока > 530k...")
         drawBtn("del_"..i, W-4, y, 3, 1, "X", 0x441111, true)
       end
     end
@@ -158,25 +282,8 @@ local function render()
 end
 
 --------------------------------------------------------------------------------
--- [СЕРВИС И МОДАЛКА]
+-- [ИНТЕРАКТИВНОЕ ДОБАВЛЕНИЕ (РУЧНОЕ)]
 --------------------------------------------------------------------------------
-local function saveConfig()
-  local data = {}
-  for _, r in ipairs(reactors) do
-    table.insert(data, {rAddr=r.proxy.address, inAddr=r.gateIn.address, outAddr=r.gateOut.address, auto=r.auto})
-  end
-  local f = io.open(SAVE_FILE, "w")
-  f:write(serialization.serialize(data)); f:close()
-end
-
-local function getUsedAddresses()
-  local used = {}
-  for _, r in ipairs(reactors) do
-    used[r.proxy.address] = true; used[r.gateIn.address] = true; used[r.gateOut.address] = true
-  end
-  return used
-end
-
 local function cleanScreen()
   lastState = {}
   gpu.setBackground(COLORS.bg)
@@ -202,7 +309,6 @@ local function interactiveAdd()
   end
 
   local selR = nil
-  -- ЛОГИКА: Автовыбор если реактор один
   if #rList == 1 then
     selR = rList[1]
   else
@@ -219,39 +325,48 @@ local function interactiveAdd()
     end
   end
 
-  -- Автопоиск гейтов
   local gates = {}
   for addr in component.list("flux_gate") do
     if not used[addr] then table.insert(gates, addr) end
   end
-
   if #gates < 2 then
     gpu.setBackground(COLORS.modal_inner); gpu.fill(winX+2, winY+2, winW-4, winH-4, " ")
     gpu.setForeground(COLORS.bad); gpu.set(winX+5, winY+7, "ОШИБКА: НУЖНО МИНИМУМ 2 ГЕЙТА!")
     os.sleep(2); cleanScreen(); return
   end
 
+  local rInfo = component.proxy(selR).getReactorInfo()
+  local isRunning = rInfo and (rInfo.status == "online" or rInfo.status == "running")
   local gIn, gOut = component.proxy(gates[1]), component.proxy(gates[2])
   local testing = true
+  
   while testing do
     gpu.setBackground(COLORS.modal_inner); gpu.fill(winX+2, winY+2, winW-4, winH-4, " ")
-    gpu.setForeground(0xFFFFFF); gpu.set(winX+5, winY+4, "ТЕСТ ПОДКЛЮЧЕНИЯ ГЕЙТОВ")
-    gpu.set(winX+5, winY+6, "НИЖНИЙ ГЕЙТ ДОЛЖЕН ПОКАЗАТЬ 535К")
-    
-    pcall(gIn.setSignalLowFlow, 0); pcall(gOut.setSignalLowFlow, 535000)
+    gpu.setForeground(0xFFFFFF); gpu.set(winX+5, winY+4, "РУЧНОЕ ДОБАВЛЕНИЕ")
+    if isRunning then
+        gpu.setForeground(COLORS.warn)
+        gpu.set(winX+5, winY+6, "РЕАКТОР АКТИВЕН! НЕ ТРОГАЕМ ГЕЙТЫ.")
+    else
+        gpu.set(winX+5, winY+6, "НИЖНИЙ ГЕЙТ ДОЛЖЕН ПОКАЗАТЬ 535К")
+        pcall(gIn.setSignalLowFlow, 0); pcall(gOut.setSignalLowFlow, 535000)
+    end
+    local cIn = safeNum(gIn)
+    local cOut = safeNum(gOut)
+    gpu.setForeground(COLORS.text)
+    gpu.set(winX+5, winY+8, string.format("G1: %dk  G2: %dk", cIn/1000, cOut/1000))
 
     drawBtn("t_ok", winX+5, winY+10, 12, 3, "ГОТОВО", COLORS.good, true)
     drawBtn("t_swp", winX+22, winY+10, 12, 3, "SWAP", COLORS.warn, true)
     drawBtn("t_cl", winX+39, winY+10, 12, 3, "ОТМЕНА", COLORS.bad, true)
-
     local _, _, x, y = event.pull("touch")
     if x >= winX+5 and x <= winX+17 and y >= winY+10 and y <= winY+13 then
       table.insert(reactors, {proxy=component.proxy(selR), gateIn=gIn, gateOut=gOut, auto=true, state="IDLE", info={}, online=true})
       saveConfig(); testing = false
     elseif x >= winX+22 and x <= winX+34 and y >= winY+10 and y <= winY+13 then
       gIn, gOut = gOut, gIn
+      if not isRunning then pcall(gIn.setSignalLowFlow, 0); pcall(gOut.setSignalLowFlow, 535000) end
     elseif x >= winX+39 and x <= winX+51 and y >= winY+10 and y <= winY+13 then
-      pcall(gIn.setSignalLowFlow, 0); pcall(gOut.setSignalLowFlow, 0); testing = false
+      if not isRunning then pcall(gIn.setSignalLowFlow, 0); pcall(gOut.setSignalLowFlow, 0) end; testing = false
     end
   end
   cleanScreen()
@@ -266,7 +381,14 @@ if filesystem.exists(SAVE_FILE) then
   if data then
     for _, d in ipairs(data) do
       local rP, iP, oP = component.proxy(d.rAddr), component.proxy(d.inAddr), component.proxy(d.outAddr)
-      if rP and iP and oP then table.insert(reactors, {proxy=rP, gateIn=iP, gateOut=oP, auto=d.auto, state="IDLE", info={}, online=true}) end
+      -- Если прокси нет сразу, создаем "заглушку" с адресом, чтобы авто-реконнект знал что чинить
+      local rObj = {
+          proxy=rP or {address=d.rAddr}, 
+          gateIn=iP or {address=d.inAddr}, 
+          gateOut=oP or {address=d.outAddr}, 
+          auto=d.auto, state="IDLE", info={}, online=(rP and true or false)
+      }
+      table.insert(reactors, rObj)
     end
   end
 end
@@ -274,10 +396,18 @@ end
 gpu.setBackground(0); gpu.fill(1, 1, W, H, " ")
 
 while running do
-  if computer.uptime() - lastUpdateTime >= UPDATE_INTERVAL then
+  local uptime = computer.uptime()
+  
+  if uptime - lastUpdateTime >= UPDATE_INTERVAL then
     for _, r in ipairs(reactors) do controlReactor(r) end
     render()
-    lastUpdateTime = computer.uptime()
+    lastUpdateTime = uptime
+  end
+  
+  -- Попытка авто-починки каждые 3 секунды
+  if uptime - lastReconnectTime >= RECONNECT_INTERVAL then
+    tryAutoRepair()
+    lastReconnectTime = uptime
   end
   
   local e, _, x, y = event.pull(0.05, "touch")
@@ -290,7 +420,7 @@ while running do
           local act, idx = id:match("(%a+)_(%d+)")
           idx = tonumber(idx)
           local r = reactors[idx]
-          if r then
+          if r and r.online then
             if act == "del" then 
               table.remove(reactors, idx)
               saveConfig()
@@ -304,6 +434,9 @@ while running do
             elseif act == "plus" or act == "minus" then
               local c = safeNum(r.gateOut); pcall(r.gateOut.setSignalLowFlow, act=="plus" and c+cfg.manualStep or math.max(cfg.initialFlow, c-cfg.manualStep))
             end
+          elseif r and not r.online and act == "del" then
+             -- Разрешаем удалять даже сломанные
+             table.remove(reactors, idx); saveConfig(); cleanScreen()
           end
         end
         render(); break
