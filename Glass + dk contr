@@ -33,12 +33,16 @@ local cfg = {
     hudW = 260,
     ar_chat_width = 35,
     me_name = "dwcity:Vis_materia",
-    me_label = "Вис Материя"
+    me_label = "Вис Материя",
+    playerConfig = {
+        ignore = {"LiwMorgan"},
+        prefixes = { ["GintaRus"] = "[Чорт]", ["Noney"] = "[Girl]" }
+    }
 }
 
 local lastE, filVal, currentFlow = 0, 0, 0
 local chatLog, arChatLog, nearbyPlayers, buttons = {}, {}, {}, {}
-local showFlowMenu, needFullRedraw, chatUpdated = false, true, true
+local showFlowMenu, showIgnoreMenu, needFullRedraw, chatUpdated = false, false, true, true
 local ar_error = nil
 local matter_current, matter_last, matter_rate, me_timer = 0, 0, 0, 0
 local tick_counter = 0
@@ -153,29 +157,21 @@ local function updateAR()
     if not opb then return end
     local success, err = pcall(function()
         opb.clear()
-        
         local leftColH = 8 
         if cfg.ar_radar_enabled then leftColH = leftColH + 12 + (#nearbyPlayers > 0 and #nearbyPlayers * 8 or 8) end
         if cfg.ar_me_enabled then leftColH = leftColH + 30 end
-        
         local rightColH = 8 
         if cfg.ar_chat_enabled then rightColH = rightColH + 8 + (#arChatLog * 8) end
-        
         local totalH = math.max(leftColH, rightColH) + 10
         if totalH < 25 then totalH = 25 end
-
         local bx, by, bw = cfg.hudX, cfg.hudY, cfg.hudW
         opb.addBox(bx, by, bw, totalH, 0x050F1A, 0.4)
         opb.addBox(bx, by, bw, 1, 0x00E5FF, 0.5)
         opb.addBox(bx, by + totalH - 1, bw, 1, 0x00E5FF, 0.5)
-        
         local divX = bx + 95 
         opb.addBox(divX, by + 2, 1, totalH - 4, 0x1A4059, 0.5)
-
         local leftX = bx + 5
         local rightX = divX + 5
-
-        -- ЛЕВАЯ КОЛОНКА
         local curY = by + 3
         if cfg.ar_radar_enabled then
             opb.addText(leftX, curY, "CONTACTS IN RANGE", 0xFF2A2A).setScale(0.7)
@@ -191,31 +187,22 @@ local function updateAR()
             end
             curY = curY + 4
         end
-
         if cfg.ar_me_enabled then
             opb.addText(leftX, curY, "TRACKING: VIS", 0x00FF9D).setScale(0.7)
             curY = curY + 10
             opb.addText(leftX, curY, "Храниться: " .. formatNum(matter_current), 0xE0F7FA).setScale(0.7)
             curY = curY + 8
             local rateSign = matter_rate >= 0 and "+" or ""
-            -- Отображаем /min
             opb.addText(leftX, curY, string.format("STATUS: %s%s/min", rateSign, formatNum(matter_rate)), 0x00E5FF).setScale(0.7)
         end
-
-        -- ПРАВАЯ КОЛОНКА
         if cfg.ar_chat_enabled then
             local chatY = by + 3
             for _, item in ipairs(arChatLog) do
-                if item.type == "name" then
-                    opb.addText(rightX, chatY, item.text, 0x00E5FF).setScale(0.7)
-                else
-                    local cleanMsg = item.text:gsub("^> ", "")
-                    opb.addText(rightX, chatY, cleanMsg, 0xE0F7FA).setScale(0.7)
-                end
+                if item.type == "name" then opb.addText(rightX, chatY, item.text, 0x00E5FF).setScale(0.7)
+                else local cleanMsg = item.text:gsub("^> ", ""); opb.addText(rightX, chatY, cleanMsg, 0xE0F7FA).setScale(0.7) end
                 chatY = chatY + 9
             end
         end
-
         opb.sync()
     end)
     if not success then ar_error = tostring(err) else ar_error = nil end
@@ -232,12 +219,9 @@ local function addChatMessage(name, msg)
     end
     local maxChatLines = h - 7
     while #chatLog > maxChatLines do table.remove(chatLog, 1) end
-    
     table.insert(arChatLog, {type = "name", text = name})
     local wrappedAR = wrapText(msg, cfg.ar_chat_width)
-    for _, line in ipairs(wrappedAR) do
-        table.insert(arChatLog, {type = "msg", text = "> " .. line})
-    end
+    for _, line in ipairs(wrappedAR) do table.insert(arChatLog, {type = "msg", text = "> " .. line}) end
     while #arChatLog > 12 do table.remove(arChatLog, 1) end
     chatUpdated = true; updateAR()
 end
@@ -253,7 +237,15 @@ local function scanEnvironment()
                     if type(v) == "table" and v.name then pName = v.name
                     elseif type(v) == "string" then pName = v
                     elseif type(k) == "string" then pName = k end
-                    if pName ~= "Unknown" then table.insert(nearbyPlayers, pName) end
+                    if pName ~= "Unknown" then
+                        local isIgnored = false
+                        for _, ignoredName in ipairs(cfg.playerConfig.ignore) do if pName:lower() == ignoredName:lower() then isIgnored = true break end end
+                        if not isIgnored then
+                            local displayName = pName
+                            if cfg.playerConfig.prefixes[pName] then displayName = cfg.playerConfig.prefixes[pName] .. pName end
+                            table.insert(nearbyPlayers, displayName)
+                        end
+                    end
                 end
             end
         end)
@@ -271,101 +263,135 @@ local function drawStaticUI()
     drawTechFrame(col1_w + col2_w + 3, 3, col3_w, math.floor(h/2) - 1, "RADAR TOPOGRAPHY")
     drawTechFrame(col1_w + col2_w + 3, math.floor(h/2) + 3, col3_w, h - math.floor(h/2) - 3, "ASSETS // ME")
     drawTechFrame(w - col4_w + 1, 3, col4_w, h - 3, "SYS CONTROLS")
-    
-    text(3, 5, "PWR LVL:", C.TEXT_DIM)
-    text(3, 6, "TGT LVL:", C.TEXT_DIM)
-    text(3, 7, "NET FLW:", C.TEXT_DIM)
-    
+    text(3, 5, "PWR LVL:", C.TEXT_DIM); text(3, 6, "TGT LVL:", C.TEXT_DIM); text(3, 7, "NET FLW:", C.TEXT_DIM)
     local by = h - 6
-    drawButton("tplus", 3, by, 9, 1, "[+1G]", C.BTN_ON, C.OK)
-    drawButton("tmid", 13, by, 3, 1, "%", C.BTN_OFF, C.TEXT_WHITE)
-    drawButton("tminus", 17, by, 9, 1, "[-1G]", 0x471C1C, C.ALERT)
+    drawButton("tplus", 3, by, 9, 1, "[+1G]", C.BTN_ON, C.OK); drawButton("tmid", 13, by, 3, 1, "%", C.BTN_OFF, C.TEXT_WHITE); drawButton("tminus", 17, by, 9, 1, "[-1G]", 0x471C1C, C.ALERT)
     drawButton("flowcfg", 3, by + 2, col1_w - 4, 1, "OVERRIDE LIMITS", C.BTN_OFF, C.TEXT_MAIN)
-    
     local barX, barY, barH = col1_w - 3, 9, h - 17
-    for i = 0, 5 do
-        local p = 100 - (i * 20)
-        text(barX - 4, barY + math.floor((i/5)*(barH-1)), string.format("%3d", p), C.TEXT_DIM)
-    end
+    for i = 0, 5 do local p = 100 - (i * 20); text(barX - 4, barY + math.floor((i/5)*(barH-1)), string.format("%3d", p), C.TEXT_DIM) end
     needFullRedraw = false; chatUpdated = true
 end
 
 local function updateDynamicUI(flow)
-    text(12, 5, string.format("%-9s", formatNum(lastE)), C.TEXT_WHITE)
-    text(12, 6, string.format("%-9s", formatNum(cfg.target)), C.TEXT_MAIN)
-    text(12, 7, string.format("%-9s", formatNum(filVal)), C.TEXT_DIM)
-    text(3, h - 2, string.format("OUT: %s RF/t", formatNum(flow)), C.TEXT_MAIN)
+    text(12, 5, string.format("%-9s", formatNum(lastE)), C.TEXT_WHITE); text(12, 6, string.format("%-9s", formatNum(cfg.target)), C.TEXT_MAIN); text(12, 7, string.format("%-9s", formatNum(filVal)), C.TEXT_DIM); text(3, h - 2, string.format("OUT: %s RF/t", formatNum(flow)), C.TEXT_MAIN)
+    local maxE = (rf and rf.getMaxEnergyStored and rf.getMaxEnergyStored()) or 1; local pct = clamp(maxE > 0 and (lastE / maxE) or 0, 0, 1); local barX, barY, barH = col1_w - 3, 9, h - 17; local fillLines = math.floor(pct * barH); if pct > 0 and fillLines == 0 then fillLines = 1 end; local emptyLines = barH - fillLines; if emptyLines > 0 then gpu.setBackground(C.FRAME_DIM); gpu.fill(barX, barY, 2, emptyLines, " ") end; if fillLines > 0 then gpu.setBackground(C.TEXT_MAIN); gpu.fill(barX, barY + emptyLines, 2, fillLines, " ") end; gpu.setBackground(C.BG)
+    if chatUpdated then local cx = col1_w + 4; gpu.setBackground(C.BG); gpu.fill(cx, 4, col2_w - 4, h - 5, " "); for i, line in ipairs(chatLog) do drawColoredText(cx, 3 + i, line, C.TEXT_WHITE) end; chatUpdated = false end
+    local rx = col1_w + col2_w + 5; local ry = 5; text(rx, ry, "SCAN COMPLETE.", C.TEXT_DIM); text(rx, ry + 2, "CONTACTS IN RANGE: " .. #nearbyPlayers, C.TEXT_WHITE)
+    for i=1, 5 do if nearbyPlayers[i] then text(rx, ry + 3 + i, "> " .. string.sub(nearbyPlayers[i], 1, 24), C.ALERT) else text(rx, ry + 3 + i, string.rep(" ", 24), C.BG) end end
+    local my = math.floor(h/2) + 5; local meStatus = me and "LINKED" or "OFFLINE"; text(rx, my, "ADAPTER: " .. meStatus, me and C.OK or C.ALERT); text(rx, my + 2, "TRACKING: VIS", C.TEXT_DIM); text(rx, my + 4, "Храниться: " .. formatNum(matter_current), C.TEXT_WHITE); local rateSign = matter_rate >= 0 and "+" or ""; local rateColor = matter_rate > 0 and C.OK or (matter_rate < 0 and C.ALERT or C.TEXT_WHITE); text(rx, my + 6, string.format("STATUS: %s%s / min", rateSign, formatNum(matter_rate)), rateColor)
+    local sx = w - col4_w + 3; local bridgeStatus = ar_error and "API ERROR" or (opb and "LINKED" or "OFFLINE"); text(sx, 5, "AR BRIDGE: " .. bridgeStatus, ar_error and C.ALERT or (opb and C.OK or C.TEXT_DIM))
+    drawButton("tog_chat", sx, 7, 12, 1, cfg.ar_chat_enabled and "[CHT:ON]" or "[CHT:OFF]", cfg.ar_chat_enabled and C.BTN_ON or C.BTN_OFF, cfg.ar_chat_enabled and C.TEXT_MAIN or C.TEXT_DIM)
+    drawButton("tog_radar", sx + 14, 7, 12, 1, cfg.ar_radar_enabled and "[RDR:ON]" or "[RDR:OFF]", cfg.ar_radar_enabled and C.BTN_ON or C.BTN_OFF, cfg.ar_radar_enabled and C.ALERT or C.TEXT_DIM)
+    drawButton("tog_me", sx, 9, 12, 1, cfg.ar_me_enabled and "[ ME:ON]" or "[ ME:OFF]", cfg.ar_me_enabled and C.BTN_ON or C.BTN_OFF, cfg.ar_me_enabled and C.OK or C.TEXT_DIM)
     
-    local maxE = (rf and rf.getMaxEnergyStored and rf.getMaxEnergyStored()) or 1
-    local pct = clamp(maxE > 0 and (lastE / maxE) or 0, 0, 1)
-    local barX, barY, barH = col1_w - 3, 9, h - 17
-    local fillLines = math.floor(pct * barH)
-    if pct > 0 and fillLines == 0 then fillLines = 1 end
-    local emptyLines = barH - fillLines
-    if emptyLines > 0 then gpu.setBackground(C.FRAME_DIM); gpu.fill(barX, barY, 2, emptyLines, " ") end
-    if fillLines > 0 then gpu.setBackground(C.TEXT_MAIN); gpu.fill(barX, barY + emptyLines, 2, fillLines, " ") end
-    gpu.setBackground(C.BG)
-
-    if chatUpdated then
-        local cx = col1_w + 4
-        gpu.setBackground(C.BG); gpu.fill(cx, 4, col2_w - 4, h - 5, " ")
-        for i, line in ipairs(chatLog) do drawColoredText(cx, 3 + i, line, C.TEXT_WHITE) end
-        chatUpdated = false
-    end
+    drawButton("btn_ignore", sx, 11, 26, 1, "[MANAGE IGNORE LIST]", C.BTN_OFF, C.TEXT_WHITE)
+    drawButton("btn_prefix", sx, 13, 26, 1, "[SET PLAYER PREFIX]", C.BTN_OFF, C.TEXT_MAIN)
     
-    local rx = col1_w + col2_w + 5
-    local ry = 5
-    text(rx, ry, "SCAN COMPLETE.", C.TEXT_DIM)
-    text(rx, ry + 2, "CONTACTS IN RANGE: " .. #nearbyPlayers, C.TEXT_WHITE)
-    for i=1, 5 do
-        if nearbyPlayers[i] then text(rx, ry + 3 + i, "> " .. string.sub(nearbyPlayers[i], 1, 24), C.ALERT)
-        else text(rx, ry + 3 + i, string.rep(" ", 24), C.BG) end
-    end
-    
-    local my = math.floor(h/2) + 5
-    local meStatus = me and "LINKED" or "OFFLINE"
-    text(rx, my, "ADAPTER: " .. meStatus, me and C.OK or C.ALERT)
-    text(rx, my + 2, "TRACKING: VIS", C.TEXT_DIM)
-    text(rx, my + 4, "Храниться: " .. formatNum(matter_current), C.TEXT_WHITE)
-    local rateSign = matter_rate >= 0 and "+" or ""
-    local rateColor = matter_rate > 0 and C.OK or (matter_rate < 0 and C.ALERT or C.TEXT_WHITE)
-    -- На мониторе тоже меняем на /min
-    text(rx, my + 6, string.format("STATUS: %s%s / min", rateSign, formatNum(matter_rate)), rateColor)
-    
-    local sx = w - col4_w + 3
-    local bridgeStatus = ar_error and "API ERROR" or (opb and "LINKED" or "OFFLINE")
-    text(sx, 5, "AR BRIDGE: " .. bridgeStatus, ar_error and C.ALERT or (opb and C.OK or C.TEXT_DIM))
-    
-    drawButton("tog_chat", sx, 7, 12, 1, cfg.ar_chat_enabled and "[CHT:ON]" or "[CHT:OFF]",
-        cfg.ar_chat_enabled and C.BTN_ON or C.BTN_OFF, cfg.ar_chat_enabled and C.TEXT_MAIN or C.TEXT_DIM)
-    drawButton("tog_radar", sx + 14, 7, 12, 1, cfg.ar_radar_enabled and "[RDR:ON]" or "[RDR:OFF]",
-        cfg.ar_radar_enabled and C.BTN_ON or C.BTN_OFF, cfg.ar_radar_enabled and C.ALERT or C.TEXT_DIM)
-    drawButton("tog_me", sx, 9, 12, 1, cfg.ar_me_enabled and "[ ME:ON]" or "[ ME:OFF]",
-        cfg.ar_me_enabled and C.BTN_ON or C.BTN_OFF, cfg.ar_me_enabled and C.OK or C.TEXT_DIM)
-
-    if tick_counter % 2 == 0 then
-        local bin = string.format("%04X-%04X", math.random(0, 65535), math.random(0, 65535))
-        text(sx, h - 4, "SYS TICK: " .. bin, C.TEXT_DIM)
-        text(sx, h - 3, "CPU LOAD: " .. math.random(12, 34) .. "%", C.TEXT_DIM)
-    end
+    if tick_counter % 2 == 0 then text(sx, h - 4, "SYS TICK: " .. string.format("%04X-%04X", math.random(0, 65535), math.random(0, 65535)), C.TEXT_DIM); text(sx, h - 3, "CPU LOAD: " .. math.random(12, 34) .. "%", C.TEXT_DIM) end
 end
 
 local function drawFlowMenu()
-    local mw, mh = 42, 8
-    local mx, my = math.floor((w - mw) / 2), math.floor((h - mh) / 2)
-    gpu.setBackground(C.FRAME_DIM); gpu.fill(mx, my, mw, mh, " ")
-    gpu.setForeground(C.TEXT_MAIN); gpu.set(mx + 2, my + 1, "/// OVERRIDE CONFIGURATION")
-    gpu.setForeground(C.TEXT_WHITE); gpu.set(mx + 2, my + 3, string.format("LIMIT: %-10s RF/t", formatNum(cfg.flowMax)))
-    drawButton("f_minus10m", mx + 2, my + 5, 8, 1, "-10M", 0x471C1C, C.ALERT)
-    drawButton("f_minus1m", mx + 11, my + 5, 8, 1, "-1M", 0x471C1C, C.TEXT_WHITE)
-    drawButton("f_plus1m", mx + 20, my + 5, 8, 1, "+1M", C.BTN_ON, C.TEXT_WHITE)
-    drawButton("f_plus10m", mx + 29, my + 5, 8, 1, "+10M", C.BTN_ON, C.OK)
-    drawButton("f_close", mx + mw - 5, my + 1, 3, 1, "X", 0x551111, C.TEXT_WHITE)
+    local mw, mh = 42, 8; local mx, my = math.floor((w - mw) / 2), math.floor((h - mh) / 2); gpu.setBackground(C.FRAME_DIM); gpu.fill(mx, my, mw, mh, " ")
+    gpu.setForeground(C.TEXT_MAIN); gpu.set(mx + 2, my + 1, "/// OVERRIDE CONFIGURATION"); gpu.setForeground(C.TEXT_WHITE); gpu.set(mx + 2, my + 3, string.format("LIMIT: %-10s RF/t", formatNum(cfg.flowMax)))
+    drawButton("f_minus10m", mx + 2, my + 5, 8, 1, "-10M", 0x471C1C, C.ALERT); drawButton("f_minus1m", mx + 11, my + 5, 8, 1, "-1M", 0x471C1C, C.TEXT_WHITE); drawButton("f_plus1m", mx + 20, my + 5, 8, 1, "+1M", C.BTN_ON, C.TEXT_WHITE); drawButton("f_plus10m", mx + 29, my + 5, 8, 1, "+10M", C.BTN_ON, C.OK); drawButton("f_close", mx + mw - 5, my + 1, 3, 1, "X", 0x551111, C.TEXT_WHITE)
 end
 
-local lastStats, lastScan = 0, 0
-gpu.setResolution(w, h); gpu.setBackground(C.BG); gpu.fill(1, 1, w, h, " ")
+local function drawIgnoreMenu()
+    local mw, mh = 46, 14
+    local mx, my = math.floor((w - mw) / 2), math.floor((h - mh) / 2)
+    gpu.setBackground(C.FRAME_DIM); gpu.fill(mx, my, mw, mh, " ")
+    drawTechFrame(mx, my, mw, mh, "MANAGE IGNORE LIST")
+    
+    local startY = my + 2
+    if #cfg.playerConfig.ignore == 0 then
+        text(mx + 4, startY + 2, "Ignore list is completely empty.", C.TEXT_DIM, C.FRAME_DIM)
+        for i = 1, 6 do buttons["unig_" .. i] = nil end
+    else
+        for i = 1, 6 do
+            local name = cfg.playerConfig.ignore[i]
+            if name then
+                text(mx + 3, startY + i - 1, string.format("%d. %-18s", i, name), C.TEXT_WHITE, C.FRAME_DIM)
+                drawButton("unig_" .. i, mx + 30, startY + i - 1, 12, 1, "[REMOVE]", 0x471C1C, C.ALERT)
+            else
+                gpu.setBackground(C.FRAME_DIM); gpu.fill(mx + 3, startY + i - 1, mw - 6, 1, " ")
+                buttons["unig_" .. i] = nil
+            end
+        end
+    end
+    
+    drawButton("ig_add", mx + 3, my + mh - 3, 16, 1, "[+ ADD PLAYER]", C.BTN_ON, C.OK)
+    drawButton("ig_close", mx + mw - 15, my + mh - 3, 12, 1, "[CLOSE]", C.BTN_OFF, C.TEXT_WHITE)
+end
 
+-- ИСПРАВЛЕНО: Прямое чтение Юникода из key_down и защита от фризов фокуса экрана
+local function readInput(title, promptText)
+    while event.pull(0) do end -- Полная очистка буфера событий
+
+    local mw, mh = 54, 8
+    local mx, my = math.floor((w - mw) / 2), math.floor((h - mh) / 2)
+    
+    local textStr = ""
+    local inputX = mx + 2 + unicode.wlen(promptText) + 2
+    local maxInputW = mw - (inputX - mx) - 4
+    
+    local needRedraw = true
+    
+    while true do
+        if needRedraw then
+            gpu.setBackground(C.FRAME_DIM)
+            gpu.fill(mx, my, mw, mh, " ")
+            drawTechFrame(mx, my, mw, mh, title)
+            text(mx + 2, my + 3, promptText .. ": ", C.TEXT_WHITE, C.FRAME_DIM)
+            
+            gpu.setBackground(C.BTN_OFF)
+            gpu.fill(inputX, my + 3, maxInputW, 1, " ")
+            gpu.setForeground(C.TEXT_MAIN)
+            
+            local displayText = textStr .. "|"
+            gpu.set(inputX, my + 3, unicode.sub(displayText, -maxInputW + 1))
+            
+            drawButton("inp_ok", mx + 6, my + 5, 16, 1, "[    OK    ]", C.BTN_ON, C.OK)
+            drawButton("inp_cancel", mx + 32, my + 5, 16, 1, "[  CANCEL  ]", 0x471C1C, C.ALERT)
+            needRedraw = false
+        end
+        
+        local ev, _, a1, a2, a3 = event.pull()
+        if ev == "key_down" then
+            if a2 == 28 then -- Enter
+                break
+            elseif a2 == 14 then -- Backspace
+                if unicode.wlen(textStr) > 0 then 
+                    textStr = unicode.sub(textStr, 1, -2) 
+                    needRedraw = true
+                end
+            elseif a2 == 1 then -- Esc
+                textStr = nil; break
+            elseif a1 >= 32 then -- Любой печатный символ (буквы, цифры, русская/ENG раскладка)
+                if unicode.wlen(textStr) < 25 then
+                    local ok, ch = pcall(unicode.char, a1)
+                    if ok and ch then
+                        textStr = textStr .. ch
+                        needRedraw = true
+                    end
+                end
+            end
+        elseif ev == "touch" then
+            local tx, ty = a1, a2
+            if tx >= mx + 6 and tx < mx + 22 and ty == my + 5 then -- Клик по OK
+                break
+            elseif tx >= mx + 32 and tx < mx + 48 and ty == my + 5 then -- Клик по CANCEL
+                textStr = nil; break
+            end
+        end
+    end
+    
+    buttons["inp_ok"] = nil
+    buttons["inp_cancel"] = nil
+    needFullRedraw = true
+    return textStr
+end
+
+local lastStats, lastScan = 0, 0; gpu.setResolution(w, h); gpu.setBackground(C.BG); gpu.fill(1, 1, w, h, " ")
 while true do
     local ev, addr, arg1, arg2, arg3, arg4 = event.pull(0.5)
     if ev == "chat_message" then addChatMessage(arg1, arg2)
@@ -373,72 +399,83 @@ while true do
         local x, y = arg1, arg2
         if showFlowMenu then
             local b = buttons
-            if b["f_close"] and x >= b["f_close"].x and x < b["f_close"].x + b["f_close"].w and y == b["f_close"].y then
-                showFlowMenu = false; needFullRedraw = true
-            elseif b["f_minus10m"] and x >= b["f_minus10m"].x and x < b["f_minus10m"].x + b["f_minus10m"].w and y == b["f_minus10m"].y then
-                cfg.flowMax = clamp(cfg.flowMax - 10000000, cfg.flowMin, 40000000)
-            elseif b["f_minus1m"] and x >= b["f_minus1m"].x and x < b["f_minus1m"].x + b["f_minus1m"].w and y == b["f_minus1m"].y then
-                cfg.flowMax = clamp(cfg.flowMax - 1000000, cfg.flowMin, 40000000)
-            elseif b["f_plus1m"] and x >= b["f_plus1m"].x and x < b["f_plus1m"].x + b["f_plus1m"].w and y == b["f_plus1m"].y then
-                cfg.flowMax = clamp(cfg.flowMax + 1000000, cfg.flowMin, 40000000)
-            elseif b["f_plus10m"] and x >= b["f_plus10m"].x and x < b["f_plus10m"].x + b["f_plus10m"].w and y == b["f_plus10m"].y then
-                cfg.flowMax = clamp(cfg.flowMax + 10000000, cfg.flowMin, 40000000)
-            end
+            if b["f_close"] and x >= b["f_close"].x and x < b["f_close"].x + b["f_close"].w and y == b["f_close"].y then showFlowMenu = false; needFullRedraw = true
+            elseif b["f_minus10m"] and x >= b["f_minus10m"].x and x < b["f_minus10m"].x + b["f_minus10m"].w and y == b["f_minus10m"].y then cfg.flowMax = clamp(cfg.flowMax - 10000000, cfg.flowMin, 40000000)
+            elseif b["f_minus1m"] and x >= b["f_minus1m"].x and x < b["f_minus1m"].x + b["f_minus1m"].w and y == b["f_minus1m"].y then cfg.flowMax = clamp(cfg.flowMax - 1000000, cfg.flowMin, 40000000)
+            elseif b["f_plus1m"] and x >= b["f_plus1m"].x and x < b["f_plus1m"].x + b["f_plus1m"].w and y == b["f_plus1m"].y then cfg.flowMax = clamp(cfg.flowMax + 1000000, cfg.flowMin, 40000000)
+            elseif b["f_plus10m"] and x >= b["f_plus10m"].x and x < b["f_plus10m"].x + b["f_plus10m"].w and y == b["f_plus10m"].y then cfg.flowMax = clamp(cfg.flowMax + 10000000, cfg.flowMin, 40000000) end
             if showFlowMenu then drawFlowMenu() end
+            
+        elseif showIgnoreMenu then
+            local b = buttons
+            if b["ig_close"] and x >= b["ig_close"].x and x < b["ig_close"].x + b["ig_close"].w and y == b["ig_close"].y then
+                showIgnoreMenu = false
+                buttons["ig_close"] = nil; buttons["ig_add"] = nil
+                for i = 1, 6 do buttons["unig_" .. i] = nil end
+                needFullRedraw = true
+            elseif b["ig_add"] and x >= b["ig_add"].x and x < b["ig_add"].x + b["ig_add"].w and y == b["ig_add"].y then
+                local pName = readInput("ADD TO IGNORE", "Nickname")
+                if pName and pName ~= "" then
+                    local found = false
+                    for _, name in ipairs(cfg.playerConfig.ignore) do
+                        if name:lower() == pName:lower() then found = true; break end
+                    end
+                    if not found then table.insert(cfg.playerConfig.ignore, pName) end
+                    scanEnvironment()
+                end
+                needFullRedraw = true
+            else
+                for i = 1, 6 do
+                    local id = "unig_" .. i
+                    if b[id] and x >= b[id].x and x < b[id].x + b[id].w and y == b[id].y then
+                        table.remove(cfg.playerConfig.ignore, i)
+                        buttons[id] = nil
+                        scanEnvironment()
+                        needFullRedraw = true
+                        break
+                    end
+                end
+            end
+            if showIgnoreMenu then drawIgnoreMenu() end
+            
         else
             local b = buttons
-            if b["tplus"] and x >= b["tplus"].x and x < b["tplus"].x + b["tplus"].w and y == b["tplus"].y then
-                local step = keyboard.isShiftDown() and (100 * 10^9) or (keyboard.isControlDown() and (50 * 10^9) or 10^9)
-                cfg.target = cfg.target + step
-            elseif b["tminus"] and x >= b["tminus"].x and x < b["tminus"].x + b["tminus"].w and y == b["tminus"].y then
-                local step = keyboard.isShiftDown() and (100 * 10^9) or (keyboard.isControlDown() and (50 * 10^9) or 10^9)
-                cfg.target = math.max(0, cfg.target - step)
-            elseif b["flowcfg"] and x >= b["flowcfg"].x and x < b["flowcfg"].x + b["flowcfg"].w and y == b["flowcfg"].y then
-                showFlowMenu = true; drawFlowMenu()
-            elseif b["tog_chat"] and x >= b["tog_chat"].x and x < b["tog_chat"].x + b["tog_chat"].w and y == b["tog_chat"].y then
-                cfg.ar_chat_enabled = not cfg.ar_chat_enabled; updateAR()
-            elseif b["tog_radar"] and x >= b["tog_radar"].x and x < b["tog_radar"].x + b["tog_radar"].w and y == b["tog_radar"].y then
-                cfg.ar_radar_enabled = not cfg.ar_radar_enabled; updateAR()
-            elseif b["tog_me"] and x >= b["tog_me"].x and x < b["tog_me"].x + b["tog_me"].w and y == b["tog_me"].y then
-                cfg.ar_me_enabled = not cfg.ar_me_enabled; updateAR()
+            if b["tplus"] and x >= b["tplus"].x and x < b["tplus"].x + b["tplus"].w and y == b["tplus"].y then cfg.target = cfg.target + (keyboard.isShiftDown() and 100*10^9 or (keyboard.isControlDown() and 50*10^9 or 10^9))
+            elseif b["tminus"] and x >= b["tminus"].x and x < b["tminus"].x + b["tminus"].w and y == b["tminus"].y then cfg.target = math.max(0, cfg.target - (keyboard.isShiftDown() and 100*10^9 or (keyboard.isControlDown() and 50*10^9 or 10^9)))
+            elseif b["flowcfg"] and x >= b["flowcfg"].x and x < b["flowcfg"].x + b["flowcfg"].w and y == b["flowcfg"].y then showFlowMenu = true; drawFlowMenu()
+            elseif b["tog_chat"] and x >= b["tog_chat"].x and x < b["tog_chat"].x + b["tog_chat"].w and y == b["tog_chat"].y then cfg.ar_chat_enabled = not cfg.ar_chat_enabled; updateAR()
+            elseif b["tog_radar"] and x >= b["tog_radar"].x and x < b["tog_radar"].x + b["tog_radar"].w and y == b["tog_radar"].y then cfg.ar_radar_enabled = not cfg.ar_radar_enabled; updateAR()
+            elseif b["tog_me"] and x >= b["tog_me"].x and x < b["tog_me"].x + b["tog_me"].w and y == b["tog_me"].y then cfg.ar_me_enabled = not cfg.ar_me_enabled; updateAR()
+            elseif b["btn_ignore"] and x >= b["btn_ignore"].x and x < b["btn_ignore"].x + b["btn_ignore"].w and y == b["btn_ignore"].y then showIgnoreMenu = true; needFullRedraw = true
+            elseif b["btn_prefix"] and x >= b["btn_prefix"].x and x < b["btn_prefix"].x + b["btn_prefix"].w and y == b["btn_prefix"].y then
+                local pName = readInput("PREFIX CONFIG", "Player Nick")
+                if pName and pName ~= "" then
+                    local pPref = readInput("PREFIX CONFIG", "Prefix (or leave empty)")
+                    if pPref then
+                        if pPref == "" then cfg.playerConfig.prefixes[pName] = nil
+                        else cfg.playerConfig.prefixes[pName] = pPref end
+                        scanEnvironment()
+                    end
+                end
             end
         end
         lastStats = 0
     end
-
     local now = computer.uptime()
-    if now - lastScan >= 2 then
-        scanEnvironment(); lastScan = now
-    end
-
+    if now - lastScan >= 2 then scanEnvironment(); lastScan = now end
     if now - lastStats >= 1 then
         tick_counter = tick_counter + 1
-        if rf and gate then
-            local cur = rf.getEnergyStored()
-            currentFlow = gate.getFlow() or 0
-            filVal = filVal + ((cur - lastE) - filVal) * 0.3
-            local desired = currentFlow
-            if cur > cfg.target then
-                if filVal > -cfg.maxDiff then desired = currentFlow + cfg.step end
-            else
-                if filVal < cfg.maxDiff and currentFlow > cfg.flowMin then desired = currentFlow - cfg.step end
-            end
-            desired = clamp(desired, cfg.flowMin, cfg.flowMax)
-            if desired ~= currentFlow then pcall(gate.setSignalLowFlow, desired) end
-            lastE = cur
-        end
-        matter_current = fetchMatterAmount()
-        if now - me_timer >= 10 then
-            if me_timer > 0 then
-                -- Логика: (разница за 10 сек) * 6 = результат за 60 секунд (минуту)
-                matter_rate = (matter_current - matter_last) * 6
-            end
-            matter_last = matter_current
-            me_timer = now
-            updateAR()
-        end
+        if rf and gate then local cur = rf.getEnergyStored(); currentFlow = gate.getFlow() or 0; filVal = filVal + ((cur - lastE) - filVal) * 0.3; local desired = (cur > cfg.target) and (filVal > -cfg.maxDiff and currentFlow + cfg.step or currentFlow) or (filVal < cfg.maxDiff and currentFlow > cfg.flowMin and currentFlow - cfg.step or currentFlow); desired = clamp(desired, cfg.flowMin, cfg.flowMax); if desired ~= currentFlow then pcall(gate.setSignalLowFlow, desired) end; lastE = cur end
+        matter_current = fetchMatterAmount(); if now - me_timer >= 10 then if me_timer > 0 then matter_rate = (matter_current - matter_last) * 6 end; matter_last = matter_current; me_timer = now; updateAR() end
+        
         if needFullRedraw then drawStaticUI() end
-        if not showFlowMenu then updateDynamicUI(currentFlow) end
+        if showFlowMenu then 
+            drawFlowMenu() 
+        elseif showIgnoreMenu then 
+            drawIgnoreMenu() 
+        else 
+            updateDynamicUI(currentFlow) 
+        end
         lastStats = now
     end
 end
