@@ -1,0 +1,601 @@
+local component = require("component")
+local fs = require("filesystem")
+local event = require("event")
+local unicode = require("unicode")
+local term = require("term")
+local computer = require("computer")
+local ser = require("serialization")
+local os = require("os")
+
+local gpu = component.gpu
+local me = component.me_interface
+
+if not me then
+    io.stderr:write("КРИТИЧЕСКАЯ ОШИБКА: МЭ Интерфейс не найден!\n")
+    os.exit()
+end
+
+-------------------- КОНФИГУРАЦИЯ СТИЛЯ И ЭКРАНА --------------------
+local w, h = gpu.maxResolution()
+gpu.setResolution(w, h)
+
+local DATA_FILE = "/home/craft_db.dat"
+
+-- НАСТРОЙКИ ЗАДЕРЖЕК (в секундах)
+local SCAN_INTERVAL = 15  -- КД на проверку предметов в МЭ (снижает лаги)
+local CRAFT_INTERVAL = 4  -- Задержка между отправкой крафтов
+
+local C = {
+    BG = 0x07070C,          
+    FRAME = 0x1E2233,       
+    ACCENT = 0x00FFCC,      
+    TEXT_MUTED = 0x565F89,  
+    TEXT_WHITE = 0xD4D8EB,  
+    STATUS_OK = 0x00FF88,   
+    STATUS_ERR = 0xFF3366,  
+    SELECT_BG = 0x141829,   
+    BTN_BG = 0x0F121F       
+}
+
+-------------------- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ --------------------
+local items = {}
+local logs = {}
+local isCrafting = false
+local maxConcurrent = 10
+local selectedIdx = nil
+local scroll = 1
+local forceRedraw = true
+local uiDirty = true
+local craftIndex = 1
+
+local lastCraftTime = 0
+local lastScanTime = 0
+
+local MIN_COL_WIDTH = 42
+local cols = math.max(1, math.floor((w - 2) / MIN_COL_WIDTH))
+local colW = math.floor((w - 2) / cols)
+
+-------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ --------------------
+local function truncate(str, len)
+    str = tostring(str or "<?>")
+    if unicode.len(str) > len then
+        return unicode.sub(str, 1, len - 1) .. "…"
+    end
+    return str
+end
+
+local function logMsg(txt, lvl)
+    lvl = lvl or "INFO"
+    local color = C.ACCENT
+    if lvl == "ERR" then color = C.STATUS_ERR end
+    if lvl == "OK" then color = C.STATUS_OK end
+    
+    local timeStr = os.date("%H:%M:%S")
+    table.insert(logs, {time = timeStr, text = txt, color = color})
+    if #logs > 6 then table.remove(logs, 1) end
+    uiDirty = true
+end
+
+local function loadData()
+    if fs.exists(DATA_FILE) then
+        local f = io.open(DATA_FILE, "r")
+        if f then
+            local ok, res = pcall(ser.unserialize, f:read("*a"))
+            f:close()
+            if ok and type(res) == "table" then
+                items = res.items or {}
+                maxConcurrent = res.maxConcurrent or 10
+                for _, item in ipairs(items) do
+                    item.is_waiting = false
+                    item.craft_task = nil
+                end
+            end
+        end
+    end
+end
+
+local function saveData()
+    local cleanItems = {}
+    for i, item in ipairs(items) do
+        local temp = {}
+        for k, v in pairs(item) do
+            if k ~= "craft_task" and k ~= "is_waiting" and k ~= "warned" then
+                temp[k] = v
+            end
+        end
+        table.insert(cleanItems, temp)
+    end
+    
+    local f = io.open(DATA_FILE, "w")
+    if f then
+        f:write(ser.serialize({items = cleanItems, maxConcurrent = maxConcurrent}))
+        f:close()
+    end
+end
+
+-------------------- УМНАЯ ОТРИСОВКА --------------------
+local function drawText(x, y, txt, fg, bg)
+    if fg then gpu.setForeground(fg) end
+    if bg then gpu.setBackground(bg) end
+    gpu.set(x, y, txt)
+end
+
+local function drawRect(x, y, width, height, char, fg, bg)
+    if fg then gpu.setForeground(fg) end
+    if bg then gpu.setBackground(bg) end
+    gpu.fill(x, y, width, height, char)
+end
+
+local function drawBtn(x, y, txt, active)
+    local bg = active and C.FRAME or C.BTN_BG
+    local fg = active and C.ACCENT or C.TEXT_WHITE
+    drawText(x, y, "┌" .. string.rep("─", unicode.len(txt)) .. "┐", C.FRAME, C.BG)
+    drawText(x, y+1, "│" .. txt .. "│", fg, bg)
+    drawText(x, y+2, "└" .. string.rep("─", unicode.len(txt)) .. "┘", C.FRAME, C.BG)
+end
+
+local function drawStaticUI()
+    gpu.setBackground(C.BG)
+    gpu.fill(1, 1, w, h, " ") 
+    
+    drawText(2, 2, "// PRISMA CORE //  SYS_VERSION: v6.3 SECURE", C.ACCENT, C.BG)
+    drawText(2, 3, string.rep("═", w - 2), C.FRAME, C.BG)
+    
+    drawText(3, 5, "> CONTROL MATRIX:", C.TEXT_MUTED, C.BG)
+    drawText(38, 5, "CONCURRENT LIMIT:", C.TEXT_MUTED, C.BG)
+    drawText(65, 5, "[-]  [+]", C.ACCENT, C.BG)
+    
+    drawText(2, 7, string.rep("─", w - 2), C.FRAME, C.BG)
+
+    local ctrlY = h - 13
+    drawText(2, ctrlY, string.rep("─", w - 2), C.FRAME, C.BG)
+    
+    drawBtn(3, ctrlY + 2, " ADD NEW (SLOT 1) ", false)
+    drawBtn(25, ctrlY + 2, " SET TARGET ", false)
+    drawBtn(41, ctrlY + 2, " SET BATCH ", false)
+    drawBtn(56, ctrlY + 2, " PAUSE/RESUME ", false)
+    drawBtn(74, ctrlY + 2, " DELETE ", false)
+    
+    local logY = h - 8
+    drawText(2, logY, string.rep("═", w - 2), C.FRAME, C.BG)
+    drawText(3, logY + 1, "> RECENT NETWORK ACTIONS", C.TEXT_MUTED, C.BG)
+end
+
+local function updateDynamicUI()
+    local statusStr = string.format(" %-11s ", isCrafting and "[ RUNNING ]" or "[ STANDBY ]")
+    local statusCol = isCrafting and C.STATUS_OK or C.STATUS_ERR
+    drawText(21, 5, statusStr, statusCol, C.BTN_BG)
+    
+    local limitStr = string.format("[ %02d ]", maxConcurrent)
+    drawText(56, 5, limitStr, C.TEXT_WHITE, C.BG)
+    
+    local toggleTxt = isCrafting and " SHUTDOWN SYSTEM " or " INITIALIZE CORE "
+    drawText(w - 18, 5, string.format("%-17s", toggleTxt), C.TEXT_WHITE, isCrafting and C.STATUS_ERR or C.FRAME)
+
+    local gridY = 8
+    local itemsPerPage = (h - 23) * cols
+    if itemsPerPage <= 0 then itemsPerPage = cols end
+    
+    for i = 1, itemsPerPage do
+        local idx = scroll + i - 1
+        local item = items[idx]
+        
+        local col = (i - 1) % cols
+        local row = math.floor((i - 1) / cols)
+        local x = 2 + (col * colW)
+        local y = gridY + row
+        
+        if item then
+            local isSelected = (idx == selectedIdx)
+            local rowBg = isSelected and C.SELECT_BG or C.BG
+            
+            gpu.setBackground(rowBg)
+            gpu.fill(x, y, colW - 1, 1, " ")
+            
+            local px = x
+            drawText(px, y, string.format("%02d.", idx), isSelected and C.ACCENT or C.TEXT_MUTED, rowBg)
+            px = px + 4
+            
+            local nameLen = colW - 31
+            drawText(px, y, truncate(item.label, nameLen), C.TEXT_WHITE, rowBg)
+            px = px + nameLen + 1
+            
+            local ratio = string.format("%d/%d", item.current, item.target)
+            local isDone = item.current >= item.target
+            drawText(px, y, string.format("%-11s", ratio), isDone and C.STATUS_OK or C.ACCENT, rowBg)
+            px = px + 11
+            
+            local tagStr, tagCol = "[RDY]", C.STATUS_OK
+            if item.paused then tagStr, tagCol = "[PAU]", C.STATUS_ERR
+            elseif isCrafting and item.current < item.target then 
+                if item.is_waiting then tagStr, tagCol = "[WT ]", C.TEXT_MUTED
+                else tagStr, tagCol = "[ACT]", C.ACCENT end
+            end
+            drawText(px, y, tagStr, tagCol, rowBg)
+            px = px + 6
+            
+            drawText(px, y, string.format("B:%-4d", item.batch), C.TEXT_MUTED, rowBg)
+        else
+            gpu.setBackground(C.BG)
+            gpu.fill(x, y, colW - 1, 1, " ")
+        end
+        
+        if col < cols - 1 then
+            drawText(x + colW - 1, y, "│", C.FRAME, C.BG)
+        end
+    end
+    
+    local ctrlY = h - 13
+    gpu.setBackground(C.BG)
+    gpu.fill(3, ctrlY + 1, w - 4, 1, " ") 
+    if selectedIdx and items[selectedIdx] then
+        local selItem = items[selectedIdx]
+        drawText(3, ctrlY + 1, "TARGET: [" .. string.format("%02d", selectedIdx) .. "] " .. truncate(selItem.label, 40) .. " | Qty: " .. selItem.current .. "/" .. selItem.target, C.ACCENT, C.BG)
+    else
+        drawText(3, ctrlY + 1, "NO OBJECT SELECTED IN GRID", C.TEXT_MUTED, C.BG)
+    end
+    
+    local logY = h - 8
+    for i = 1, 6 do
+        local lineY = logY + 1 + i
+        gpu.setBackground(C.BG)
+        gpu.fill(3, lineY, w - 4, 1, " ") 
+        
+        local l = logs[i]
+        if l then
+            drawText(3, lineY, "[" .. l.time .. "] " .. l.text, l.color, C.BG)
+        end
+    end
+end
+
+-------------------- ЛОГИКА --------------------
+local function updateInventory()
+    local changed = false
+    local now = computer.uptime()
+
+    for _, item in ipairs(items) do
+        if item.sys_id and item.sys_id ~= "unknown" then
+            local qty = 0
+            local filterVariations = {
+                {name = item.sys_id, damage = item.dmg},
+                {id = item.sys_id, dmg = item.dmg},
+                {name = item.sys_id},
+                {id = item.sys_id}
+            }
+            local found = false
+            for _, f in ipairs(filterVariations) do
+                local ok, res = pcall(me.getItemsInNetwork, f)
+                if ok and type(res) == "table" then
+                    for _, s in pairs(res) do
+                        if type(s) == "table" then
+                            local s_id = s.id or s.name
+                            if s_id == item.sys_id then
+                                qty = qty + (s.size or s.qty or s.count or 0)
+                                found = true
+                            end
+                        end
+                    end
+                end
+                if found then break end
+            end
+            
+            if item.current ~= qty then
+                item.current = qty
+                changed = true
+            end
+
+            if item.is_waiting then
+                local is_done = false
+                
+                if item.craft_task then
+                    local ok1, d = pcall(item.craft_task.isDone)
+                    local ok2, c = pcall(item.craft_task.isCanceled)
+                    if (ok1 and d) or (ok2 and c) then
+                        is_done = true
+                    end
+                else
+                    if item.current >= (item.wait_qty or 0) + (item.last_batch or 0) or item.current >= item.target then
+                        is_done = true
+                    end
+                end
+
+                if now > (item.wait_timeout or 0) then
+                    is_done = true
+                    logMsg("Сброс таймаута: " .. truncate(item.label, 10), "ERR")
+                end
+
+                if is_done then
+                    item.is_waiting = false
+                    item.craft_task = nil
+                    changed = true
+                end
+            end
+        else
+            item.current = 0
+        end
+    end
+    if changed then uiDirty = true end
+end
+
+local function processCraft()
+    if not isCrafting then return end
+    
+    local activeTasks = 0
+    for _, item in ipairs(items) do
+        if item.is_waiting then
+            activeTasks = activeTasks + 1
+        end
+    end
+    
+    if activeTasks >= maxConcurrent then return end
+    
+    local okCpu, cpus = pcall(me.getCpus)
+    local freeCpus = {}
+    if okCpu and type(cpus) == "table" then
+        for _, c in pairs(cpus) do
+            if type(c) == "table" then
+                if not c.busy and not c.isBusy and c.name then
+                    table.insert(freeCpus, c.name)
+                end
+            end
+        end
+    end
+    
+    if #freeCpus == 0 then return end
+    
+    local craftMap = {}
+    local okCr, allCrafts = pcall(me.getCraftables)
+    if okCr and type(allCrafts) == "table" then
+        for _, c in pairs(allCrafts) do
+            if type(c) == "table" and type(c.getItemStack) == "function" then
+                local okS, s = pcall(c.getItemStack)
+                if okS and type(s) == "table" then
+                    local c_id = s.name or s.id
+                    local c_dmg = s.damage or s.dmg or 0
+                    if c_id then
+                        craftMap[c_id .. "@" .. c_dmg] = c
+                        craftMap[c_id .. "@any"] = c
+                    end
+                end
+            end
+        end
+    end
+    
+    local startIndex = craftIndex
+    for i = 1, #items do
+        local idx = ((startIndex + i - 2) % #items) + 1
+        local item = items[idx]
+        
+        if item.sys_id and item.sys_id ~= "unknown" and not item.paused and item.current < item.target then
+            if not item.is_waiting then
+                
+                if activeTasks >= maxConcurrent or #freeCpus == 0 then return end 
+                
+                local toCraft = math.min(item.batch, item.target - item.current)
+                if toCraft > 0 then
+                    local craftObj = craftMap[item.sys_id .. "@" .. item.dmg] or craftMap[item.sys_id .. "@any"]
+                    
+                    if not craftObj then
+                        local filters = {
+                            {name = item.sys_id, damage = item.dmg},
+                            {id = item.sys_id, dmg = item.dmg}
+                        }
+                        for _, f in ipairs(filters) do
+                            local ok, res = pcall(me.getCraftables, f)
+                            if ok and type(res) == "table" and res[1] then
+                                craftObj = res[1]
+                                break
+                            end
+                        end
+                    end
+                    
+                    if craftObj then
+                        local targetCpu = table.remove(freeCpus, 1)
+                        local reqOk, reqRes = pcall(function() return craftObj.request(toCraft, false, targetCpu) end)
+                        
+                        if not reqOk or not reqRes then
+                            reqOk, reqRes = pcall(function() return craftObj.request(toCraft) end)
+                        end
+                        
+                        if reqOk and reqRes then
+                            logMsg("Отправлен: " .. toCraft .. "x " .. truncate(item.label, 12), "OK")
+                            
+                            item.is_waiting = true
+                            item.wait_qty = item.current
+                            item.last_batch = toCraft
+                            item.wait_timeout = computer.uptime() + 300 
+                            
+                            if type(reqRes) == "table" then
+                                item.craft_task = reqRes 
+                            else
+                                item.craft_task = nil
+                            end
+                            
+                            activeTasks = activeTasks + 1 
+                            
+                            craftIndex = idx + 1
+                            if craftIndex > #items then craftIndex = 1 end
+                            
+                            uiDirty = true
+                            break 
+                        else
+                            logMsg("Отказ/Занят CPU: " .. truncate(item.label, 12), "ERR")
+                            table.insert(freeCpus, targetCpu)
+                        end
+                    else
+                        if not item.warned then
+                            logMsg("Нет рецепта в МЭ: " .. truncate(item.label, 12), "ERR")
+                            item.warned = true
+                        end
+                    end
+                end
+            end
+        else
+            item.warned = false
+        end
+    end
+end
+
+-------------------- ТЕРМИНАЛ И КЛИКИ --------------------
+local function readInput(x, y, prompt)
+    drawRect(x, y, w - x, 3, " ", nil, C.SELECT_BG)
+    drawText(x + 1, y + 1, prompt, C.ACCENT, C.SELECT_BG)
+    term.setCursor(x + 1 + unicode.len(prompt), y + 1)
+    gpu.setForeground(C.TEXT_WHITE)
+    gpu.setBackground(C.SELECT_BG)
+    local input = io.read()
+    forceRedraw = true
+    return input
+end
+
+local function addItem()
+    local ok, stack = pcall(me.getStackInSlot, 1)
+    if not ok or type(stack) ~= "table" then
+        return logMsg("Положи образец в Слот 1 МЭ Интерфейса!", "ERR")
+    end
+    
+    local sys_id = stack.id or stack.name
+    local dmg = stack.dmg or stack.damage or 0
+    local defName = stack.label or stack.name or stack.id or "Unnamed Resource"
+    
+    if not sys_id then return logMsg("Ошибка: Мод не отдал ID предмета", "ERR") end
+    
+    local name = readInput(2, h - 12, "Задай имя (Enter - авто): ")
+    if name == "" then name = defName end
+    
+    local target = tonumber(readInput(2, h - 12, "Количество (Target): ")) or 100
+    local batch = tonumber(readInput(2, h - 12, "Размер пачки заказа (Batch): ")) or 10
+    
+    table.insert(items, {
+        sys_id = sys_id,
+        dmg = dmg,
+        label = name,
+        target = target,
+        batch = batch,
+        paused = false,
+        current = 0,
+        is_waiting = false
+    })
+    saveData()
+    logMsg("Добавлен в матрицу: " .. name, "OK")
+    -- Просканируем МЭ один раз при добавлении, даже если стоит пауза
+    updateInventory() 
+end
+
+local function handleClick(x, y)
+    if y == 5 then
+        if x >= 65 and x <= 67 then maxConcurrent = math.max(1, maxConcurrent - 1); uiDirty = true end
+        if x >= 70 and x <= 72 then maxConcurrent = maxConcurrent + 1; uiDirty = true end
+        if x >= w - 18 and x <= w then
+            isCrafting = not isCrafting
+            if isCrafting then
+                lastScanTime = 0 -- Сброс таймера для моментального чека при старте
+                lastCraftTime = 0
+            end
+            logMsg(isCrafting and "ЯДРО СИСТЕМЫ АКТИВИРОВАНО" or "РАБОТА СИСТЕМЫ ПРИОСТАНОВЛЕНА", isCrafting and "OK" or "ERR")
+            uiDirty = true
+        end
+        saveData()
+        return
+    end
+    
+    local gridY = 8
+    local itemsPerPage = (h - 23) * cols
+    if itemsPerPage <= 0 then itemsPerPage = cols end
+    local maxRow = math.ceil(itemsPerPage / cols)
+    
+    if y >= gridY and y < gridY + maxRow then
+        local row = y - gridY
+        local col = math.floor((x - 2) / colW)
+        if col >= 0 and col < cols then
+            local idx = scroll + (row * cols) + col
+            if items[idx] then selectedIdx = idx else selectedIdx = nil end
+            uiDirty = true
+        end
+        return
+    end
+    
+    local ctrlY = h - 13
+    if y >= ctrlY + 2 and y <= ctrlY + 4 then
+        if x >= 3 and x <= 22 then 
+            addItem() 
+        elseif selectedIdx and items[selectedIdx] then
+            if x >= 25 and x <= 38 then
+                local n = tonumber(readInput(2, h - 12, "Новый лимит (Target): "))
+                if n then items[selectedIdx].target = n; saveData() end
+            elseif x >= 41 and x <= 53 then
+                local n = tonumber(readInput(2, h - 12, "Размер пачки (Batch): "))
+                if n then items[selectedIdx].batch = n; saveData() end
+            elseif x >= 56 and x <= 71 then
+                items[selectedIdx].paused = not items[selectedIdx].paused
+                saveData()
+            elseif x >= 74 and x <= 83 then
+                logMsg("Удалено из матрицы: " .. items[selectedIdx].label, "ERR")
+                table.remove(items, selectedIdx)
+                selectedIdx = nil
+                saveData()
+            end
+        end
+        uiDirty = true
+    end
+end
+
+-------------------- СТАРТОВЫЙ ЗАПУСК --------------------
+loadData()
+logMsg("PRISMA OS ЗАГРУЖЕНА УСПЕШНО", "OK")
+
+while true do
+    if forceRedraw then
+        drawStaticUI()
+        forceRedraw = false
+        uiDirty = true
+    end
+    
+    if uiDirty then
+        updateDynamicUI()
+        uiDirty = false
+    end
+    
+    local ev, _, x, y, code = event.pull(0.5)
+    
+    if ev == "touch" then
+        handleClick(x, y)
+    elseif ev == "key_down" then
+        if code == 200 or code == 17 then 
+            scroll = math.max(1, scroll - cols)
+            uiDirty = true
+        elseif code == 208 or code == 31 then 
+            local itemsPerPage = (h - 23) * cols
+            if scroll + itemsPerPage <= #items then scroll = scroll + cols end
+            uiDirty = true
+        elseif code == 28 then 
+            isCrafting = not isCrafting
+            if isCrafting then
+                lastScanTime = 0
+                lastCraftTime = 0
+            end
+            logMsg(isCrafting and "ЯДРО СИСТЕМЫ АКТИВИРОВАНО" or "РАБОТА СИСТЕМЫ ПРИОСТАНОВЛЕНА", isCrafting and "OK" or "ERR")
+            uiDirty = true
+        end
+    elseif ev == "interrupted" then
+        gpu.setBackground(0x000000)
+        gpu.setForeground(0xFFFFFF)
+        term.clear()
+        os.exit()
+    end
+    
+    local now = computer.uptime()
+    
+    -- БЛОКИРОВКА СКАНИРОВАНИЯ В ПРОСТОЕ
+    if now - lastScanTime >= SCAN_INTERVAL then
+        if isCrafting then
+            updateInventory()
+        end
+        lastScanTime = now
+    end
+    
+    if isCrafting and (now - lastCraftTime >= CRAFT_INTERVAL) then
+        processCraft()
+        lastCraftTime = now
+    end
+end
