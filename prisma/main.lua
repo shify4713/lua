@@ -1,4 +1,4 @@
---[[ PRISMA CORE v3.2 — Hard clear, no overlap guaranteed ]]
+--[[ PRISMA CORE v3.3 — Smart redraw only when needed ]]
 local component = require("component")
 local event = require("event")
 local computer = require("computer")
@@ -29,8 +29,14 @@ local w,h = ui.init()
 reactor.init(cfg); core.init(cfg); precraft.init(cfg)
 singularity.init(cfg); glasses.init(cfg); radar.init(cfg); chat.init(cfg)
 
-local running, tab, dirty = true, "dash", true
-local lastDraw = 0
+local running = true
+local tab = "dash"
+local needFullRedraw = true   -- только при смене вкладки или важных изменениях
+local lastPlayersHash = ""
+local lastChatCount = 0
+local lastCoreOnline = nil
+local lastReactorCount = -1
+
 local TABS = {
   {id="dash", label=" DASH "},
   {id="react", label=" REACTORS "},
@@ -39,28 +45,74 @@ local TABS = {
   {id="set", label=" SETTINGS "},
 }
 
-local timers = {r=0,c=0,rad=0,g=0,p=0}
+local timers = {r=0, c=0, rad=0, g=0, p=0, s=0}
+
+local function playersHash()
+  local p = radar.getPlayers()
+  return table.concat(p, "|")
+end
 
 local function bg()
   local n = computer.uptime()
-  if cfg.modules.reactors and n-timers.r >= 0.5 then pcall(reactor.update); timers.r=n; dirty=true end
-  if cfg.modules.core and n-timers.c >= 0.4 then pcall(core.update); timers.c=n; dirty=true end
-  if cfg.modules.radar and n-timers.rad >= 1.5 then pcall(radar.update); timers.rad=n; dirty=true end
-  if cfg.modules.precraft and n-timers.p >= 6 then pcall(precraft.update); timers.p=n end
-  if cfg.modules.glasses and n-timers.g >= 0.7 then
+
+  -- Reactors ~0.5s
+  if cfg.modules.reactors and n - timers.r >= 0.5 then
+    pcall(reactor.update)
+    timers.r = n
+    local cnt = reactor.getCount()
+    if cnt ~= lastReactorCount then lastReactorCount = cnt; needFullRedraw = true end
+  end
+
+  -- Core ~0.4s
+  if cfg.modules.core and n - timers.c >= 0.4 then
+    pcall(core.update)
+    timers.c = n
+    local c = core.getInfo()
+    if c.online ~= lastCoreOnline then lastCoreOnline = c.online; needFullRedraw = true end
+  end
+
+  -- Radar 0.6s (медленнее, меньше мигания)
+  if cfg.modules.radar and n - timers.rad >= 0.6 then
+    pcall(radar.update)
+    timers.rad = n
+    local hsh = playersHash()
+    if hsh ~= lastPlayersHash then
+      lastPlayersHash = hsh
+      needFullRedraw = true
+    end
+  end
+
+  -- Singularity ME scan каждые 4 сек
+  if cfg.modules.singularity and n - timers.s >= 4.0 then
+    local changed = singularity.scan()
+    timers.s = n
+    if changed and tab == "sing" then needFullRedraw = true end
+  end
+
+  -- Precraft ~6s
+  if cfg.modules.precraft and n - timers.p >= 6 then
+    pcall(precraft.update)
+    timers.p = n
+  end
+
+  -- Glasses ~0.8s
+  if cfg.modules.glasses and n - timers.g >= 0.8 then
     pcall(function()
       glasses.update({
-        core=core.getInfo(), reactors=reactor.getList(),
-        players=radar.getPlayers(), chat=chat.getLogs()
+        core = core.getInfo(),
+        reactors = reactor.getList(),
+        players = radar.getPlayers(),
+        chat = chat.getLogs()
       })
     end)
     timers.g = n
   end
 end
 
+-- ===================== DRAW =====================
 local function drawDash()
-  ui.clearAll()   -- полная очистка
-  ui.header("PRISMA CORE v3.2", "ONLINE")
+  ui.clearAll()
+  ui.header("PRISMA CORE v3.3", "ONLINE")
   ui.drawTabs(TABS, tab)
 
   ui.frame(1, 4, 22, 16, "MODULES")
@@ -101,7 +153,7 @@ local function drawDash()
   ui.btn("add",26,h-2,12,1,"[ + ADD ]",ui.C.BTN,ui.C.ACCENT)
 
   ui.frame(w-35, 4, 35, 12, "RADAR")
-  local pls=radar.getPlayers()
+  local pls = radar.getPlayers()
   if #pls==0 then ui.text(w-33,6,"no contacts",ui.C.DIM)
   else for i,n in ipairs(pls) do if i>8 then break end ui.text(w-33,5+i,"> "..unicode.sub(n,1,28),ui.C.ALERT) end end
 
@@ -149,9 +201,22 @@ local function drawPre()
   ui.header("PRISMA CORE — PRECRAFT","ONLINE")
   ui.drawTabs(TABS,tab)
   ui.frame(1,4,w-2,h-5,"AUTOCRAFT")
-  local active=precraft.isActive()
-  ui.text(3,6,"Статус: "..(active and "АКТИВЕН" or "ВЫКЛЮЧЕН"),active and ui.C.OK or ui.C.ALERT)
-  ui.btn("ptog",3,9,16,1,active and "[ STOP ]" or "[ START ]",active and 0x3A1515 or ui.C.BTN_ON,active and ui.C.ALERT or ui.C.OK)
+
+  local active = precraft.isActive()
+  ui.text(3,6,"Статус: "..(active and "АКТИВЕН" or "ВЫКЛЮЧЕН"), active and ui.C.OK or ui.C.ALERT)
+  ui.btn("ptog",3,8,16,1, active and "[ STOP ]" or "[ START ]", active and 0x3A1515 or ui.C.BTN_ON, active and ui.C.ALERT or ui.C.OK)
+
+  ui.text(3,11,"Список предметов (из файла precraft_bd.txt):",ui.C.DIM)
+  local items = precraft.getItems()
+  if #items == 0 then
+    ui.text(3,13,"Список пуст. Добавь предметы через файл или в след. обновлении.",ui.C.DIM)
+  else
+    ui.text(3,12,"Name                        Current / Target",ui.C.DIM)
+    for i,it in ipairs(items) do
+      if i > 15 then break end
+      ui.text(3,13+i, string.format("%-28s %s / %s", it.name or it.id or "?", tostring(it.current or 0), tostring(it.target or "?")), ui.C.TEXT)
+    end
+  end
   ui.btn("exit",w-10,h,9,1," EXIT",0x3A1515,ui.C.ALERT)
 end
 
@@ -160,16 +225,17 @@ local function drawSing()
   ui.header("PRISMA CORE — SINGULARITY","ONLINE")
   ui.drawTabs(TABS,tab)
   ui.frame(1,4,w-2,h-5,"SINGULARITY CREATOR")
-  local items=singularity.getItems()
-  ui.text(3,6,"Name                  Need     Have     Can      Sings",ui.C.DIM)
+
+  local items = singularity.getItems()
+  ui.text(3,6,"Name                  Need      Have      Can     Sings",ui.C.DIM)
   for i,it in ipairs(items) do
-    if i>12 then break end
-    local have=singularity.getQty(it.block,it.dmg)
-    local can=math.floor(have/it.need)
-    local sings=singularity.getQty(it.singu,it.sDmg)
-    local col=can>0 and ui.C.OK or ui.C.DIM
-    ui.text(3,7+i,string.format("%-20s %6d  %7s  %5d   %5d",it.name,it.need,utils.formatNum(have),can,sings),col)
+    local have = singularity.getQty(it.block, it.dmg)
+    local can = math.floor(have / it.need)
+    local sings = singularity.getQty(it.singu, it.sDmg)
+    local col = can > 0 and ui.C.OK or ui.C.DIM
+    ui.text(3,7+i, string.format("%-20s %6d  %8s  %5d   %5d", it.name, it.need, utils.formatNum(have), can, sings), col)
   end
+  ui.text(3,h-3,"ME scan каждые 4 сек (кэш)",ui.C.DIM)
   ui.btn("exit",w-10,h,9,1," EXIT",0x3A1515,ui.C.ALERT)
 end
 
@@ -178,7 +244,8 @@ local function drawSet()
   ui.header("PRISMA CORE — SETTINGS","ONLINE")
   ui.drawTabs(TABS,tab)
 
-  ui.frame(1,4,48,20,"REACTOR")
+  -- Reactor settings
+  ui.frame(1,4,48,18,"REACTOR")
   ui.text(3,6,"Target Shield %",ui.C.DIM)
   ui.text(22,6,tostring(cfg.reactors.targetShield or 20),ui.C.ACCENT)
   ui.btn("shp",28,6,4,1,"+",ui.C.BTN_ON,ui.C.OK)
@@ -199,15 +266,35 @@ local function drawSet()
   ui.btn("ctp",28,12,4,1,"+",ui.C.BTN_ON,ui.C.OK)
   ui.btn("ctm",33,12,4,1,"-",0x3A1515,ui.C.ALERT)
 
-  ui.frame(51,4,50,20,"RADAR IGNORE")
-  local ign=cfg.radar.ignore or {}
+  ui.text(3,14,"Manual Step",ui.C.DIM)
+  ui.text(22,14,tostring(cfg.reactors.manualStep or 10000),ui.C.ACCENT)
+  ui.btn("msp",28,14,4,1,"+",ui.C.BTN_ON,ui.C.OK)
+  ui.btn("msm",33,14,4,1,"-",0x3A1515,ui.C.ALERT)
+
+  -- Core settings
+  ui.frame(1,23,48,8,"ENERGY CORE")
+  ui.text(3,25,"Target RF",ui.C.DIM)
+  ui.text(18,25,utils.formatNum(cfg.core.target or 2e11),ui.C.ACCENT)
+  ui.btn("ctp1",35,25,5,1,"+1G",ui.C.BTN_ON,ui.C.OK)
+  ui.btn("ctm1",41,25,5,1,"-1G",0x3A1515,ui.C.ALERT)
+
+  -- Radar ignore
+  ui.frame(51,4,50,18,"RADAR IGNORE")
+  local ign = cfg.radar.ignore or {}
   for i=1,10 do
     if ign[i] then
       ui.text(53,5+i,i..". "..ign[i],ui.C.TEXT)
       ui.btn("irm"..i,90,5+i,7,1,"DEL",0x3A1515,ui.C.ALERT)
     end
   end
-  ui.btn("iadd",53,18,14,1,"[ + ADD ]",ui.C.BTN_ON,ui.C.OK)
+  ui.btn("iadd",53,17,14,1,"[ + ADD ]",ui.C.BTN_ON,ui.C.OK)
+
+  -- Glasses
+  ui.frame(51,23,50,8,"GLASSES")
+  ui.text(53,25,"showCore / Reactors / Radar / Chat",ui.C.DIM)
+  ui.toggle("gsc",53,27,12,"Core",cfg.glasses.showCore ~= false)
+  ui.toggle("gsr",67,27,12,"Reactors",cfg.glasses.showReactors ~= false)
+  ui.toggle("gsrad",81,27,10,"Radar",cfg.glasses.showRadar ~= false)
 
   ui.btn("exit",w-10,h,9,1," EXIT",0x3A1515,ui.C.ALERT)
 end
@@ -218,19 +305,21 @@ local function redraw()
   elseif tab=="pre" then drawPre()
   elseif tab=="sing" then drawSing()
   elseif tab=="set" then drawSet() end
-  dirty=false; lastDraw=computer.uptime()
+  needFullRedraw = false
 end
 
 ui.clear(); redraw()
 
 while running do
   bg()
-  local ev,_,a1,a2 = event.pull(0.1)
+
+  local ev,_,a1,a2 = event.pull(0.12)
   if ev=="touch" then
-    local id=ui.hit(a1,a2)
+    local id = ui.hit(a1,a2)
     if id then
       if id=="exit" then running=false
-      elseif id=="dash" or id=="react" or id=="pre" or id=="sing" or id=="set" then tab=id; dirty=true
+      elseif id=="dash" or id=="react" or id=="pre" or id=="sing" or id=="set" then
+        tab=id; needFullRedraw=true
       elseif id:sub(1,2)=="m_" then
         local map={m_r="reactors",m_c="core",m_p="precraft",m_s="singularity",m_g="glasses",m_rad="radar",m_ch="chat"}
         local k=map[id]
@@ -238,41 +327,54 @@ while running do
           cfg.modules[k]=not cfg.modules[k]
           if k=="glasses" then cfg.glasses.enabled=cfg.modules.glasses end
           if k=="precraft" then precraft.setActive(cfg.modules.precraft) end
-          config.save(cfg); dirty=true
+          config.save(cfg); needFullRedraw=true
         end
-      elseif id=="cp1" then core.adjustTarget(1e9); config.save(cfg); dirty=true
-      elseif id=="cm1" then core.adjustTarget(-1e9); config.save(cfg); dirty=true
-      elseif id=="cp10" then core.adjustTarget(10e9); config.save(cfg); dirty=true
-      elseif id=="cm10" then core.adjustTarget(-10e9); config.save(cfg); dirty=true
-      elseif id=="add" then reactor.addInteractive(); dirty=true
-      elseif id:sub(1,2)=="ra" then reactor.toggleAuto(tonumber(id:sub(3))); dirty=true
-      elseif id:sub(1,2)=="rp" then reactor.adjustFlow(tonumber(id:sub(3)),cfg.reactors.manualStep or 10000); dirty=true
-      elseif id:sub(1,2)=="rm" then reactor.adjustFlow(tonumber(id:sub(3)),-(cfg.reactors.manualStep or 10000)); dirty=true
-      elseif id:sub(1,2)=="rc" then reactor.charge(tonumber(id:sub(3))); dirty=true
-      elseif id:sub(1,2)=="rw" then reactor.power(tonumber(id:sub(3))); dirty=true
-      elseif id:sub(1,2)=="rd" then reactor.remove(tonumber(id:sub(3))); dirty=true
-      elseif id=="ptog" then local a=not precraft.isActive(); precraft.setActive(a); cfg.modules.precraft=a; config.save(cfg); dirty=true
-      elseif id=="shp" then cfg.reactors.targetShield=math.min(50,(cfg.reactors.targetShield or 20)+1); config.save(cfg); dirty=true
-      elseif id=="shm" then cfg.reactors.targetShield=math.max(5,(cfg.reactors.targetShield or 20)-1); config.save(cfg); dirty=true
-      elseif id=="ftp" then cfg.reactors.forceModeTemp=(cfg.reactors.forceModeTemp or 7500)+100; config.save(cfg); dirty=true
-      elseif id=="ftm" then cfg.reactors.forceModeTemp=math.max(2000,(cfg.reactors.forceModeTemp or 7500)-100); config.save(cfg); dirty=true
-      elseif id=="stp" then cfg.reactors.safeModeTemp=(cfg.reactors.safeModeTemp or 8000)+100; config.save(cfg); dirty=true
-      elseif id=="stm" then cfg.reactors.safeModeTemp=math.max(3000,(cfg.reactors.safeModeTemp or 8000)-100); config.save(cfg); dirty=true
-      elseif id=="ctp" then cfg.reactors.tempCrit=(cfg.reactors.tempCrit or 8100)+50; config.save(cfg); dirty=true
-      elseif id=="ctm" then cfg.reactors.tempCrit=math.max(5000,(cfg.reactors.tempCrit or 8100)-50); config.save(cfg); dirty=true
+      elseif id=="cp1" then core.adjustTarget(1e9); config.save(cfg); needFullRedraw=true
+      elseif id=="cm1" then core.adjustTarget(-1e9); config.save(cfg); needFullRedraw=true
+      elseif id=="cp10" then core.adjustTarget(10e9); config.save(cfg); needFullRedraw=true
+      elseif id=="cm10" then core.adjustTarget(-10e9); config.save(cfg); needFullRedraw=true
+      elseif id=="add" then reactor.addInteractive(); needFullRedraw=true
+      elseif id:sub(1,2)=="ra" then reactor.toggleAuto(tonumber(id:sub(3))); needFullRedraw=true
+      elseif id:sub(1,2)=="rp" then reactor.adjustFlow(tonumber(id:sub(3)),cfg.reactors.manualStep or 10000); needFullRedraw=true
+      elseif id:sub(1,2)=="rm" then reactor.adjustFlow(tonumber(id:sub(3)),-(cfg.reactors.manualStep or 10000)); needFullRedraw=true
+      elseif id:sub(1,2)=="rc" then reactor.charge(tonumber(id:sub(3))); needFullRedraw=true
+      elseif id:sub(1,2)=="rw" then reactor.power(tonumber(id:sub(3))); needFullRedraw=true
+      elseif id:sub(1,2)=="rd" then reactor.remove(tonumber(id:sub(3))); needFullRedraw=true
+      elseif id=="ptog" then local a=not precraft.isActive(); precraft.setActive(a); cfg.modules.precraft=a; config.save(cfg); needFullRedraw=true
+      elseif id=="shp" then cfg.reactors.targetShield=math.min(50,(cfg.reactors.targetShield or 20)+1); config.save(cfg); needFullRedraw=true
+      elseif id=="shm" then cfg.reactors.targetShield=math.max(5,(cfg.reactors.targetShield or 20)-1); config.save(cfg); needFullRedraw=true
+      elseif id=="ftp" then cfg.reactors.forceModeTemp=(cfg.reactors.forceModeTemp or 7500)+100; config.save(cfg); needFullRedraw=true
+      elseif id=="ftm" then cfg.reactors.forceModeTemp=math.max(2000,(cfg.reactors.forceModeTemp or 7500)-100); config.save(cfg); needFullRedraw=true
+      elseif id=="stp" then cfg.reactors.safeModeTemp=(cfg.reactors.safeModeTemp or 8000)+100; config.save(cfg); needFullRedraw=true
+      elseif id=="stm" then cfg.reactors.safeModeTemp=math.max(3000,(cfg.reactors.safeModeTemp or 8000)-100); config.save(cfg); needFullRedraw=true
+      elseif id=="ctp" then cfg.reactors.tempCrit=(cfg.reactors.tempCrit or 8100)+50; config.save(cfg); needFullRedraw=true
+      elseif id=="ctm" then cfg.reactors.tempCrit=math.max(5000,(cfg.reactors.tempCrit or 8100)-50); config.save(cfg); needFullRedraw=true
+      elseif id=="msp" then cfg.reactors.manualStep=(cfg.reactors.manualStep or 10000)+1000; config.save(cfg); needFullRedraw=true
+      elseif id=="msm" then cfg.reactors.manualStep=math.max(1000,(cfg.reactors.manualStep or 10000)-1000); config.save(cfg); needFullRedraw=true
+      elseif id=="ctp1" then cfg.core.target=(cfg.core.target or 2e11)+1e9; config.save(cfg); needFullRedraw=true
+      elseif id=="ctm1" then cfg.core.target=math.max(1e9,(cfg.core.target or 2e11)-1e9); config.save(cfg); needFullRedraw=true
       elseif id=="iadd" then
         local name=ui.input("IGNORE","Player: ")
         if name and name~="" then cfg.radar.ignore=cfg.radar.ignore or {}; table.insert(cfg.radar.ignore,name); config.save(cfg) end
-        dirty=true
+        needFullRedraw=true
       elseif id:sub(1,3)=="irm" then
         local i=tonumber(id:sub(4))
-        if cfg.radar.ignore and cfg.radar.ignore[i] then table.remove(cfg.radar.ignore,i); config.save(cfg); dirty=true end
+        if cfg.radar.ignore and cfg.radar.ignore[i] then table.remove(cfg.radar.ignore,i); config.save(cfg); needFullRedraw=true end
+      elseif id=="gsc" then cfg.glasses.showCore = not (cfg.glasses.showCore ~= false); config.save(cfg); needFullRedraw=true
+      elseif id=="gsr" then cfg.glasses.showReactors = not (cfg.glasses.showReactors ~= false); config.save(cfg); needFullRedraw=true
+      elseif id=="gsrad" then cfg.glasses.showRadar = not (cfg.glasses.showRadar ~= false); config.save(cfg); needFullRedraw=true
       end
     end
   elseif ev=="chat_message" then
-    if cfg.modules.chat then chat.add(a1,a2); dirty=true end
+    if cfg.modules.chat then
+      chat.add(a1,a2)
+      local cnt = #chat.getLogs()
+      if cnt ~= lastChatCount then lastChatCount = cnt; needFullRedraw = true end
+    end
   end
-  if dirty or computer.uptime()-lastDraw > 2.0 then redraw() end
+
+  -- Перерисовка ТОЛЬКО когда нужно
+  if needFullRedraw then redraw() end
 end
 
 ui.clear()
