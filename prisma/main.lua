@@ -1,4 +1,4 @@
---[[ PRISMA CORE v3.1 — Clean fixed layout ]]
+--[[ PRISMA CORE v3.1 — Fixed tab clearing ]]
 local component = require("component")
 local event = require("event")
 local computer = require("computer")
@@ -61,13 +61,12 @@ local function bg()
   end
 end
 
--- ===================== DASHBOARD =====================
 local function drawDash()
   ui.clearBtns()
+  ui.clearContent()          -- <-- ВАЖНО: стираем старое содержимое
   ui.header("PRISMA CORE v3.1", "ONLINE")
   ui.drawTabs(TABS, tab)
 
-  -- LEFT: Modules
   ui.frame(1, 4, 22, 16, "MODULES")
   local mods = {
     {"m_r", "reactors", "Reactors"},
@@ -82,7 +81,6 @@ local function drawDash()
     ui.toggle(m[1], 3, 6+(i-1)*2, 18, m[3], cfg.modules[m[2]])
   end
 
-  -- CENTER TOP: Energy Core
   ui.frame(24, 4, 50, 10, "ENERGY CORE")
   local c = core.getInfo()
   if c.online then
@@ -98,7 +96,6 @@ local function drawDash()
     ui.text(26, 7, "ЯДРО НЕ НАЙДЕНО", ui.C.ALERT)
   end
 
-  -- CENTER BOTTOM: Reactors mini
   ui.frame(24, 15, 50, h-17, "REACTORS " .. reactor.getCount() .. "/5")
   local list = reactor.getList()
   ui.text(26, 16, "#  STATUS     STATE       TEMP  SHIELD FUEL", ui.C.DIM)
@@ -118,7 +115,6 @@ local function drawDash()
   end
   ui.btn("add", 26, h-2, 12, 1, "[ + ADD ]", ui.C.BTN, ui.C.ACCENT)
 
-  -- RIGHT: Radar
   ui.frame(w-35, 4, 35, 12, "RADAR")
   local pls = radar.getPlayers()
   if #pls == 0 then
@@ -130,7 +126,6 @@ local function drawDash()
     end
   end
 
-  -- RIGHT BOTTOM: Chat
   ui.frame(w-35, 17, 35, h-19, "LOCAL CHAT")
   local logs = chat.getLogs()
   for i, l in ipairs(logs) do
@@ -141,9 +136,9 @@ local function drawDash()
   ui.btn("exit", w-10, h, 9, 1, " EXIT", 0x3A1515, ui.C.ALERT)
 end
 
--- ===================== REACTORS =====================
 local function drawReact()
   ui.clearBtns()
+  ui.clearContent()
   ui.header("PRISMA CORE — REACTORS", "ONLINE")
   ui.drawTabs(TABS, tab)
   ui.frame(1, 4, w-2, h-5, "CONTROL")
@@ -179,24 +174,24 @@ local function drawReact()
   ui.btn("exit", w-10, h, 9, 1, " EXIT", 0x3A1515, ui.C.ALERT)
 end
 
--- ===================== PRECRAFT =====================
 local function drawPre()
   ui.clearBtns()
+  ui.clearContent()
   ui.header("PRISMA CORE — PRECRAFT", "ONLINE")
   ui.drawTabs(TABS, tab)
   ui.frame(1, 4, w-2, h-5, "AUTOCRAFT")
 
   local active = precraft.isActive()
   ui.text(3, 6, "Статус: " .. (active and "АКТИВЕН" or "ВЫКЛЮЧЕН"), active and ui.C.OK or ui.C.ALERT)
-  ui.text(3, 8, "Модуль работает в фоне. Полный список предметов — в следующих обновлениях.", ui.C.DIM)
+  ui.text(3, 8, "Модуль работает в фоне.", ui.C.DIM)
 
   ui.btn("ptog", 3, 11, 16, 1, active and "[ STOP ]" or "[ START ]", active and 0x3A1515 or ui.C.BTN_ON, active and ui.C.ALERT or ui.C.OK)
   ui.btn("exit", w-10, h, 9, 1, " EXIT", 0x3A1515, ui.C.ALERT)
 end
 
--- ===================== SINGULARITY =====================
 local function drawSing()
   ui.clearBtns()
+  ui.clearContent()
   ui.header("PRISMA CORE — SINGULARITY", "ONLINE")
   ui.drawTabs(TABS, tab)
   ui.frame(1, 4, w-2, h-5, "SINGULARITY CREATOR")
@@ -215,9 +210,9 @@ local function drawSing()
   ui.btn("exit", w-10, h, 9, 1, " EXIT", 0x3A1515, ui.C.ALERT)
 end
 
--- ===================== SETTINGS =====================
 local function drawSet()
   ui.clearBtns()
+  ui.clearContent()
   ui.header("PRISMA CORE — SETTINGS", "ONLINE")
   ui.drawTabs(TABS, tab)
 
