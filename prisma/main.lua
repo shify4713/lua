@@ -53,11 +53,10 @@ radar.init(cfg)
 chat.init(cfg)
 
 local running = true
-local currentTab = "main"  -- main | reactors | precraft | sing | settings
+local currentTab = "main"
 local lastTick = 0
-local tickInterval = 0.25
 
--- Фоновые таймеры
+-- Фоновые таймеры (обязательные фоновые процессы)
 local timers = {
   reactor = 0,
   core = 0,
@@ -70,27 +69,29 @@ local function backgroundUpdate()
   local now = computer.uptime()
 
   if cfg.modules.reactors and now - timers.reactor >= 0.4 then
-    reactor.update()
+    pcall(reactor.update)
     timers.reactor = now
   end
   if cfg.modules.core and now - timers.core >= 0.3 then
-    core.update()
+    pcall(core.update)
     timers.core = now
   end
   if cfg.modules.radar and now - timers.radar >= 1.0 then
-    radar.update()
+    pcall(radar.update)
     timers.radar = now
   end
   if cfg.modules.precraft and now - timers.precraft >= 5.0 then
-    precraft.update()
+    pcall(precraft.update)
     timers.precraft = now
   end
   if cfg.modules.glasses and now - timers.glasses >= 0.7 then
-    glasses.update({
-      core = core.getInfo(),
-      reactors = reactor.getList(),
-      players = radar.getPlayers()
-    })
+    pcall(function()
+      glasses.update({
+        core = core.getInfo(),
+        reactors = reactor.getList(),
+        players = radar.getPlayers()
+      })
+    end)
     timers.glasses = now
   end
 end
@@ -176,7 +177,6 @@ local function redraw()
   if currentTab == "main" then
     drawMain()
   end
-  -- другие вкладки можно добавить позже
 end
 
 -- Главный цикл
@@ -186,9 +186,9 @@ redraw()
 while running do
   backgroundUpdate()
 
-  local ev, _, x, y, _, player = event.pull(0.05)
+  local ev, addr, a1, a2, a3, a4 = event.pull(0.05)
   if ev == "touch" then
-    local id = ui.hit(x, y)
+    local id = ui.hit(a1, a2)
     if id == "exit" then
       running = false
     elseif id == "tog_reactors" then
@@ -231,27 +231,23 @@ while running do
       config.save(cfg)
       redraw()
     elseif id == "add_reactor" then
-      local ok, err = reactor.addInteractive()
-      if not ok then
-        -- можно показать сообщение
-      end
+      reactor.addInteractive()
       redraw()
     end
   elseif ev == "chat_message" then
+    -- event: chat_message, address, username, message
     if cfg.modules.chat then
-      chat.add(x, y)  -- в event chat_message: name, message
+      chat.add(a1, a2)
       redraw()
     end
   end
 
-  -- периодическая перерисовка (раз в 0.8 сек)
   if computer.uptime() - lastTick > 0.8 then
     redraw()
     lastTick = computer.uptime()
   end
 end
 
--- Выход
 ui.clear()
 gpu.setForeground(0x00E5FF)
 print("PRISMA CORE stopped.")
