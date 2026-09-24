@@ -1,5 +1,5 @@
--- PRISMA CORE UI Library
--- Тёмный cyberpunk / tech стиль, partial redraw, высокая отзывчивость
+-- PRISMA CORE UI v2
+-- Anti-flicker, partial redraw, tabs, modern cyber style
 
 local component = require("component")
 local unicode = require("unicode")
@@ -7,116 +7,111 @@ local gpu = component.gpu
 
 local M = {}
 
--- Цветовая палитра (Cyber / Prisma)
 M.C = {
-  BG        = 0x0A0E14,
-  PANEL     = 0x111820,
-  FRAME     = 0x1A4059,
-  FRAME_DIM = 0x0C1F2E,
-  TEXT      = 0xE0F7FA,
-  TEXT_DIM  = 0x4A7B9C,
-  ACCENT    = 0x00E5FF,
-  OK        = 0x00FF9D,
-  WARN      = 0xFFAA00,
-  ALERT     = 0xFF2A2A,
-  BTN       = 0x0B1B26,
+  BG        = 0x0B0F14,
+  PANEL     = 0x12181F,
+  FRAME     = 0x1E3A4C,
+  FRAME2    = 0x0F2430,
+  TEXT      = 0xE8F4F8,
+  TEXT_DIM  = 0x5A7A8A,
+  ACCENT    = 0x00D4FF,
+  ACCENT2   = 0x0099BB,
+  OK        = 0x00E676,
+  WARN      = 0xFFB300,
+  ALERT     = 0xFF1744,
+  BTN       = 0x152028,
+  BTN_HOVER = 0x1E3040,
   BTN_ON    = 0x004D40,
-  BTN_OFF   = 0x1A1A24,
-  SELECT    = 0x003D5C,
+  BTN_OFF   = 0x1A222A,
+  TAB       = 0x152028,
+  TAB_ACT   = 0x003D5C,
+  SELECT    = 0x0A2A3A,
   BAR_BG    = 0x1A2530,
-  BAR_FG    = 0x00E5FF,
+  BAR_FG    = 0x00D4FF,
+  INPUT_BG  = 0x0E1620,
 }
 
 local buttons = {}
-local lastBg, lastFg = nil, nil
+local w, h = 160, 50
 
-function M.setRes(maxW, maxH)
+function M.init()
   local mw, mh = gpu.maxResolution()
-  local w = math.min(maxW or 160, mw)
-  local h = math.min(maxH or 50, mh)
+  w = math.min(160, mw)
+  h = math.min(50, mh)
   gpu.setResolution(w, h)
   return w, h
 end
 
+function M.getSize() return w, h end
+
 function M.clear(bg)
-  bg = bg or M.C.BG
-  gpu.setBackground(bg)
-  local w, h = gpu.getResolution()
+  gpu.setBackground(bg or M.C.BG)
   gpu.fill(1, 1, w, h, " ")
+end
+
+function M.fill(x, y, ww, hh, bg)
+  gpu.setBackground(bg or M.C.BG)
+  gpu.fill(x, y, ww, hh, " ")
 end
 
 function M.text(x, y, s, fg, bg)
   if fg then gpu.setForeground(fg) end
-  if bg then gpu.setBackground(bg) else gpu.setBackground(M.C.BG) end
-  gpu.set(x, y, s)
-end
-
-function M.fill(x, y, w, h, bg)
   gpu.setBackground(bg or M.C.BG)
-  gpu.fill(x, y, w, h, " ")
+  gpu.set(x, y, tostring(s))
 end
 
-function M.frame(x, y, w, h, title, accent)
+function M.frame(x, y, ww, hh, title, accent)
   accent = accent or M.C.FRAME
   gpu.setForeground(accent)
   gpu.setBackground(M.C.BG)
-  gpu.set(x, y, "┌" .. string.rep("─", w - 2) .. "┐")
-  for i = 1, h - 2 do
+  gpu.set(x, y, "┌" .. string.rep("─", ww - 2) .. "┐")
+  for i = 1, hh - 2 do
     gpu.set(x, y + i, "│")
-    gpu.set(x + w - 1, y + i, "│")
+    gpu.set(x + ww - 1, y + i, "│")
   end
-  gpu.set(x, y + h - 1, "└" .. string.rep("─", w - 2) .. "┘")
+  gpu.set(x, y + hh - 1, "└" .. string.rep("─", ww - 2) .. "┘")
   if title then
     M.text(x + 2, y, "┤ " .. title .. " ├", M.C.ACCENT, M.C.BG)
   end
 end
 
-function M.roundRect(x, y, w, h, border, fill)
-  border = border or M.C.FRAME
-  fill = fill or M.C.PANEL
-  gpu.setBackground(fill)
-  gpu.fill(x, y, w, h, " ")
-  gpu.setForeground(border)
-  gpu.set(x, y, "╭" .. string.rep("─", w - 2) .. "╮")
-  gpu.set(x, y + h - 1, "╰" .. string.rep("─", w - 2) .. "╯")
-  for i = y + 1, y + h - 2 do
-    gpu.set(x, i, "│")
-    gpu.set(x + w - 1, i, "│")
+function M.panel(x, y, ww, hh, bg)
+  gpu.setBackground(bg or M.C.PANEL)
+  gpu.fill(x, y, ww, hh, " ")
+end
+
+function M.progress(x, y, ww, pct, fg, bg)
+  pct = math.max(0, math.min(1, pct or 0))
+  gpu.setBackground(bg or M.C.BAR_BG)
+  gpu.fill(x, y, ww, 1, " ")
+  local f = math.floor(ww * pct)
+  if f > 0 then
+    gpu.setBackground(fg or M.C.BAR_FG)
+    gpu.fill(x, y, f, 1, " ")
   end
 end
 
-function M.progressBar(x, y, w, percent, fg, bg)
-  fg = fg or M.C.BAR_FG
-  bg = bg or M.C.BAR_BG
-  percent = math.max(0, math.min(1, percent or 0))
-  gpu.setBackground(bg)
-  gpu.fill(x, y, w, 1, " ")
-  local fill = math.floor(w * percent)
-  if fill > 0 then
-    gpu.setBackground(fg)
-    gpu.fill(x, y, fill, 1, " ")
-  end
-  gpu.setBackground(M.C.BG)
-end
-
-function M.button(id, x, y, w, h, label, bg, fg, active)
-  buttons[id] = {x = x, y = y, w = w, h = h}
-  local bcol = active and (bg or M.C.BTN_ON) or (bg or M.C.BTN_OFF)
-  local fcol = fg or M.C.TEXT
-  gpu.setBackground(bcol)
-  gpu.setForeground(fcol)
-  gpu.fill(x, y, w, h, " ")
-  local lx = x + math.floor((w - unicode.wlen(label)) / 2)
-  local ly = y + math.floor(h / 2)
+function M.button(id, x, y, ww, hh, label, bg, fg)
+  buttons[id] = {x = x, y = y, w = ww, h = hh}
+  gpu.setBackground(bg or M.C.BTN)
+  gpu.setForeground(fg or M.C.TEXT)
+  gpu.fill(x, y, ww, hh, " ")
+  local lx = x + math.floor((ww - unicode.wlen(label)) / 2)
+  local ly = y + math.floor(hh / 2)
   gpu.set(lx, ly, label)
-  gpu.setBackground(M.C.BG)
 end
 
-function M.toggle(id, x, y, w, h, label, state)
+function M.toggle(id, x, y, ww, hh, label, state)
   local bg = state and M.C.BTN_ON or M.C.BTN_OFF
   local fg = state and M.C.OK or M.C.TEXT_DIM
   local txt = (state and "[●] " or "[○] ") .. label
-  M.button(id, x, y, w, h, txt, bg, fg, state)
+  M.button(id, x, y, ww, hh, txt, bg, fg)
+end
+
+function M.tab(id, x, y, ww, label, active)
+  local bg = active and M.C.TAB_ACT or M.C.TAB
+  local fg = active and M.C.ACCENT or M.C.TEXT_DIM
+  M.button(id, x, y, ww, 1, label, bg, fg)
 end
 
 function M.hit(x, y)
@@ -132,15 +127,66 @@ function M.clearButtons()
   buttons = {}
 end
 
-function M.drawHeader(w, title, status)
+function M.header(title, right)
   gpu.setBackground(M.C.PANEL)
-  gpu.fill(1, 1, w, 2, " ")
+  gpu.fill(1, 1, w, 1, " ")
   M.text(2, 1, title or "PRISMA CORE", M.C.ACCENT, M.C.PANEL)
-  if status then
-    M.text(w - unicode.wlen(status) - 1, 1, status, M.C.OK, M.C.PANEL)
+  if right then
+    M.text(w - unicode.wlen(right) - 1, 1, right, M.C.OK, M.C.PANEL)
+  end
+end
+
+function M.drawTabs(tabs, active)
+  local x = 2
+  for _, t in ipairs(tabs) do
+    local ww = unicode.wlen(t.label) + 4
+    M.tab(t.id, x, 2, ww, t.label, t.id == active)
+    x = x + ww + 1
   end
   gpu.setForeground(M.C.FRAME)
-  gpu.set(1, 2, string.rep("─", w))
+  gpu.setBackground(M.C.BG)
+  gpu.set(1, 3, string.rep("─", w))
+end
+
+-- Простой модальный ввод
+function M.input(title, prompt, default)
+  local mw, mh = 50, 7
+  local mx = math.floor((w - mw) / 2)
+  local my = math.floor((h - mh) / 2)
+  M.panel(mx, my, mw, mh, M.C.PANEL)
+  M.frame(mx, my, mw, mh, title)
+  M.text(mx + 2, my + 2, prompt or "> ", M.C.TEXT_DIM, M.C.PANEL)
+  local inputX = mx + 2 + unicode.wlen(prompt or "> ")
+  local maxLen = mw - (inputX - mx) - 3
+  local str = default or ""
+  local function redrawInput()
+    gpu.setBackground(M.C.INPUT_BG)
+    gpu.fill(inputX, my + 2, maxLen, 1, " ")
+    gpu.setForeground(M.C.ACCENT)
+    gpu.set(inputX, my + 2, unicode.sub(str .. "_", 1, maxLen))
+  end
+  redrawInput()
+  M.button("inp_ok", mx + 6, my + 4, 14, 1, "[ OK ]", M.C.BTN_ON, M.C.OK)
+  M.button("inp_cancel", mx + 28, my + 4, 14, 1, "[CANCEL]", 0x3A1515, M.C.ALERT)
+
+  while true do
+    local ev, _, a1, a2, a3 = event.pull(0.1)
+    if ev == "key_down" then
+      if a2 == 28 then return str end          -- Enter
+      if a2 == 14 then                         -- Backspace
+        if unicode.wlen(str) > 0 then str = unicode.sub(str, 1, -2) end
+        redrawInput()
+      elseif a2 == 1 then return nil           -- Esc
+      elseif a1 and a1 >= 32 then
+        str = str .. unicode.char(a1)
+        redrawInput()
+      end
+    elseif ev == "touch" then
+      local id = M.hit(a1, a2)
+      if id == "inp_ok" then return str end
+      if id == "inp_cancel" then return nil end
+    end
+  end
 end
 
 return M
