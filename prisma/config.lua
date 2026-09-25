@@ -26,6 +26,7 @@ C.defaults = {
 
   reactors = {
     targetShield = 20,      -- % поля, которое держим
+    shieldFlowMax = 50000000, -- предел аварийной подпитки щита
     targetTemp = 7800,      -- целевая рабочая температура (°C)
     forceModeTemp = 7500,   -- ниже — фаза разгона (большой поток)
     safeModeTemp = 8000,    -- выше — начинаем снижать поток
@@ -91,17 +92,19 @@ C.defaults = {
     maxCraft = 3,
     chatLines = 4,
     chatWidth = 34,
+    chatScale = 0.95,       -- масштаб текста чата относительно HUD
+    chatGap = 0,            -- дополнительный интервал между строками, px
     chatBelow = true,       -- чат под основной панелью
   },
 
-  radar = { ignore = { "LiwMorgan" }, prefixes = {}, alert = true, interval = 1 },
+  radar = { ignore = { "LiwMorgan" }, prefixes = {}, alert = true, interval = 1, range = 64 },
 
   chat = { maxLines = 60, commands = true },
 
   me = {
     interval = 0.05,        -- как часто «прокачивать» очередь запросов к ME (сек) — главный регулятор нагрузки на сервер
     batch = 2,               -- сколько запросов из очереди обрабатывать за один проход
-    networkLimit = 1500,     -- максимум предметов, которые загружаем при просмотре сети ME (безопасность по памяти)
+    interfaceSide = -1,      -- кабельный ME Interface: -1 = авто, 0..5 = сторона
   },
 
   clock = {
@@ -133,6 +136,13 @@ local function migrate(cfg)
       g.show.near = g.showRadar; g.show.chat = g.showChat
       g.showReactors, g.showCore, g.showRadar, g.showChat = nil, nil, nil, nil
     end
+  end
+  -- Удалены ошибочные настройки inventory_controller: me_interface работает
+  -- через собственный getInterfaceConfiguration.
+  if type(cfg.devices) == "table" then cfg.devices.slotReader = nil end
+  if type(cfg.me) == "table" then
+    if cfg.me.interfaceSide == nil and cfg.me.slotSide ~= nil then cfg.me.interfaceSide = cfg.me.slotSide end
+    cfg.me.slotSide = nil
   end
   cfg.precraft = nil
   return cfg

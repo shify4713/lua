@@ -63,8 +63,32 @@ end
 
 local function readFlow()
   if not gate then return nil end
-  local ok, v = pcall(gate.getSignalLowFlow)
-  if ok and tonumber(v) then return tonumber(v) end
+  if type(gate.getOverrideEnabled) == "function" then
+    local okE, enabled = pcall(gate.getOverrideEnabled)
+    if okE and enabled and type(gate.getFlow) == "function" then
+      local ok, v = pcall(gate.getFlow)
+      if ok and tonumber(v) then return tonumber(v) end
+    end
+  end
+  if type(gate.getOverrideFlow) == "function" then
+    local enabled = true
+    if type(gate.getOverrideEnabled) == "function" then
+      local okE, e = pcall(gate.getOverrideEnabled)
+      if okE then enabled = e and true or false end
+    end
+    if enabled then
+      local ok, v = pcall(gate.getOverrideFlow)
+      if ok and tonumber(v) then return tonumber(v) end
+    end
+  end
+  if type(gate.getSignalLowFlow) == "function" then
+    local ok, v = pcall(gate.getSignalLowFlow)
+    if ok and tonumber(v) then return tonumber(v) end
+  end
+  if type(gate.getFlow) == "function" then
+    local ok, v = pcall(gate.getFlow)
+    if ok and tonumber(v) then return tonumber(v) end
+  end
   return nil
 end
 
@@ -72,7 +96,17 @@ local function writeFlow(v)
   if not gate then return end
   v = math.floor(U.clamp(v, cfg().flowMin, cfg().flowMax) + 0.5)
   if v == flowSet then return end
-  local ok = pcall(gate.setSignalLowFlow, v)
+  if type(gate.setOverrideEnabled) == "function" then pcall(gate.setOverrideEnabled, true) end
+  local ok = false
+  if type(gate.setFlowOverride) == "function" then
+    ok = pcall(gate.setFlowOverride, v) -- имя метода в DE 1.7.10
+  elseif type(gate.setOverrideFlow) == "function" then
+    ok = pcall(gate.setOverrideFlow, v)
+  elseif type(gate.setSignalLowFlow) == "function" then
+    ok = pcall(gate.setSignalLowFlow, v)
+  elseif type(gate.setFlow) == "function" then
+    ok = pcall(gate.setFlow, v)
+  end
   if ok then flowSet = v end
 end
 

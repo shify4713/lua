@@ -35,6 +35,12 @@ local function resolve(r)
   -- чтобы не сбрасывать ручные значения на шлюзах до первой команды
 end
 
+local function isGate(g)
+  return g and type(g.getFlow) == "function"
+    and (type(g.setFlowOverride) == "function" or type(g.setOverrideFlow) == "function"
+      or type(g.setSignalLowFlow) == "function")
+end
+
 local function make(d)
   local r = {
     rAddr = d.r, inAddr = d.i, outAddr = d.o, auto = d.auto ~= false,
@@ -74,17 +80,29 @@ function R.usedAddrs()
 end
 
 -- ───────── шлюзы ─────────
--- Flux Gate (DE): getSignalLowFlow = настроенный лимит, getFlow = фактический поток.
+-- Flux Gate (DE 1.7.10): getSignalLowFlow = redstone-профиль,
+-- getFlow = активный лимит, setter override называется setFlowOverride.
 -- Пробуем несколько имён — в разных сборках/версиях OC они отличаются.
+local function callNumber(g, fn)
+  if not g or type(g[fn]) ~= "function" then return nil end
+  local ok, v = pcall(g[fn])
+  return ok and tonumber(v) or nil
+end
+
+-- Значение, выставленное на самом гейте.  getSignalLowFlow — это профиль
+-- красного камня и часто равен 0, даже когда включён override на 100 RF/t.
 local function gateRead(g)
   if not g then return nil end
-  for _, fn in ipairs({ "getSignalLowFlow", "getFlow", "getSignal", "getOverrideFlow" }) do
-    if type(g[fn]) == "function" then
-      local ok, v = pcall(g[fn])
-      if ok and tonumber(v) then return tonumber(v) end
-    end
+  local override = callNumber(g, "getOverrideFlow")
+  local overrideState
+  if type(g.getOverrideEnabled) == "function" then
+    local ok, enabled = pcall(g.getOverrideEnabled)
+    if ok then overrideState = enabled and true or false end
+    if overrideState then return override or callNumber(g, "getFlow") end
   end
-  return nil
+  local low = callNumber(g, "getSignalLowFlow")
+  if overrideState == false then return low or callNumber(g, "getFlow") or override or callNumber(g, "getSignal") end
+  return override or low or callNumber(g, "getFlow") or callNumber(g, "getSignal")
 end
 
 local function gateWrite(r, which, v, force)
@@ -101,12 +119,16 @@ local function gateWrite(r, which, v, force)
   -- override включаем прямо перед записью (если доступен)
   if type(g.setOverrideEnabled) == "function" then pcall(g.setOverrideEnabled, true) end
   local wrote = false
-  if type(g.setSignalLowFlow) == "function" then
+  -- Если override существует, писать нужно именно в него. Раньше менялся
+  -- low-signal профиль, а активный override оставался нулевым.
+  if type(g.setFlowOverride) == "function" then
+    wrote = pcall(g.setFlowOverride, v) -- Draconic Evolution 1.7.10
+  elseif type(g.setOverrideFlow) == "function" then
+    wrote = pcall(g.setOverrideFlow, v)
+  elseif type(g.setSignalLowFlow) == "function" then
     wrote = pcall(g.setSignalLowFlow, v)
   elseif type(g.setFlow) == "function" then
     wrote = pcall(g.setFlow, v)
-  elseif type(g.setOverrideFlow) == "function" then
-    wrote = pcall(g.setOverrideFlow, v)
   end
   if wrote then r[key] = v end
 end
@@ -151,6 +173,18 @@ local function step(r, idx, now)
   r.fail = 0
   if not r.online then r.online = true end
   r.info = inf
+
+  if not isGate(r.gateIn) or not isGate(r.gateOut) then
+    r.gateOk = false
+    r.stateText = "НЕТ ШЛЮЗА"
+    if now - (r.gateWarnAt or -1e9) > 60 then
+      r.gateWarnAt = now
+      log.warn("РЕАКТОР " .. idx, "не виден входной или выходной Flux Gate — проверьте Adapter/кабель")
+    end
+    if now - (r.resolveAt or 0) > 3 then resolve(r) end
+    return
+  end
+  r.gateOk = true
 
   local c = cfg()
   local kind = KIND[tostring(inf.status or ""):lower()] or "unknown"
@@ -207,7 +241,7 @@ local function step(r, idx, now)
 
   verifyGates(r, now)
 
-  -- реальный измеренный поток (для отображения; наша команда может не совпадать с фактом)
+  -- активный лимит гейта (в DE 1.7.10 getFlow возвращает лимит, не телеметрию передачи)
   if r.gateIn and type(r.gateIn.getFlow) == "function" then
     local ok, v = pcall(r.gateIn.getFlow); if ok and tonumber(v) then r.realIn = tonumber(v) end
   end
@@ -221,6 +255,14 @@ local function step(r, idx, now)
   elseif kind == "running" or kind == "stopping" then
     local shield = U.clamp(c.targetShield, 1, 90) / 100
     local need = drain > 0 and math.ceil(drain / (1 - shield)) or (r.lastIn or c.initialFlow)
+    -- Быстро восстанавливаем просевшее поле, но не дёргаем поток около цели.
+    if field < shield then
+      local deficit = (shield - field) / shield
+      need = math.ceil(need * (1 + math.min(2, deficit * 3)))
+    elseif field > shield + 0.08 and drain > 0 then
+      need = math.ceil(drain * 1.05)
+    end
+    need = math.min(need, c.shieldFlowMax or 50000000)
     gateWrite(r, "in", need)
   end
 
@@ -340,9 +382,27 @@ end
 function R.free()
   local used = R.usedAddrs()
   local reactors, gates = {}, {}
-  for _, a in ipairs(U.compList("draconic_reactor")) do if not used[a] then reactors[#reactors + 1] = a end end
+  local seenR, seenG = {}, {}
+  for _, a in ipairs(U.compList("draconic_reactor")) do
+    if not used[a] then reactors[#reactors + 1] = a; seenR[a] = true end
+  end
   local coreGate = P.mods.core and P.mods.core.gateAddr
-  for _, a in ipairs(U.compList("flux_gate")) do
+  local gateAddrs = U.compList("flux_gate")
+  for _, a in ipairs(gateAddrs) do seenG[a] = true end
+  -- Adapter-интеграции разных сборок дают разные имена компонентов.
+  -- Методы надёжнее имени: реактор имеет getReactorInfo, Flux Gate — поток и setter.
+  for a in component.list() do
+    if not used[a] and not seenR[a] and not seenG[a] then
+      local p = U.proxy(a)
+      if p and type(p.getReactorInfo) == "function" then
+        reactors[#reactors + 1] = a; seenR[a] = true
+      elseif p and (type(p.setFlowOverride) == "function" or type(p.setOverrideFlow) == "function" or type(p.setSignalLowFlow) == "function")
+          and (type(p.getFlow) == "function" or type(p.getOverrideFlow) == "function") then
+        gateAddrs[#gateAddrs + 1] = a; seenG[a] = true
+      end
+    end
+  end
+  for _, a in ipairs(gateAddrs) do
     if not used[a] and a ~= coreGate then
       local g = U.proxy(a)
       local signal = gateRead(g)
@@ -355,6 +415,7 @@ function R.free()
       gates[#gates + 1] = { addr = a, flow = signal or actual or 0, signal = signal, actual = actual }
     end
   end
+  table.sort(reactors)
   -- сортируем: сначала с ненулевым потоком (удобно выбирать «тот, на котором 100»)
   table.sort(gates, function(a, b) return (a.flow or 0) > (b.flow or 0) end)
   return reactors, gates
@@ -364,8 +425,8 @@ function R.addManual(rAddr, inAddr, outAddr)
   if #list >= MAX then return false, "максимум " .. MAX .. " реакторов" end
   if inAddr == outAddr then return false, "входной и выходной шлюз должны отличаться" end
   if not U.proxy(rAddr) then return false, "реактор недоступен: " .. tostring(rAddr) end
-  if not U.proxy(inAddr) then return false, "входной шлюз недоступен" end
-  if not U.proxy(outAddr) then return false, "выходной шлюз недоступен" end
+  if not isGate(U.proxy(inAddr)) then return false, "входной шлюз не имеет API Flux Gate — проверьте Adapter" end
+  if not isGate(U.proxy(outAddr)) then return false, "выходной шлюз не имеет API Flux Gate — проверьте Adapter" end
   local r = make({ r = rAddr, i = inAddr, o = outAddr, auto = true })
   r.stateText = "ДОБАВЛЕН"
   r.nextAt = 0   -- сразу опросить
@@ -399,12 +460,14 @@ function R.addAuto()
   if gen and gen > 1000 then
     -- выходной — ближе к генерации
     if math.abs(f1 - gen) > math.abs(f2 - gen) then out, inn = g2.addr, g1.addr end
+  elseif (f1 > 0 and f1 <= 1000 and f2 == 0) or (f2 > 0 and f2 <= 1000 and f1 == 0) then
+    -- Специальная метка: пользователь ставит 100 на вход щита. Нулевой
+    -- соседний гейт не должен ошибочно считаться «ещё меньшим входом».
+    if f1 > 0 then inn, out = g1.addr, g2.addr else inn, out = g2.addr, g1.addr end
   elseif f1 > 0 or f2 > 0 then
     -- меньший поток = вход (щит), больший = выход
     if f1 < f2 then out, inn = g2.addr, g1.addr
     else out, inn = g1.addr, g2.addr end
-  elseif f2 > (cfg().detectOutMin or 530000) and f1 < (cfg().detectInMax or 500000) then
-    out, inn = g2.addr, g1.addr
   end
   return R.addManual(rAddr, inn, out)
 end

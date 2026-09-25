@@ -119,40 +119,6 @@ local function craftNew(spec)
   })
 end
 
-function X.craftFromNetwork()
-  local me = P.me
-  if not me.available() then UI.toast("ME-интерфейс не найден", "bad"); return end
-  modal().confirm(
-    "Просмотр сети ME",
-    "На больших ME-сетях (десятки тысяч предметов) список может не поместиться\nв память компьютера, и программа перезапустится.\nПоказаны будут первые " .. (P.cfg.me.networkLimit or 1500) .. " предметов (лимит меняется в Настройках).\n\nЕсли не хватает памяти — используйте «Вручную (ID + damage)».",
-    function() X.craftFromNetworkGo() end, "Продолжить"
-  )
-end
-
-function X.craftFromNetworkGo()
-  local me = P.me
-  local all, err = me.listNetwork()
-  if not all then UI.toast("ME: " .. tostring(err), "bad"); return end
-  local craftOnly = false
-  modal().pick({
-    title = "Предмет из сети ME", w = 90, h = 36,
-    items = function()
-      if not craftOnly then return all end
-      local r = {}
-      for _, it in ipairs(all) do if it.craft then r[#r + 1] = it end end
-      return r
-    end,
-    label = function(it) return (it.craft and "★ " or "  ") .. it.label end,
-    sub = function(it) return U.int(it.size) .. " шт · " .. it.name .. ":" .. it.damage end,
-    empty = "Ничего не найдено (в сети хранятся только предметы, которые уже есть)",
-    onPick = craftNew,
-    extra = {
-      { label = "Только с рецептом", refresh = true, fn = function() craftOnly = not craftOnly end },
-      { label = "Обновить список", refresh = true, fn = function() all = me.listNetwork() or all end },
-    },
-  })
-end
-
 function X.craftManual()
   modal().form({
     title = "Предмет вручную", w = 66, okLabel = "Далее",
@@ -183,9 +149,21 @@ function X.craftFromSlot()
   craftNew(spec)
 end
 
+function X.craftFromDatabase()
+  local all = P.me.databaseItems()
+  if #all == 0 then UI.toast("В компонентах database нет записей", "warn"); return end
+  modal().pick({
+    title = "Предмет из базы данных Adapter", items = all, w = 76, h = math.min(30, #all + 8),
+    label = function(it) return it.label end,
+    sub = function(it) return it.name .. ":" .. it.damage .. " · ячейка " .. it.slot end,
+    onPick = craftNew,
+  })
+end
+
 function X.craftAdd()
   modal().menu("Добавить предмет в автокрафт", {
-    { label = "Из слота ME-интерфейса", style = "primary", fn = X.craftFromSlot },
+    { label = "Из config-слота ME Interface", style = "primary", fn = X.craftFromSlot },
+    { label = "Из базы данных Adapter", fn = X.craftFromDatabase },
     { label = "Вручную (ID + damage)", fn = X.craftManual },
     -- «Из сети ME» убрано: на больших сетях getItemsInNetwork жрёт всю память и крашит ПК
   }, 44)

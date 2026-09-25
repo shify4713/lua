@@ -1,17 +1,21 @@
 -- PRISMA · установщик / обновлятор
 -- Запуск на компьютере OpenComputers (нужна интернет-карта):
+-- Проект: https://github.com/shify4713/lua/tree/main/prisma
 --   wget -f https://raw.githubusercontent.com/shify4713/lua/main/prisma/installer.lua /tmp/i.lua && /tmp/i.lua
 -- Свой адрес репозитория:  /tmp/i.lua https://мой.сервер/путь/
 local component = require("component")
 local fs = require("filesystem")
 
 local args = { ... }
-local REPO = args[1] or "https://raw.githubusercontent.com/shify4713/lua/main/prisma/"
+local PROJECT = "https://github.com/shify4713/lua/tree/main/prisma"
+local REPO = args[1] or PROJECT
+-- Разрешаем вставлять обычную ссылку GitHub из браузера; wget нужен raw-адрес.
+REPO = REPO:gsub("^https://github%.com/([^/]+)/([^/]+)/tree/([^/]+)/(.*)$", "https://raw.githubusercontent.com/%1/%2/%3/%4")
 if REPO:sub(-1) ~= "/" then REPO = REPO .. "/" end
 local ROOT = "/home/prisma"
 
 local FILES = {
-  "main.lua", "config.lua", "installer.lua",
+  "main.lua", "config.lua", "installer.lua", "ADAPTER_SETUP.txt", "CONFLICT_RECOVERY.txt",
   "lib/util.lua", "lib/log.lua", "lib/fb.lua", "lib/ui.lua", "lib/modal.lua", "lib/me.lua",
   "lib/reactor.lua", "lib/core.lua", "lib/autocraft.lua", "lib/singularity.lua",
   "lib/radar.lua", "lib/chat.lua", "lib/glasses.lua",
@@ -40,6 +44,20 @@ local function download(rel)
   local ok = os.execute(string.format('wget -fq "%s%s" "%s"', REPO, rel, tmp))
   local size = fs.exists(tmp) and fs.size(tmp) or 0
   if (ok == true or ok == 0) and size > 0 then
+    -- Никогда не устанавливаем файл с неразрешённым Git-конфликтом.
+    -- Старый рабочий файл при этом остаётся на месте.
+    if rel:sub(-4) == ".lua" then
+      local check = io.open(tmp, "r")
+      if check then
+        for line in check:lines() do
+          if line:match("^<<<<<<< ") or line == "=======" or line:match("^>>>>>>> ") then
+            check:close(); fs.remove(tmp)
+            return false, "Git conflict markers"
+          end
+        end
+        check:close()
+      end
+    end
     fs.remove(dest)
     if fs.rename(tmp, dest) then return true end
   end
@@ -54,7 +72,8 @@ ensureDir(ROOT .. "/data")
 local failed = {}
 for i, rel in ipairs(FILES) do
   io.write(string.format("[%2d/%d] %-24s ", i, #FILES, rel))
-  if download(rel) then say("ok") else say("ОШИБКА"); failed[#failed + 1] = rel end
+  local ok, reason = download(rel)
+  if ok then say("ok") else say("ОШИБКА" .. (reason and (": " .. reason) or "")); failed[#failed + 1] = rel end
 end
 
 if #failed > 0 then

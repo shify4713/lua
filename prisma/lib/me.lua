@@ -4,6 +4,7 @@
 local P = ...
 local U = P.util
 local log = P.log
+local component = require("component")
 
 local M = {}
 local dev
@@ -19,6 +20,15 @@ M.calls, M.errors = 0, 0
 function M.init()
   queue, pending = {}, {}
   local d, a, t = U.findComp({ "me_interface", "me_controller", "ae2_interface" }, P.cfg.devices.me)
+  if not d then
+    -- Через Adapter имя компонента зависит от версии интеграции. Ищем по API.
+    for addr in component.list() do
+      local p = U.proxy(addr)
+      if p and type(p.getItemsInNetwork) == "function" and type(p.getCraftables) == "function" then
+        d, a, t = p, addr, "ME (по методам)"; break
+      end
+    end
+  end
   dev, M.addr, M.type = d, a, t
   M.online = nil
 end
@@ -182,97 +192,57 @@ function M.cancel(h)
   pcall(function() return h.cancel() end)
 end
 
--- ───────── списки для выбора предметов ─────────
--- весь список предметов сети (тяжёлый вызов — только по запросу пользователя)
-function M.listNetwork(limit)
-  if not dev then return nil, "нет ME" end
-  M.calls = M.calls + 1
-  local ok, res = pcall(dev.getItemsInNetwork)
-  if not ok then markFail(res); return nil, tostring(res) end
-  markOk()
-  local out = {}
-  limit = limit or (P.cfg and P.cfg.me and P.cfg.me.networkLimit) or 1500
-  if type(res) == "table" then
-    for i = 1, (res.n or #res) do
-      local s = res[i]
-      if type(s) == "table" and s.name then
-        local label = s.label or s.name
-        out[#out + 1] = {
-          name = s.name, damage = s.damage or 0, label = label, size = tonumber(s.size) or 0,
-          craft = s.isCraftable and true or false,
-          key = U.lower(label .. " " .. s.name),
-        }
-        if #out >= limit then break end
-      end
-    end
-  end
-  res = nil
-  if collectgarbage then pcall(collectgarbage) end
-  table.sort(out, function(a, b)
-    if a.label ~= b.label then return a.label < b.label end
-    if a.name ~= b.name then return a.name < b.name end
-    return a.damage < b.damage
-  end)
+local function stackSpec(s, extra)
+  if type(s) ~= "table" or not (s.name or s.id) then return nil end
+  local out = { name = s.name or s.id, damage = s.damage or s.meta or 0,
+    label = s.label or s.displayName or s.name or s.id }
+  if extra then for k, v in pairs(extra) do out[k] = v end end
   return out
 end
 
--- предмет из слота ME-интерфейса.
--- Сначала читаем ФИЗИЧЕСКИЙ слот (getStackInSlot / inventory), потом конфиг (ghost).
--- Пользователь кладёт предмет в интерфейс — мы его подхватываем.
+-- Официальный драйвер OC 1.7.10 открывает у me_interface только 9
+-- config-слотов. Блочный Interface принимает slot, кабельный — side, slot.
 function M.configSlot(slot)
   if not dev then return nil, "нет ME" end
+  if type(dev.getInterfaceConfiguration) ~= "function" then return nil, "у me_interface нет getInterfaceConfiguration" end
   local slots = slot and { slot } or { 1, 2, 3, 4, 5, 6, 7, 8, 9 }
-  -- 1) реальные предметы в слотах
-  local invFns = { "getStackInSlot", "getItemInSlot", "getSlot", "getStack" }
-  for _, sl in ipairs(slots) do
-    for _, fn in ipairs(invFns) do
-      if type(dev[fn]) == "function" then
-        local ok, s = pcall(dev[fn], sl)
-        if ok and type(s) == "table" and (s.name or s.id) then
-          return {
-            name = s.name or s.id,
-            damage = s.damage or s.meta or 0,
-            label = s.label or s.displayName or s.name or s.id,
-          }
-        end
+  local blockApi = pcall(dev.getInterfaceConfiguration)
+  if blockApi then
+    for _, sl in ipairs(slots) do
+      local ok, s = pcall(dev.getInterfaceConfiguration, sl)
+      local spec = ok and stackSpec(s, { slot = sl }) or nil
+      if spec then return spec end
+    end
+    return nil, "config-слоты блочного ME Interface пусты"
+  end
+  -- Part Interface: первый параметр — сторона кабеля, второй — слот.
+  local fixed = tonumber(P.cfg.me.interfaceSide) or -1
+  local firstSide, lastSide = fixed >= 0 and fixed or 0, fixed >= 0 and fixed or 5
+  for side = firstSide, lastSide do
+    for _, sl in ipairs(slots) do
+      local ok, s = pcall(dev.getInterfaceConfiguration, side, sl)
+      local spec = ok and stackSpec(s, { side = side, slot = sl }) or nil
+      if spec then return spec end
+    end
+  end
+  return nil, "config-слоты ME Interface пусты; задайте предмет в одном из 9 слотов шаблона"
+end
+
+-- Читаем Database Upgrade из Adapter (как на скриншоте), не трогая всю ME-сеть.
+function M.databaseItems()
+  local out = {}
+  for addr in component.list("database", true) do
+    local db = U.proxy(addr)
+    if db and type(db.get) == "function" then
+      for sl = 1, 81 do
+        local ok, s = pcall(db.get, sl)
+        local spec = ok and stackSpec(s, { database = addr, slot = sl }) or nil
+        if spec then out[#out + 1] = spec end
       end
     end
   end
-  -- 2) конфиг-слоты (ghost / pattern)
-  local cfgFns = { "getInterfaceConfiguration", "getConfiguration", "getInterfacePattern", "getConfig" }
-  for _, sl in ipairs(slots) do
-    for _, fn in ipairs(cfgFns) do
-      if type(dev[fn]) == "function" then
-        local ok, s = pcall(dev[fn], sl)
-        if ok and type(s) == "table" and (s.name or s.id) then
-          return {
-            name = s.name or s.id,
-            damage = s.damage or s.meta or 0,
-            label = s.label or s.displayName or s.name or s.id,
-          }
-        end
-      end
-    end
-  end
-  -- 3) иногда AE отдаёт таблицу всех слотов сразу
-  for _, fn in ipairs({ "getItems", "getInventory", "getAllStacks" }) do
-    if type(dev[fn]) == "function" then
-      local ok, res = pcall(dev[fn])
-      if ok and type(res) == "table" then
-        for i = 1, (res.n or #res) do
-          local s = res[i]
-          if type(s) == "table" and (s.name or s.id) then
-            return {
-              name = s.name or s.id,
-              damage = s.damage or s.meta or 0,
-              label = s.label or s.displayName or s.name or s.id,
-            }
-          end
-        end
-      end
-    end
-  end
-  return nil, "в слотах 1–9 интерфейса нет предмета (положите предмет в ME-интерфейс)"
+  table.sort(out, function(a, b) return a.label < b.label end)
+  return out
 end
 
 -- энергия ME-сети

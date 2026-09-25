@@ -69,8 +69,10 @@ local function drawSettings(x, y, w, h)
   end
   row = row + 4
   num(ix, row, iw, "Строк крафта", "maxCraft", 1, 8, 1); row = row + 1
-  num(ix, row, iw, "Строк чата", "chatLines", 0, 20, 1); row = row + 1
+  num(ix, row, iw, "Строк чата (высота)", "chatLines", 0, 40, 1); row = row + 1
   num(ix, row, iw, "Ширина чата, симв.", "chatWidth", 10, 120, 2); row = row + 1
+  num(ix, row, iw, "Масштаб текста чата", "chatScale", 0.5, 1.8, 0.05, { dec = 2, fmt = function(v) return string.format("%.2f", v) end }); row = row + 1
+  num(ix, row, iw, "Интервал строк чата", "chatGap", 0, 8, 1); row = row + 1
   UI.toggle(ix, row, iw, "Чат снизу (иначе — сверху)", g.chatBelow ~= false, function()
     g.chatBelow = (g.chatBelow == false) and true or false
     P.config.markDirty()
