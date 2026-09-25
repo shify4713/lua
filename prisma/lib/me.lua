@@ -4,6 +4,7 @@
 local P = ...
 local U = P.util
 local log = P.log
+local component = require("component")
 
 local M = {}
 local dev
@@ -216,13 +217,12 @@ function M.listNetwork(limit)
   return out
 end
 
--- предмет из слота ME-интерфейса.
--- Сначала читаем ФИЗИЧЕСКИЙ слот (getStackInSlot / inventory), потом конфиг (ghost).
+-- Предмет только из ФИЗИЧЕСКОГО слота интерфейса/соседнего инвентаря.
 -- Пользователь кладёт предмет в интерфейс — мы его подхватываем.
 function M.configSlot(slot)
   if not dev then return nil, "нет ME" end
   local slots = slot and { slot } or { 1, 2, 3, 4, 5, 6, 7, 8, 9 }
-  -- 1) реальные предметы в слотах
+  -- Некоторые сборки прокидывают инвентарь прямо через ME-компонент.
   local invFns = { "getStackInSlot", "getItemInSlot", "getSlot", "getStack" }
   for _, sl in ipairs(slots) do
     for _, fn in ipairs(invFns) do
@@ -238,41 +238,25 @@ function M.configSlot(slot)
       end
     end
   end
-  -- 2) конфиг-слоты (ghost / pattern)
-  local cfgFns = { "getInterfaceConfiguration", "getConfiguration", "getInterfacePattern", "getConfig" }
-  for _, sl in ipairs(slots) do
-    for _, fn in ipairs(cfgFns) do
-      if type(dev[fn]) == "function" then
-        local ok, s = pcall(dev[fn], sl)
-        if ok and type(s) == "table" and (s.name or s.id) then
-          return {
-            name = s.name or s.id,
-            damage = s.damage or s.meta or 0,
-            label = s.label or s.displayName or s.name or s.id,
-          }
-        end
-      end
-    end
-  end
-  -- 3) иногда AE отдаёт таблицу всех слотов сразу
-  for _, fn in ipairs({ "getItems", "getInventory", "getAllStacks" }) do
-    if type(dev[fn]) == "function" then
-      local ok, res = pcall(dev[fn])
-      if ok and type(res) == "table" then
-        for i = 1, (res.n or #res) do
-          local s = res[i]
-          if type(s) == "table" and (s.name or s.id) then
-            return {
-              name = s.name or s.id,
-              damage = s.damage or s.meta or 0,
-              label = s.label or s.displayName or s.name or s.id,
-            }
+  -- Стандартный OC читает реальный слот через inventory_controller/transposer.
+  -- Перебор ограничен 6 сторонами и 9 слотами: сеть ME целиком не загружается.
+  for addr, kind in component.list() do
+    if kind == "inventory_controller" or kind == "transposer" then
+      local reader = U.proxy(addr)
+      if reader and type(reader.getStackInSlot) == "function" then
+        for side = 0, 5 do
+          for _, sl in ipairs(slots) do
+            local ok, s = pcall(reader.getStackInSlot, side, sl)
+            if ok and type(s) == "table" and (s.name or s.id) then
+              return { name = s.name or s.id, damage = s.damage or s.meta or 0,
+                label = s.label or s.displayName or s.name or s.id }
+            end
           end
         end
       end
     end
   end
-  return nil, "в слотах 1–9 интерфейса нет предмета (положите предмет в ME-интерфейс)"
+  return nil, "реальный предмет не найден: положите его в слот 1–9 интерфейса (нужен inventory controller/транспозер рядом)"
 end
 
 -- энергия ME-сети

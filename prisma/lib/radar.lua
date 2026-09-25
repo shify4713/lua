@@ -59,11 +59,12 @@ end
 
 local function parsePlayers(res)
   local list = {}
+  local seen = {}
   if type(res) ~= "table" then return list end
   for k, v in pairs(res) do
     local name, dist
     if type(v) == "table" then
-      name = v.name or v.username or v.displayName or (type(k) == "string" and k) or nil
+      name = v.username or v.playerName or v.player or v.commandSenderName or v.displayName or v.name or (type(k) == "string" and k) or nil
       dist = tonumber(v.distance) or tonumber(v.range) or tonumber(v.dist)
       if not dist and (v.x or v.y or v.z) then
         dist = math.sqrt((tonumber(v.x) or 0) ^ 2 + (tonumber(v.y) or 0) ^ 2 + (tonumber(v.z) or 0) ^ 2)
@@ -75,7 +76,9 @@ local function parsePlayers(res)
     elseif type(k) == "string" then
       name = k
     end
-    if name and name ~= "" and not ignored(name) then
+    -- Entity Sensor иногда возвращает тип сущности в name, а ник — в playerName.
+    if name and name ~= "" and tostring(name):lower() ~= "player" and not ignored(tostring(name)) and not seen[tostring(name):lower()] then
+      seen[tostring(name):lower()] = true
       local pre = cfg().prefixes and cfg().prefixes[name]
       list[#list + 1] = { name = name, display = pre and (pre .. " " .. name) or name, dist = dist }
     end
@@ -87,13 +90,15 @@ local function fetchPlayers()
   if not sensor then return nil end
   -- основной API OpenPeripherals
   if type(sensor.getPlayers) == "function" then
-    local ok, res = pcall(sensor.getPlayers)
+    local ok, res = pcall(sensor.getPlayers, cfg().range or 64)
+    if not ok then ok, res = pcall(sensor.getPlayers) end
     if ok and type(res) == "table" then return parsePlayers(res) end
   end
   -- альтернативы
   for _, fn in ipairs({ "getNearbyPlayers", "scanPlayers", "getEntities", "scan" }) do
     if type(sensor[fn]) == "function" then
-      local ok, res = pcall(sensor[fn])
+      local ok, res = pcall(sensor[fn], cfg().range or 64)
+      if not ok then ok, res = pcall(sensor[fn]) end
       if ok and type(res) == "table" then
         local list = parsePlayers(res)
         if #list > 0 then return list end

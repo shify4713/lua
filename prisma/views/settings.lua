@@ -93,6 +93,7 @@ local function radarRows()
     Sec("Датчик"),
     B("Сообщать о новых игроках", { "radar", "alert" }, "запись в журнал и сигнал"),
     N("Опрос, сек", { "radar", "interval" }, 0.5, 30, 0.5, { dec = 1, fmt = tf(1) }),
+    N("Радиус поиска", { "radar", "range" }, 4, 256, 4, { int = true }),
     Sec("Игнорируемые ники"),
   }
   for i, name in ipairs(P.cfg.radar.ignore) do

@@ -10,7 +10,7 @@ local src = ((debug.getinfo(1, "S").source or ""):gsub("^[@=]", ""))
 local BASE = src:match("^(.*)/[^/]*$") or "/home/prisma"
 if BASE == "" then BASE = "/home/prisma" end
 
-local VERSION = "4.1"
+local VERSION = "4.2"
 local TABS = {
   { id = "dash",  key = "dash" },
   { id = "power", key = "power" },

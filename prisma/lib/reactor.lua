@@ -76,15 +76,26 @@ end
 -- ───────── шлюзы ─────────
 -- Flux Gate (DE): getSignalLowFlow = настроенный лимит, getFlow = фактический поток.
 -- Пробуем несколько имён — в разных сборках/версиях OC они отличаются.
+local function callNumber(g, fn)
+  if not g or type(g[fn]) ~= "function" then return nil end
+  local ok, v = pcall(g[fn])
+  return ok and tonumber(v) or nil
+end
+
+-- Значение, выставленное на самом гейте.  getSignalLowFlow — это профиль
+-- красного камня и часто равен 0, даже когда включён override на 100 RF/t.
 local function gateRead(g)
   if not g then return nil end
-  for _, fn in ipairs({ "getSignalLowFlow", "getFlow", "getSignal", "getOverrideFlow" }) do
-    if type(g[fn]) == "function" then
-      local ok, v = pcall(g[fn])
-      if ok and tonumber(v) then return tonumber(v) end
-    end
+  local override = callNumber(g, "getOverrideFlow")
+  local overrideState
+  if type(g.getOverrideEnabled) == "function" then
+    local ok, enabled = pcall(g.getOverrideEnabled)
+    if ok then overrideState = enabled and true or false end
+    if overrideState and override ~= nil then return override end
   end
-  return nil
+  local low = callNumber(g, "getSignalLowFlow")
+  if overrideState == false then return low or callNumber(g, "getFlow") or override or callNumber(g, "getSignal") end
+  return override or low or callNumber(g, "getFlow") or callNumber(g, "getSignal")
 end
 
 local function gateWrite(r, which, v, force)
@@ -101,12 +112,14 @@ local function gateWrite(r, which, v, force)
   -- override включаем прямо перед записью (если доступен)
   if type(g.setOverrideEnabled) == "function" then pcall(g.setOverrideEnabled, true) end
   local wrote = false
-  if type(g.setSignalLowFlow) == "function" then
+  -- Если override существует, писать нужно именно в него. Раньше менялся
+  -- low-signal профиль, а активный override оставался нулевым.
+  if type(g.setOverrideFlow) == "function" then
+    wrote = pcall(g.setOverrideFlow, v)
+  elseif type(g.setSignalLowFlow) == "function" then
     wrote = pcall(g.setSignalLowFlow, v)
   elseif type(g.setFlow) == "function" then
     wrote = pcall(g.setFlow, v)
-  elseif type(g.setOverrideFlow) == "function" then
-    wrote = pcall(g.setOverrideFlow, v)
   end
   if wrote then r[key] = v end
 end
@@ -221,6 +234,14 @@ local function step(r, idx, now)
   elseif kind == "running" or kind == "stopping" then
     local shield = U.clamp(c.targetShield, 1, 90) / 100
     local need = drain > 0 and math.ceil(drain / (1 - shield)) or (r.lastIn or c.initialFlow)
+    -- Быстро восстанавливаем просевшее поле, но не дёргаем поток около цели.
+    if field < shield then
+      local deficit = (shield - field) / shield
+      need = math.ceil(need * (1 + math.min(2, deficit * 3)))
+    elseif field > shield + 0.08 and drain > 0 then
+      need = math.ceil(drain * 1.05)
+    end
+    need = math.min(need, c.shieldFlowMax or 50000000)
     gateWrite(r, "in", need)
   end
 
@@ -399,12 +420,14 @@ function R.addAuto()
   if gen and gen > 1000 then
     -- выходной — ближе к генерации
     if math.abs(f1 - gen) > math.abs(f2 - gen) then out, inn = g2.addr, g1.addr end
+  elseif (f1 > 0 and f1 <= 1000 and f2 == 0) or (f2 > 0 and f2 <= 1000 and f1 == 0) then
+    -- Специальная метка: пользователь ставит 100 на вход щита. Нулевой
+    -- соседний гейт не должен ошибочно считаться «ещё меньшим входом».
+    if f1 > 0 then inn, out = g1.addr, g2.addr else inn, out = g2.addr, g1.addr end
   elseif f1 > 0 or f2 > 0 then
     -- меньший поток = вход (щит), больший = выход
     if f1 < f2 then out, inn = g2.addr, g1.addr
     else out, inn = g1.addr, g2.addr end
-  elseif f2 > (cfg().detectOutMin or 530000) and f1 < (cfg().detectInMax or 500000) then
-    out, inn = g2.addr, g1.addr
   end
   return R.addManual(rAddr, inn, out)
 end
