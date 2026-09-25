@@ -1,12 +1,12 @@
 -- PRISMA · установщик / обновлятор
 -- Запуск на компьютере OpenComputers (нужна интернет-карта):
---   wget -f https://raw.githubusercontent.com/shify4713/lua/main/prisma/installer.lua /tmp/i.lua && /tmp/i.lua
+--   rm -f /tmp/i.lua; wget -f https://raw.githubusercontent.com/shify4713/prisma/main/installer.lua /tmp/i.lua && /tmp/i.lua
 -- Свой адрес репозитория:  /tmp/i.lua https://мой.сервер/путь/
 local component = require("component")
 local fs = require("filesystem")
 
 local args = { ... }
-local REPO = args[1] or "https://raw.githubusercontent.com/shify4713/lua/main/prisma/"
+local REPO = args[1] or "https://raw.githubusercontent.com/shify4713/prisma/main/"
 if REPO:sub(-1) ~= "/" then REPO = REPO .. "/" end
 local ROOT = "/home/prisma"
 
