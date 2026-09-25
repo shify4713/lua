@@ -1,5 +1,5 @@
 -- ╔══════════════════════════════════════════════════════════╗
--- ║  PRISMA v4.5 — центр управления (OpenComputers 1.7.10)   ║
+-- ║ PRISMA v4.5.1 — центр управления (OpenComputers 1.7.10)  ║
 -- ║  реакторы · энергоядро · автокрафт AE2 · сингулярки · HUD ║
 -- ╚══════════════════════════════════════════════════════════╝
 local component = require("component")
@@ -11,7 +11,7 @@ local src = ((debug.getinfo(1, "S").source or ""):gsub("^[@=]", ""))
 local BASE = src:match("^(.*)/[^/]*$") or "/home/prisma"
 if BASE == "" then BASE = "/home/prisma" end
 
-local VERSION = "4.5"
+local VERSION = "4.5.1"
 local TABS = {
   { id = "dash",  key = "dash" },
   { id = "power", key = "power" },
