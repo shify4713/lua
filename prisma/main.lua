@@ -1,16 +1,17 @@
 -- ╔══════════════════════════════════════════════════════════╗
--- ║  PRISMA v4.0 — центр управления (OpenComputers 1.7.10)   ║
+-- ║  PRISMA v4.5 — центр управления (OpenComputers 1.7.10)   ║
 -- ║  реакторы · энергоядро · автокрафт AE2 · сингулярки · HUD ║
 -- ╚══════════════════════════════════════════════════════════╝
 local component = require("component")
 local computer = require("computer")
 local event = require("event")
+local filesystem = require("filesystem")
 
 local src = ((debug.getinfo(1, "S").source or ""):gsub("^[@=]", ""))
 local BASE = src:match("^(.*)/[^/]*$") or "/home/prisma"
 if BASE == "" then BASE = "/home/prisma" end
 
-local VERSION = "4.1"
+local VERSION = "4.5"
 local TABS = {
   { id = "dash",  key = "dash" },
   { id = "power", key = "power" },
@@ -120,6 +121,31 @@ local function boot()
     P.config.save(P.cfg)
     M.autocraft.flush()
     M.singularity.flush()
+  end
+  -- Короткий отчёт для поиска проблем без скриншотов и переписывания адресов.
+  function P.saveDiagnostics()
+    local free, total = P.util.freeMem()
+    local lines = {
+      "PRISMA " .. VERSION,
+      "uptime=" .. P.util.dur(P.util.now() - P.startedAt),
+      "memory_free=" .. string.format("%.0f/%.0f KB", free / 1024, total / 1024),
+      "me=" .. tostring(P.me.available()) .. " online=" .. tostring(P.me.online) .. " error=" .. tostring(P.me.lastErr or "-"),
+      "reactors=" .. M.reactor.count() .. " radar=" .. tostring(M.radar.available()) .. " glasses=" .. tostring(M.glasses.available()),
+      "components:",
+    }
+    for addr, kind in component.list() do lines[#lines + 1] = "  " .. tostring(kind) .. " " .. tostring(addr) end
+    lines[#lines + 1] = "tasks:"
+    for _, t in ipairs(P.tasks or {}) do
+      lines[#lines + 1] = string.format("  %s %.2fms errors=%d last=%s", t.name, (t.ms or 0) * 1000, t.errs or 0, t.lastErr or "-")
+    end
+    local out = P.dataDir .. "/diagnostics.txt"
+    local f, err = io.open(out .. ".tmp", "w")
+    if not f then return false, err end
+    f:write(table.concat(lines, "\n"), "\n"); f:close()
+    pcall(filesystem.remove, out)
+    local ok, ren = pcall(filesystem.rename, out .. ".tmp", out)
+    if not ok or not filesystem.exists(out) then return false, ren or "не удалось переименовать файл" end
+    return true, out
   end
   function P.quit() P.state.running = false end
   function P.restart() P.state.running = false; P.state.restart = true end
@@ -364,8 +390,14 @@ local function handleEvent(P, ev)
     end
   elseif name == "clipboard" then
     modal.paste(tostring(ev[3] or ""))
-  elseif name == "chat_message" then
-    if P.cfg.modules.chat then P.mods.chat.onMessage(ev[3], ev[4]) end
+  elseif name == "chat_message" or name == "chat" then
+    if P.cfg.modules.chat then
+      -- Обычно: event, address, player, message; некоторые chat_box
+      -- посылают event, player, message без адреса.
+      local player, message = ev[3], ev[4]
+      if message == nil then player, message = ev[2], ev[3] end
+      P.mods.chat.onMessage(player, message)
+    end
   elseif name == "component_added" or name == "component_removed" then
     P.state.devicesAt = P.util.now() + 1.5
   end

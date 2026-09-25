@@ -176,7 +176,9 @@ local function buildChat(g, s, lh, pad, W)
   if not (g.show.chat and mods.chat and g.chatLines > 0) then return {}, 0 end
   local chat = mods.chat.lines(g.chatLines)
   if #chat == 0 then return {}, 0 end
-  local h = pad + lh + #chat * (lh - 1) + pad - 1
+  local chatScale = s * (g.chatScale or 0.95)
+  local chatLh = math.ceil(8 * chatScale) + 1 + (g.chatGap or 0)
+  local h = pad + lh + #chat * chatLh + pad - 1
   local out = {}
   out[#out + 1] = { id = "cbg", kind = "box", x = 0, y = 0, w = W, h = h, color = COL.bg, alpha = g.alpha }
   out[#out + 1] = { id = "cbg.l", kind = "box", x = 0, y = 0, w = 1, h = h, color = COL.acc, alpha = 0.7 }
@@ -184,8 +186,8 @@ local function buildChat(g, s, lh, pad, W)
   out[#out + 1] = { id = "ch.h", kind = "text", x = pad + 2, y = ty, text = "ЧАТ", color = COL.acc, scale = s }
   ty = ty + lh
   for i, line in ipairs(chat) do
-    out[#out + 1] = { id = "ch" .. i, kind = "text", x = pad + 2, y = ty, text = U.trunc(line, g.chatWidth), color = COL.text, scale = s * 0.95 }
-    ty = ty + lh - 1
+    out[#out + 1] = { id = "ch" .. i, kind = "text", x = pad + 2, y = ty, text = U.trunc(line, g.chatWidth), color = COL.text, scale = chatScale }
+    ty = ty + chatLh
   end
   return out, h
 end

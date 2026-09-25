@@ -1,17 +1,21 @@
 -- PRISMA · установщик / обновлятор
 -- Запуск на компьютере OpenComputers (нужна интернет-карта):
+-- Проект: https://github.com/shify4713/lua/tree/main/prisma
 --   wget -f https://raw.githubusercontent.com/shify4713/lua/main/prisma/installer.lua /tmp/i.lua && /tmp/i.lua
 -- Свой адрес репозитория:  /tmp/i.lua https://мой.сервер/путь/
 local component = require("component")
 local fs = require("filesystem")
 
 local args = { ... }
-local REPO = args[1] or "https://raw.githubusercontent.com/shify4713/lua/main/prisma/"
+local PROJECT = "https://github.com/shify4713/lua/tree/main/prisma"
+local REPO = args[1] or PROJECT
+-- Разрешаем вставлять обычную ссылку GitHub из браузера; wget нужен raw-адрес.
+REPO = REPO:gsub("^https://github%.com/([^/]+)/([^/]+)/tree/([^/]+)/(.*)$", "https://raw.githubusercontent.com/%1/%2/%3/%4")
 if REPO:sub(-1) ~= "/" then REPO = REPO .. "/" end
 local ROOT = "/home/prisma"
 
 local FILES = {
-  "main.lua", "config.lua", "installer.lua",
+  "main.lua", "config.lua", "installer.lua", "ADAPTER_SETUP.txt",
   "lib/util.lua", "lib/log.lua", "lib/fb.lua", "lib/ui.lua", "lib/modal.lua", "lib/me.lua",
   "lib/reactor.lua", "lib/core.lua", "lib/autocraft.lua", "lib/singularity.lua",
   "lib/radar.lua", "lib/chat.lua", "lib/glasses.lua",
