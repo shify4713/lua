@@ -240,7 +240,7 @@ function U.clock()
   local mode = (P.cfg and P.cfg.clock and P.cfg.clock.mode) or "real"
   local tz = (P.cfg and P.cfg.clock and P.cfg.clock.tz) or 0
   if mode == "uptime" then
-    return U.dur(U.now())
+    return U.dur(U.now() - (P.startedAt or 0))
   elseif mode == "game" then
     local ok, s = pcall(os.date, "%H:%M:%S")
     if ok and type(s) == "string" and #s >= 5 then return s end
@@ -248,15 +248,9 @@ function U.clock()
   end
   -- real
   local ok, ms = pcall(computer.realTime)
-  if ok and type(ms) == "number" and ms > 1e9 then
-    -- мс с эпохи
-    return fmtHMS(ms / 1000 + tz * 3600)
-  end
   if ok and type(ms) == "number" and ms > 0 then
-    -- некоторые сборки отдают секунды
-    local sec = ms
-    if sec > 1e12 then sec = sec / 1000 end  -- мкс?
-    if sec > 1e10 then sec = sec / 1000 end
+    -- OC обычно отдаёт миллисекунды, некоторые прошивки — секунды.
+    local sec = ms > 100000000000 and (ms / 1000) or ms
     return fmtHMS(sec + tz * 3600)
   end
   -- fallback: os.time (может быть игровым)

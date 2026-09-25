@@ -42,9 +42,10 @@ local ROLES = {
   { key = "me", label = "ME-интерфейс", types = { "me_interface", "me_controller", "ae2_interface" } },
   { key = "storage", label = "Накопитель ядра", types = { "draconic_rf_storage" } },
   { key = "coreGate", label = "Выходной шлюз ядра", types = { "flux_gate" } },
-  { key = "sensor", label = "Датчик игроков", types = { "sensor", "openperipheral_sensor" } },
+  { key = "sensor", label = "Датчик игроков", types = { "sensor", "openperipheral_sensor", "radar", "entity_detector", "player_detector" } },
   { key = "glasses", label = "Мост очков", types = { "openperipheral_bridge", "glasses_bridge", "terminal_glasses_bridge", "glasses" } },
   { key = "chat", label = "Чат-бокс", types = { "chat_box" } },
+  { key = "slotReader", label = "Чтение слота ME", types = { "inventory_controller", "transposer" } },
 }
 
 local function candidates(role)
@@ -93,6 +94,7 @@ local function radarRows()
     Sec("Датчик"),
     B("Сообщать о новых игроках", { "radar", "alert" }, "запись в журнал и сигнал"),
     N("Опрос, сек", { "radar", "interval" }, 0.5, 30, 0.5, { dec = 1, fmt = tf(1) }),
+    N("Радиус поиска", { "radar", "range" }, 4, 256, 4, { int = true }),
     Sec("Игнорируемые ники"),
   }
   for i, name in ipairs(P.cfg.radar.ignore) do
@@ -115,6 +117,10 @@ local function systemRows()
     Info("Кадр", function() return string.format("%.0f мс · вывод: %.0f вызовов GPU", P.state.drawMs or 0, P.fb.calls or 0) end),
     Info("ME запросов / ошибок", function() return P.me.calls .. " / " .. P.me.errors end),
     Info("Очередь ME", function() return tostring(P.me.queueSize()) end),
+    Btn("Сохранить диагностику", function()
+      local ok, path = P.saveDiagnostics()
+      UI.toast(ok and ("Сохранено: " .. path) or ("Ошибка: " .. tostring(path)), ok and "ok" or "bad")
+    end, "адреса устройств, память, задачи и последние ошибки"),
     Sec("Задачи (среднее время, мс)"),
   }
   for _, t in ipairs(P.tasks or {}) do
@@ -161,7 +167,7 @@ local PAGES = {
       Sec("Сеть ME (главный регулятор нагрузки на сервер)"),
       N("Опрос очереди ME, сек", { "me", "interval" }, 0.05, 5, 0.1, { dec = 2, fmt = tf(2), hint = "меньше = отзывчивее, больше = меньше лагов" }),
       N("Запросов за проход", { "me", "batch" }, 1, 10, 1, { int = true }),
-      N("Лимит списка сети ME", { "me", "networkLimit" }, 200, 10000, 100, { int = true, big = 1000, hint = "защита от нехватки памяти при просмотре сети" }),
+      N("Сторона слота ME (-1=авто)", { "me", "slotSide" }, -1, 5, 1, { int = true, hint = "сторона Adapter: down/up/back/front/right/left = 0..5" }),
       Btn("Экономный режим (замедлить всё)", function() P.applyEcoMode() end, "снижает частоту опросов всех модулей разом", "warn"),
       Sec("Модули"),
       B("Реакторы", { "modules", "reactors" }),
@@ -190,6 +196,7 @@ local PAGES = {
       B("Аварийная остановка", { "reactors", "emergency" }, "авто-стоп при перегреве / падении поля"),
       N("Стоп при температуре, °C", { "reactors", "tempEmergency" }, 3000, 9900, 100, { int = true, big = 500 }),
       N("Стоп при поле ниже, %", { "reactors", "fieldEmergency" }, 1, 30, 1, { int = true }),
+      N("Макс. подпитка щита, RF/t", { "reactors", "shieldFlowMax" }, 1e6, 2e9, 1e6, { int = true, big = 1e7, fmt = unumf }),
       N("Предупреждать по топливу, %", { "reactors", "fuelWarn" }, 50, 99, 1, { int = true }),
       N("Стоп по топливу, % (0=выкл)", { "reactors", "fuelStop" }, 0, 99, 1, { int = true }),
       Sec("Разгон на холодном топливе"),
