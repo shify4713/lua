@@ -22,10 +22,11 @@ C.defaults = {
   },
 
   -- ручная привязка устройств (адрес или его начало). Пусто = авто
-  devices = { me = "", storage = "", coreGate = "", sensor = "", glasses = "", chat = "" },
+  devices = { me = "", storage = "", coreGate = "", sensor = "", glasses = "", chat = "", slotReader = "" },
 
   reactors = {
     targetShield = 20,      -- % поля, которое держим
+    shieldFlowMax = 50000000, -- предел аварийной подпитки щита
     targetTemp = 7800,      -- целевая рабочая температура (°C)
     forceModeTemp = 7500,   -- ниже — фаза разгона (большой поток)
     safeModeTemp = 8000,    -- выше — начинаем снижать поток
@@ -91,17 +92,19 @@ C.defaults = {
     maxCraft = 3,
     chatLines = 4,
     chatWidth = 34,
+    chatScale = 0.95,       -- масштаб текста чата относительно HUD
+    chatGap = 0,            -- дополнительный интервал между строками, px
     chatBelow = true,       -- чат под основной панелью
   },
 
-  radar = { ignore = { "LiwMorgan" }, prefixes = {}, alert = true, interval = 1 },
+  radar = { ignore = { "LiwMorgan" }, prefixes = {}, alert = true, interval = 1, range = 64 },
 
   chat = { maxLines = 60, commands = true },
 
   me = {
     interval = 0.05,        -- как часто «прокачивать» очередь запросов к ME (сек) — главный регулятор нагрузки на сервер
     batch = 2,               -- сколько запросов из очереди обрабатывать за один проход
-    networkLimit = 1500,     -- максимум предметов, которые загружаем при просмотре сети ME (безопасность по памяти)
+    slotSide = -1,           -- сторона физического ME Interface: -1 = найти автоматически, 0..5 = точно
   },
 
   clock = {

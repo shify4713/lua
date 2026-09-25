@@ -45,7 +45,7 @@ local function drawCore(x, y, w, h)
   local rate = c.rate * 20
   UI.kv(rx, y + 1, rw, "Приток в секунду", U.signed(rate) .. " RF", rate >= 0 and C.ok or C.warn)
   local flowTxt = c.hasGate and (U.int(c.flow) .. " RF/t") or "—"
-  if c.real and c.hasGate then flowTxt = flowTxt .. "  (факт: " .. U.int(c.real) .. ")" end
+  if c.real and c.hasGate then flowTxt = flowTxt .. "  (актив: " .. U.int(c.real) .. ")" end
   UI.kv(rx, y + 2, rw, "Выход шлюза", flowTxt, C.text)
   local etxt, ecol = core.etaInfo()
   UI.kv(rx, y + 3, rw, "До цели", etxt, C[ecol])
@@ -101,7 +101,7 @@ local function drawCard(x, y, w, h, i)
   local ioLabel = "Вход / выход"
   local ioVal = U.num(rr.lastIn or 0) .. " / " .. U.num(rr.lastOut or 0)
   if rr.realOut and math.abs((rr.realOut or 0) - (rr.lastOut or 0)) > math.max(2000, (rr.lastOut or 0) * 0.02) then
-    ioVal = ioVal .. " (факт " .. U.num(rr.realOut) .. ")"
+    ioVal = ioVal .. " (актив " .. U.num(rr.realOut) .. ")"
   end
   UI.kv(ix, y + 12, iw, ioLabel, ioVal, C.text)
   UI.spark(ix, y + 13, iw, rr.hist, nil, nil, col)

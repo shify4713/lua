@@ -11,7 +11,7 @@ if REPO:sub(-1) ~= "/" then REPO = REPO .. "/" end
 local ROOT = "/home/prisma"
 
 local FILES = {
-  "main.lua", "config.lua", "installer.lua",
+  "main.lua", "config.lua", "installer.lua", "ADAPTER_SETUP.txt",
   "lib/util.lua", "lib/log.lua", "lib/fb.lua", "lib/ui.lua", "lib/modal.lua", "lib/me.lua",
   "lib/reactor.lua", "lib/core.lua", "lib/autocraft.lua", "lib/singularity.lua",
   "lib/radar.lua", "lib/chat.lua", "lib/glasses.lua",

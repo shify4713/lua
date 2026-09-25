@@ -4,9 +4,11 @@
 local P = ...
 local U = P.util
 local log = P.log
+local component = require("component")
 
 local M = {}
 local dev
+local slotReader, slotReaderAddr
 local queue, pending = {}, {}
 local cpuCache = { list = {}, total = 0, busy = 0, at = -1e9, ok = false }
 local powerCache = { at = -1e9 }
@@ -19,11 +21,22 @@ M.calls, M.errors = 0, 0
 function M.init()
   queue, pending = {}, {}
   local d, a, t = U.findComp({ "me_interface", "me_controller", "ae2_interface" }, P.cfg.devices.me)
+  if not d then
+    -- Через Adapter имя компонента зависит от версии интеграции. Ищем по API.
+    for addr in component.list() do
+      local p = U.proxy(addr)
+      if p and type(p.getItemsInNetwork) == "function" and type(p.getCraftables) == "function" then
+        d, a, t = p, addr, "ME (по методам)"; break
+      end
+    end
+  end
   dev, M.addr, M.type = d, a, t
+  slotReader, slotReaderAddr = U.findComp({ "inventory_controller", "transposer" }, P.cfg.devices.slotReader)
   M.online = nil
 end
 
 function M.available() return dev ~= nil end
+function M.slotReaderAddress() return slotReaderAddr end
 
 local function markOk()
   if M.online == false and M.warned then
@@ -182,97 +195,52 @@ function M.cancel(h)
   pcall(function() return h.cancel() end)
 end
 
--- ───────── списки для выбора предметов ─────────
--- весь список предметов сети (тяжёлый вызов — только по запросу пользователя)
-function M.listNetwork(limit)
-  if not dev then return nil, "нет ME" end
-  M.calls = M.calls + 1
-  local ok, res = pcall(dev.getItemsInNetwork)
-  if not ok then markFail(res); return nil, tostring(res) end
-  markOk()
-  local out = {}
-  limit = limit or (P.cfg and P.cfg.me and P.cfg.me.networkLimit) or 1500
-  if type(res) == "table" then
-    for i = 1, (res.n or #res) do
-      local s = res[i]
-      if type(s) == "table" and s.name then
-        local label = s.label or s.name
-        out[#out + 1] = {
-          name = s.name, damage = s.damage or 0, label = label, size = tonumber(s.size) or 0,
-          craft = s.isCraftable and true or false,
-          key = U.lower(label .. " " .. s.name),
-        }
-        if #out >= limit then break end
-      end
-    end
-  end
-  res = nil
-  if collectgarbage then pcall(collectgarbage) end
-  table.sort(out, function(a, b)
-    if a.label ~= b.label then return a.label < b.label end
-    if a.name ~= b.name then return a.name < b.name end
-    return a.damage < b.damage
-  end)
-  return out
-end
-
--- предмет из слота ME-интерфейса.
--- Сначала читаем ФИЗИЧЕСКИЙ слот (getStackInSlot / inventory), потом конфиг (ghost).
+-- Предмет только из ФИЗИЧЕСКОГО слота интерфейса/соседнего инвентаря.
 -- Пользователь кладёт предмет в интерфейс — мы его подхватываем.
 function M.configSlot(slot)
   if not dev then return nil, "нет ME" end
   local slots = slot and { slot } or { 1, 2, 3, 4, 5, 6, 7, 8, 9 }
-  -- 1) реальные предметы в слотах
-  local invFns = { "getStackInSlot", "getItemInSlot", "getSlot", "getStack" }
-  for _, sl in ipairs(slots) do
-    for _, fn in ipairs(invFns) do
-      if type(dev[fn]) == "function" then
-        local ok, s = pcall(dev[fn], sl)
-        if ok and type(s) == "table" and (s.name or s.id) then
-          return {
-            name = s.name or s.id,
-            damage = s.damage or s.meta or 0,
-            label = s.label or s.displayName or s.name or s.id,
-          }
-        end
-      end
+  -- Стандартный OC читает реальный слот через inventory_controller/transposer,
+  -- установленный в Adapter рядом с ME Interface.
+  -- Перебор ограничен 6 сторонами и 9 слотами: сеть ME целиком не загружается.
+  local readers = {}
+  if slotReader then readers[1] = { p = slotReader, a = slotReaderAddr } end
+  if #readers == 0 then
+    for addr, kind in component.list() do
+      if kind == "inventory_controller" or kind == "transposer" then readers[#readers + 1] = { p = U.proxy(addr), a = addr } end
     end
   end
-  -- 2) конфиг-слоты (ghost / pattern)
-  local cfgFns = { "getInterfaceConfiguration", "getConfiguration", "getInterfacePattern", "getConfig" }
-  for _, sl in ipairs(slots) do
-    for _, fn in ipairs(cfgFns) do
-      if type(dev[fn]) == "function" then
-        local ok, s = pcall(dev[fn], sl)
-        if ok and type(s) == "table" and (s.name or s.id) then
-          return {
-            name = s.name or s.id,
-            damage = s.damage or s.meta or 0,
-            label = s.label or s.displayName or s.name or s.id,
-          }
-        end
-      end
-    end
-  end
-  -- 3) иногда AE отдаёт таблицу всех слотов сразу
-  for _, fn in ipairs({ "getItems", "getInventory", "getAllStacks" }) do
-    if type(dev[fn]) == "function" then
-      local ok, res = pcall(dev[fn])
-      if ok and type(res) == "table" then
-        for i = 1, (res.n or #res) do
-          local s = res[i]
-          if type(s) == "table" and (s.name or s.id) then
-            return {
-              name = s.name or s.id,
-              damage = s.damage or s.meta or 0,
-              label = s.label or s.displayName or s.name or s.id,
-            }
+  local fixedSide = tonumber(P.cfg.me.slotSide) or -1
+  for _, rd in ipairs(readers) do
+      local reader = rd.p
+      if reader and type(reader.getStackInSlot) == "function" then
+        local firstSide, lastSide = fixedSide >= 0 and fixedSide or 0, fixedSide >= 0 and fixedSide or 5
+        for side = firstSide, lastSide do
+          -- Если контроллер умеет назвать инвентарь, не берём случайный
+          -- предмет из соседнего сундука/машины вместо ME Interface.
+          local suitable = true
+          if type(reader.getInventoryName) == "function" then
+            local okN, n = pcall(reader.getInventoryName, side)
+            if okN and n then
+              local ln = tostring(n):lower()
+              suitable = ln:find("interface", 1, true) ~= nil or ln:find("ae2", 1, true) ~= nil
+                or ln:find("appliedenergistics", 1, true) ~= nil
+            end
+          end
+          if suitable then
+            for _, sl in ipairs(slots) do
+              local ok, s = pcall(reader.getStackInSlot, side, sl)
+              if ok and type(s) == "table" and (s.name or s.id) then
+                return { name = s.name or s.id, damage = s.damage or s.meta or 0,
+                  label = s.label or s.displayName or s.name or s.id,
+                  reader = rd.a, side = side, slot = sl }
+              end
+            end
           end
         end
       end
-    end
   end
-  return nil, "в слотах 1–9 интерфейса нет предмета (положите предмет в ME-интерфейс)"
+  return nil, "предмет не найден: Adapter с inventory_controller должен касаться ME Interface; проверьте сторону в Настройках"
 end
 
 -- энергия ME-сети
