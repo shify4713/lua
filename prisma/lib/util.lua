@@ -254,9 +254,34 @@ function U.freeMem()
   return 0, 1
 end
 
+-- Часы. os.time()/os.date() в OpenComputers часто не отражают реальное время (зависят от
+-- настройки сервера allowRealTime) и могут "плыть" — просто сместить на постоянное число
+-- часов такое не лечит. Поэтому в приоритете — часы, заданные ВРУЧНУЮ (см. U.setClock):
+-- запоминаем момент (секунды с полуночи) и computer.uptime() на тот момент, дальше просто
+-- тикаем от него — это не зависит от os.time() вообще и не плывёт.
+function U.setClock(hh, mm)
+  hh, mm = tonumber(hh) or 0, tonumber(mm) or 0
+  if not P.cfg or not P.cfg.ui then return end
+  P.cfg.ui.clockBaseSec = (hh % 24) * 3600 + (mm % 60) * 60
+  P.cfg.ui.clockBaseUptime = computer.uptime()
+end
+
+function U.clearClock()
+  if not P.cfg or not P.cfg.ui then return end
+  P.cfg.ui.clockBaseSec, P.cfg.ui.clockBaseUptime = nil, nil
+end
+
 function U.clock()
+  local cui = P.cfg and P.cfg.ui
+  if cui and cui.clockBaseSec then
+    local secs = (cui.clockBaseSec + (computer.uptime() - (cui.clockBaseUptime or 0))) % 86400
+    local h = math.floor(secs / 3600) % 24
+    local m = math.floor(secs / 60) % 60
+    local s2 = math.floor(secs) % 60
+    return string.format("%02d:%02d:%02d", h, m, s2)
+  end
   local off = 0
-  if P.cfg and P.cfg.ui and P.cfg.ui.clockOffset then off = P.cfg.ui.clockOffset * 3600 end
+  if cui and cui.clockOffset then off = cui.clockOffset * 3600 end
   local okT, t = pcall(os.time)
   if okT and t then
     local ok, s = pcall(os.date, "%H:%M:%S", t + off)

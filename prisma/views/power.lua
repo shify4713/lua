@@ -82,6 +82,13 @@ local function drawCard(x, y, w, h, i)
   if not rr.online then
     UI.text(ix, y + 3, "проверьте адаптер и", C.dim, C.panel)
     UI.text(ix, y + 4, "кабели реактора", C.dim, C.panel)
+    if rr.lastErr then
+      for li, txt in ipairs(U.wrap(tostring(rr.lastErr), iw)) do
+        UI.text(ix, y + 5 + li, txt, C.warn, C.panel)
+      end
+    end
+    UI.text(ix, y + h - 4, "см. НАСТРОЙКИ → Система →", C.dim, C.panel)
+    UI.text(ix, y + h - 3, "Диагностика устройств", C.dim, C.panel)
     UI.button(ix, y + h - 2, iw, "Удалить", function() P.modal.confirm("Удалить реактор", "Убрать реактор " .. i .. " из списка?", function() R.remove(i) end, "Удалить", true) end, { style = "danger" })
     return
   end

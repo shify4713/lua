@@ -113,6 +113,7 @@ end
 local function step(r, idx, now)
   r.idx = idx
   if not r.proxy or type(r.proxy.getReactorInfo) ~= "function" then
+    r.lastErr = "адрес " .. U.shortAddr(r.rAddr) .. "… не резолвится — компьютер физически не видит это устройство (нет адаптера/кабеля/чанк не загружен)"
     if r.online ~= false then
       log.warn("РЕАКТОР " .. idx, "адаптер/прокси не найден (адрес " .. U.shortAddr(r.rAddr) .. "…)")
     end

@@ -184,7 +184,17 @@ local PAGES = {
       N("Высота экрана", { "ui", "h" }, 30, 50, 5, { int = true }),
       Btn("Применить разрешение", function() P.applyResolution() end),
       N("Обновление, кадр/с", { "ui", "fps" }, 1, 10, 1, { int = true, hint = "экран перерисовывается только при изменениях" }),
-      N("Сдвиг часов, ч", { "ui", "clockOffset" }, -12, 12, 1, { int = true, hint = "если часы в игре не совпадают с реальным временем" }),
+      Info("Текущее время программы", function() return U.clock() end),
+      Btn("Задать точное время…", function()
+        P.modal.input("Точное время", { prompt = "ЧЧ:ММ (например 14:30)", value = "", onOk = function(v)
+          local hh, mm = tostring(v or ""):match("^(%d?%d):(%d%d)$")
+          if not hh then UI.toast("Формат: ЧЧ:ММ", "warn"); return end
+          U.setClock(hh, mm)
+          UI.toast("Часы установлены", "ok")
+        end })
+      end, "часы OpenComputers часто не совпадают с реальным временем — задайте вручную"),
+      Btn("Вернуться к системным часам", function() U.clearClock(); UI.toast("Сброшено", "ok") end, nil, "warn"),
+      N("Сдвиг часов, ч (если НЕ задавали точное время)", { "ui", "clockOffset" }, -12, 12, 1, { int = true }),
       Sec("Поведение"),
       B("Звуковые сигналы", { "ui", "sound" }, "при авариях и предупреждениях"),
       B("Авто-перезапуск после сбоя", { "ui", "autoRestart" }, "watchdog"),
