@@ -26,9 +26,9 @@ local COLOR = {bg=0x0E1722, fg=0xE9EDF0, blue=0x54DEDC,
   green=0x70E39B, yellow=0xFFE08C, red=0xFF7583, gray=0x99A8B9}
 local dirs = {'UP','DOWN','NORTH','SOUTH','WEST','EAST'}
 local opposite = {UP='DOWN',DOWN='UP',NORTH='SOUTH',SOUTH='NORTH',WEST='EAST',EAST='WEST'}
-local DATA='/home/beemaster_v5.dat'
-local OLD_DATA='/home/beemaster_v4.dat'
-local LOG='/home/beemaster_v5.log'
+local DATA='/home/beemaster_v6.dat'
+local OLD_DATA='/home/beemaster_v5.dat'
+local LOG='/home/beemaster_v6.log'
 local originalW,originalH=gpu.getResolution()
 local maxW,maxH=gpu.maxResolution()
 local width,height=maxW,maxH
@@ -61,6 +61,11 @@ local created={}
 local lastApiResult=0
 local lastFullGraph=0
 local pendingApiaryRefresh=false
+local nextApiaryPlanAt=0
+local nextMutationPlanAt=0
+local exportFailureCount=0
+local stockWarning=''
+local graphInfo={possible=0,waiting=0,ready=0,example=''}
 
 local function log(s)
   local line=string.format('[%.0f] %s',computer.uptime(),tostring(s))
@@ -104,7 +109,7 @@ local function load()
     apiJobs=x.apiJobs or {}
     if fromOld then
       stage='idle'; job=nil; apiJobs={}
-      log('Settings migrated from v4; old active jobs cleared for safety')
+      log('Settings migrated from v5; old active jobs cleared for safety')
     end
   end
 end
@@ -218,8 +223,8 @@ end
 local function primaryME()
   return devices.me[1] and devices.me[1].p
 end
-local function getList()
-  local me=assert(primaryME(),'ME not found')
+local function getList(me)
+  me=assert(me or primaryME(),'ME not found')
   local ok,a=invoke(me,'getAvailableItems','NONE')
   if not ok or type(a)~='table' then ok,a=invoke(me,'getAvailableItems') end
   assert(ok and type(a)=='table','Нужен getAvailableItems: '..tostring(a))
@@ -238,6 +243,9 @@ local function meInventory()
   local entries=getList()
   available=entries
   catalog={}
+  -- Avoid retaining thousands of extinct bee NBT variants on a 2 MB OC computer.
+  local previousDetails=detailCache
+  detailCache={}
   local templates={}
   local newlyRead=0
   for _,v in pairs(entries) do
@@ -247,11 +255,12 @@ local function meInventory()
       local r=role({id=fp.id})
       if r then
         local key=fingerprintKey(fp)
-        local detail=detailCache[key]
+        local detail=previousDetails[key]
         if not detail then
           detail=lookDetail(fp)
-          if detail then detailCache[key]=detail;newlyRead=newlyRead+1 end
+          if detail then newlyRead=newlyRead+1 end
         end
+        if detail then detailCache[key]=detail end
         local ind=detail and detail.individual
         if type(ind)=='table' then
           local sp=ind.ident or (ind.active and ind.active.species and ind.active.species.name)
@@ -277,6 +286,7 @@ local function meInventory()
   lastME=computer.uptime()
   local n=0;for _ in pairs(catalog) do n=n+1 end
   log('ME species='..n..', templates='..#templates..', new details='..newlyRead)
+  -- Do not overwrite a meaningful error until a successful export clears it.
 end
 local function queenSnapshot()
   local out={}
@@ -391,6 +401,91 @@ local function hasVariant(kind)
   local list=devices[kind] or {}
   return #list==1
 end
+-- The inventory of EACH export interface must be consulted. A fingerprint seen
+-- through another interface may be stale or may belong to a different AE network.
+-- If an exact bee disappeared, only another individual of THE SAME bee species
+-- and bee role may be selected, never an unrelated genotype or gene template.
+local function beeSpeciesFor(fp,me)
+  if not fp then return nil end
+  local key=fingerprintKey(fp)
+  local detail=detailCache[key]
+  if not detail and me then
+    local ok,d=invoke(me.p,'getItemDetail',fp,false)
+    if ok and type(d)=='table' then detail=d;detailCache[key]=d end
+  end
+  return type(detail)=='table' and type(detail.individual)=='table'
+     and detail.individual.ident or nil
+end
+local function liveFingerprint(route,request,n)
+  if not route or not route.me then return nil,'Не выбран МЭ-интерфейс' end
+  local fp=request and request.fingerprint
+  if type(fp)~='table' or not fp.id then return nil,'Некорректный отпечаток предмета' end
+  local ok,items=pcall(getList,route.me.p)
+  if not ok then return nil,'МЭ интерфейс '..route.me.addr:sub(1,8)..' не отвечает: '..tostring(items) end
+  local required=math.max(1,tonumber(n) or 1)
+  local key=fingerprintKey(fp)
+  local count=0
+  for _,item in pairs(items) do
+    if type(item)=='table' and type(item.fingerprint)=='table'
+       and fingerprintKey(item.fingerprint)==key then
+      count=qty(item)
+      if count>=required then return item end
+    end
+  end
+  -- This fallback applies only to bees, not genetic templates/samples.
+  local wantedKind=role({id=fp.id})
+  local wantedSpecies=beeSpeciesFor(fp)
+  if wantedKind and wantedSpecies then
+    for _,item in pairs(items) do
+      if type(item)=='table' and type(item.fingerprint)=='table' and qty(item)>=required
+         and role({id=item.fingerprint.id})==wantedKind then
+        local sp=beeSpeciesFor(item.fingerprint,route.me)
+        if sp==wantedSpecies then
+          log('Fresh fingerprint found for '..wantedKind..' '..sp)
+          return item
+        end
+      end
+    end
+  end
+  return nil,string.format('Пчела/предмет отсутствует в МЭ %s (доступно %d вместо %d). '..
+    'Возможно, предмет уже забрали, NBT изменился или интерфейсы подключены к РАЗНЫМ МЭ-сетям.',
+    route.me.addr:sub(1,8),count,required)
+end
+-- Mutation consumes parents irreversibly, so count the *whole species*
+-- in the exporting ME before touching either parent.
+local function physicalSpeciesCount(route,uid,beeRole)
+  if not uid then return 0 end
+  local ok,items=pcall(getList,route.me.p)
+  if not ok then return 0 end
+  local total=0
+  for _,v in pairs(items) do
+    if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0
+       and role({id=v.fingerprint.id})==beeRole then
+      if beeSpeciesFor(v.fingerprint,route.me)==uid then total=total+qty(v) end
+    end
+  end
+  return total
+end
+local function debitInventory(fp,n)
+  local key=fingerprintKey(fp)
+  for _,v in pairs(available) do
+    if type(v)=='table' and type(v.fingerprint)=='table' and fingerprintKey(v.fingerprint)==key then
+      local new=math.max(0,qty(v)-n)
+      if v.size~=nil then v.size=new end
+      if v.qty~=nil then v.qty=new end
+    end
+  end
+  for _,sp in pairs(catalog) do
+    for _,e in ipairs(sp.entries) do
+      if fingerprintKey(e.fp)==key then
+        local change=math.min(e.count,n)
+        e.count=e.count-change
+        local k= e.role=='P' and 'p' or (e.role=='D' and 'd' or 'q')
+        sp[k]=math.max(0,(sp[k] or 0)-change)
+      end
+    end
+  end
+end
 local function exactMeExport(route,entry,n,slot)
   if not route or not entry or not entry.fingerprint then
     return false,'Не указан МЭ-интерфейс для этой машины'
@@ -399,16 +494,31 @@ local function exactMeExport(route,entry,n,slot)
   if ok and not yes then
     return false,'У выбранного МЭ-интерфейса нет инвентаря СНИЗУ'
   end
-  local called,r=invoke(route.me.p,'exportItem',entry.fingerprint,'DOWN',n,slot)
-  if not called then return false,tostring(r) end
+  local current,why=liveFingerprint(route,entry,n)
+  if not current then
+    exportFailureCount=exportFailureCount+1
+    stockWarning=tostring(why)
+    return false,tostring(why)
+  end
+  local called,r=invoke(route.me.p,'exportItem',current.fingerprint,'DOWN',n,slot)
+  if not called then
+    exportFailureCount=exportFailureCount+1
+    return false,tostring(r)
+  end
   if r==nil or r==false then
-    return false,'МЭ не выдала предмет. Проверь сторону DOWN, слот, запасы и соответствие МЭ машине'
+    exportFailureCount=exportFailureCount+1
+    return false,'МЭ не передала предмет (целевой слот занят, предмет не принимается или сеть недоступна)'
   end
   local amount=type(r)=='table' and tonumber(r.size or r.qty)
   if amount and amount<1 then
-    return false,'Передано 0: DOWN ведёт не в нужную машину, слот занят или предмет не принят'
+    exportFailureCount=exportFailureCount+1
+    return false,'Передано 0: машина/слот не принимает предмет или нет запаса'
   end
-  return true,r
+  local delivered=amount or n
+  if delivered<n then return false,'Передано только '..delivered..' из '..n..' предметов' end
+  debitInventory(current.fingerprint,delivered)
+  stockWarning=''
+  return true,r,current.fingerprint
 end
 local function acquireRoute()
   rebuildRoutes()
@@ -466,11 +576,12 @@ local function supplyAll(now)
 end
 local function input(machine,route,fp,slot,mayConsume)
   assert(not stack(machine.p,slot),'Слот уже занят: '..slot)
-  local ok,r=exactMeExport(route,{fingerprint=fp},1,slot)
+  local ok,r,actual=exactMeExport(route,{fingerprint=fp},1,slot)
   if not ok then error('МЭ -> слот '..slot..': '..tostring(r)) end
   if not mayConsume then
     assert(stack(machine.p,slot),'Предмет не появился в слоте '..slot..'. Проверь назначенный МЭ')
   end
+  return actual
 end
 local function meCount(fp)
   if not fp then return 0 end
@@ -492,7 +603,11 @@ local function findRecipe()
     local bUid=nameToUid[norm(m.b)] or m.b
     local rUid=nameToUid[norm(m.result)] or m.result
     local dest=catalog[rUid]
-    if not dest or (dest.p+dest.q)==0 then
+    local alreadyGrowing=false
+    for _,w in pairs(apiJobs) do
+      if w.uid==rUid then alreadyGrowing=true;break end
+    end
+    if not alreadyGrowing and (not dest or (dest.p+dest.q)==0) then
       for _,pair in ipairs({{aUid,bUid},{bUid,aUid}}) do
         local p,d=catalog[pair[1]],catalog[pair[2]]
         local neededPrincess=CFG.allowLastPrincess and 1 or CFG.minPrincessReserve+1
@@ -519,6 +634,44 @@ local function findRecipe()
   end)
   return opts[1]
 end
+local function recipeStockInfo()
+  local ready,waiting,examples=0,0,{}
+  local seen={}
+  for _,m in ipairs(graph) do
+    local result=nameToUid[norm(m.result)] or m.result
+    local dest=catalog[result]
+    if not dest or (dest.p+dest.q)==0 then
+      local k=norm(m.a)..'|'..norm(m.b)..'='..norm(m.result)
+      if not seen[k] then
+        seen[k]=true
+        local parentA=nameToUid[norm(m.a)] or m.a
+        local parentB=nameToUid[norm(m.b)] or m.b
+        local best=99
+        local hint=''
+        for _,pair in ipairs({{parentA,parentB},{parentB,parentA}}) do
+          local p=catalog[pair[1]]
+          local d=catalog[pair[2]]
+          local pc=p and p.p or 0
+          local dc=d and d.d or 0
+          local missing=math.max(0,2-pc)+math.max(0,5-dc)
+          if p and isStoneMutationSource(pair[1],p.name) then missing=missing+100 end
+          if missing<best then
+            best=missing
+            local pName=p and p.name or tostring(pair[1])
+            local dName=d and d.name or tostring(pair[2])
+            hint=tostring(m.result)..': '..pName..' П='..pc..'/2, '..dName..' Т='..dc..'/5'
+          end
+        end
+        if best==0 then ready=ready+1 else
+          waiting=waiting+1
+          if #examples<12 then examples[#examples+1]={n=best,msg=hint} end
+        end
+      end
+    end
+  end
+  table.sort(examples,function(a,b)return a.n<b.n end)
+  graphInfo={ready=ready,waiting=waiting,possible=ready+waiting,example=examples[1] and examples[1].msg or ''}
+end
 local function planMutation()
   if #graph==0 then notice('Нет дерева мутаций: подключи промышленную пасеку к адаптеру.',true);return end
   local route,m=routes.mut,devices.mut[1]
@@ -538,13 +691,37 @@ local function planMutation()
       allowed[nameToUid[norm(rule.result)] or rule.result]=true
     end
   end
-  job={recipe=recipe.key,wanted=recipe.wanted,pfp=recipe.p.fp,dfp=recipe.d.fp,
+  -- Check the ACTUAL exporting ME before reserving or moving anything.
+  local liveP,errP=liveFingerprint(route,{fingerprint=recipe.p.fp},1)
+  local liveD,errD=liveFingerprint(route,{fingerprint=recipe.d.fp},1)
+  if not liveP or not liveD then
+    stockWarning='Мутатрон ждёт родителей: '..tostring(errP or errD)
+    mode='Ожидание: МЭ обновляется после изменения запасов'
+    nextMutationPlanAt=computer.uptime()+45
+    pendingApiaryRefresh=true
+    return
+  end
+  local princessSpecies=beeSpeciesFor(liveP.fingerprint,route.me)
+  local droneSpecies=beeSpeciesFor(liveD.fingerprint,route.me)
+  local princeNeed=CFG.allowLastPrincess and 1 or CFG.minPrincessReserve+1
+  local droneNeed=CFG.allowLastDrone and 1 or CFG.minDroneReserve+1
+  local princessStock=physicalSpeciesCount(route,princessSpecies,'P')
+  local droneStock=physicalSpeciesCount(route,droneSpecies,'D')
+  if princessStock<princeNeed or droneStock<droneNeed then
+    stockWarning='Не трогаю резерв родителей в МЭ над мутатроном: принцесс '..
+      princessStock..'/'..princeNeed..', трутней '..droneStock..'/'..droneNeed
+    mode='Жду размножения родителей до безопасного запаса'
+    nextMutationPlanAt=computer.uptime()+60
+    pendingApiaryRefresh=true
+    return
+  end
+  job={recipe=recipe.key,wanted=recipe.wanted,pfp=liveP.fingerprint,dfp=liveD.fingerprint,
     name=recipe.m.result,started=computer.uptime(),step='mutation',
     allowed=allowed,baseline=queenSnapshot()}
   stage='mutation';save()
   if not supplyMachine(m,route,4,'МУТ') and not stack(m.p,4) then error('Нет посуды в мутатроне: проверь МЭ над ним и DOWN') end
-  input(m,route,job.pfp,1)
-  input(m,route,job.dfp,2,true)
+  job.pfp=input(m,route,job.pfp,1) or job.pfp
+  job.dfp=input(m,route,job.dfp,2,true) or job.dfp
   mode='Скрещивание: '..job.name
   log('Breeding target '..job.name)
   save()
@@ -784,7 +961,23 @@ local function loadToApiary(task)
     apiaryReason='Нет свободной пасеки с назначенным МЭ (ОБОРУДОВАНИЕ → ПАСЕКА → МЭ)'
     return false,apiaryReason
   end
-  local ok,why=exactMeExport(route,{fingerprint=first.fp},1,1)
+  -- Verify the pair exists in THIS interface, not just in another ME view.
+  local firstLive,missing=liveFingerprint(route,{fingerprint=first.fp},1)
+  if not firstLive then
+    apiaryReason='В МЭ над пасекой не найден родитель: '..tostring(missing)
+    stockWarning=apiaryReason
+    return false,apiaryReason
+  end
+  local droneLive=nil
+  if task.d then
+    droneLive,missing=liveFingerprint(route,{fingerprint=task.d.fp},1)
+    if not droneLive then
+      apiaryReason='Не найден трутень в МЭ над пасекой: '..tostring(missing)
+      stockWarning=apiaryReason
+      return false,apiaryReason
+    end
+  end
+  local ok,why=exactMeExport(route,firstLive,1,1)
   if not ok then
     apiaryReason='Пасека '..api.addr:sub(1,8)..': '..tostring(why)
     return false,apiaryReason
@@ -804,7 +997,7 @@ local function loadToApiary(task)
   apiJobs[api.addr]=w
   save()
   if task.d then
-    local sent,msg=exactMeExport(route,{fingerprint=task.d.fp},1,2)
+    local sent,msg=exactMeExport(route,droneLive,1,2)
     if not sent then
       notice('Пасека получила принцессу, но не получила трутня: '..tostring(msg),true)
       return false,msg
@@ -889,6 +1082,8 @@ local function observeApiaryJobs(now)
 end
 local function scheduleApiaries()
   if not CFG.useApiary or #devices.api==0 or paused then return end
+  local t=computer.uptime()
+  if t<nextApiaryPlanAt then return end
   local free=0
   for _,api in ipairs(devices.api) do if not busyApiary(api) then free=free+1 end end
   if free==0 then
@@ -909,6 +1104,8 @@ local function scheduleApiaries()
       else
         apiaryReason=tostring(why)
         log('Apiary setup: '..tostring(why))
+        nextApiaryPlanAt=t+45
+        pendingApiaryRefresh=true
         -- A physical route problem cannot be solved by trying different bees.
         break
       end
@@ -939,7 +1136,7 @@ local function cycle()
         if stack(m.p,1) or stack(m.p,2) or stack(m.p,3) then
           notice('Мутатрон занят: проверь его перед запуском.',true);return
         end
-        planMutation()
+        if now>=nextMutationPlanAt then planMutation() end
       end
     else notice('Неизвестное состояние '..stage,true);return end
     observeApiaryJobs(now)
@@ -979,7 +1176,7 @@ local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'5.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  paint(16,1,'6.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
   local st=initializing and 'СКАНИРОВАНИЕ' or (paused and 'ПАУЗА' or 'РАБОТА')
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
@@ -1021,8 +1218,11 @@ local function drawHome()
   paint(mx,my,'Мутация: '..(job and (job.name or job.wanted or '?') or 'нет задачи'),COLOR.fg,0x142233)
   local steps={mutation='МУТАТРОН',imprint='ИМПРИНТЕР',post_queen='ПЕРЕДАЧА В ПАСЕКУ'}
   paint(mx,my+1,'Этап: '..(job and (steps[stage] or stage) or 'ожидание'),COLOR.gray,0x142233)
-  paint(mx,my+3,'Цель: >=4 трутней каждого нужного вида',COLOR.green,0x142233)
-  if #missed>0 then paint(mx,my+4,cut('Условия/улучшения для проверки: '..#missed,leftW-4),COLOR.yellow,0x142233) end
+  recipeStockInfo()
+  paint(mx,my+3,'Рецептов: '..#graph..' | готовы: '..(graphInfo.ready or 0)..' | ждут родителей: '..(graphInfo.waiting or 0),COLOR.green,0x142233)
+  local deficit=(graphInfo.example or '')
+  if deficit~='' then paint(mx,my+4,cut('Ближайшая цель: '..deficit,leftW-4),COLOR.yellow,0x142233)
+  elseif #missed>0 then paint(mx,my+4,cut('Особые условия: '..#missed,leftW-4),COLOR.yellow,0x142233) end
   local r=my+5
   local apiRowCount=0
   for _,w in pairs(apiJobs) do
@@ -1055,8 +1255,10 @@ local function drawHome()
     end
   end
   fill(2,H-5,W-3,2,0x182C3F)
-  paint(3,H-5,cut('! '..alert,W-6),COLOR.yellow,0x182C3F)
-  paint(3,H-4,cut(rolesLine(),W-6),COLOR.gray,0x182C3F)
+  local report=alert
+  if not paused and stockWarning~='' then report='МЭ: '..stockWarning end
+  paint(3,H-5,cut('! '..report,W-6),COLOR.yellow,0x182C3F)
+  paint(3,H-4,cut(rolesLine()..' | Обновление МЭ: '..CFG.scanInterval..'с | Ошибки экспорта: '..exportFailureCount,W-6),COLOR.gray,0x182C3F)
   fill(1,H-2,W,3,0x102235)
   local x=3
   button(x,H-1,paused and 'СТАРТ' or 'ПАУЗА','pause',paused and COLOR.green or COLOR.yellow,0x203B49,14)
@@ -1292,7 +1494,7 @@ local function startup()
   if stage~='idle' or next(apiJobs) then
     notice('Восстановлены незавершённые операции. Проверь машины до пуска.',true)
   end
-  log('BeeMaster 5.0 started')
+  log('BeeMaster 6.0 started')
 end
 startup()
 -- First show graphics, then query a large ME network.
