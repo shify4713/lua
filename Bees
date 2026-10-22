@@ -1,3 +1,6 @@
+-- BEE GUI V3 / McSkill 1.7.10 / OpenOS Lua 5.2
+-- Save as /home/bee3.lua and launch bee3.lua (NOT old file 1)
+print("BEE GUI V3: launching new file")
 local component = require("component")
 local event = require("event")
 local unicode = require("unicode")
@@ -149,7 +152,7 @@ local function refreshItems()
   pIndex = math.min(math.max(1,pIndex), #princesses)
   dIndex = math.min(math.max(1,dIndex), #drones)
   pPage, dPage = 1,1
-  notify("ME updated. Princess types: "..#princesses..", drone types: "..#drones)
+  notify(string.format("ME updated: %d princess stacks / %d drone stacks", #princesses, #drones))
 end
 local function labelOf(v)
   if not v then return "none" end
@@ -172,7 +175,7 @@ local function draw()
   gpu.setForeground(fg)
   gpu.fill(1,1,W,H," ")
   buttons = {}
-  write(2,1,"BEE MASTER | GENDUSTRY 1.7.10 | TEST GUI",highlight)
+  write(2,1,"BEE MASTER V3 | GENDUSTRY 1.7.10 | TEST GUI",highlight)
   local m, t, side = selectedME(), selectedMut(), selectedSide()
   write(2,2,"ME: "..(m and m.address:sub(1,8) or "NOT FOUND").." ("..meIndex.."/"..#interfaces..")    MUT: "..(t and t.address:sub(1,8) or "NOT FOUND").." ("..mutIndex.."/"..#mutatrons..")")
   write(2,3,"Export side: "..(side and side.label or "NONE").."  (ME must touch the mutatron)  Labware in ME: "..(labware and tostring(labware.size) or "0"),soft)
