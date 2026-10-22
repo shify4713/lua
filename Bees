@@ -1,419 +1,543 @@
--- BEE GUI V3 / McSkill 1.7.10 / OpenOS Lua 5.2
--- Save as /home/bee3.lua and launch bee3.lua (NOT old file 1)
-print("BEE GUI V3: launching new file")
+ BeeMaster GUI v4 (Minecraft 1.7.10, OpenOS 1.6.x, Lua 5.2)
+-- No fixed component addresses. Click buttons on the OC screen.
+-- Exporting bees/adding labware/taking the result require confirmation.
 local component = require("component")
 local event = require("event")
 local unicode = require("unicode")
-local computer = require("computer")
 
-local gpu = component.gpu
-assert(gpu, "GPU is required")
-local oldW, oldH = gpu.getResolution()
-local oldFG, oldBG = gpu.getForeground(), gpu.getBackground()
+local gpu = assert(component.gpu, "GPU not found")
+local prevW, prevH = gpu.getResolution()
+local prevFG, prevBG = gpu.getForeground(), gpu.getBackground()
 local maxW, maxH = gpu.maxResolution()
-local W, H = math.min(80, maxW), math.min(25, maxH)
-assert(W >= 70 and H >= 25, "Need a tier 2+ screen (min 70x25)")
-
+local W, H = math.min(maxW, 90), math.min(maxH, 25)
+assert(W >= 70 and H >= 25, "Need GPU/screen with at least 70x25")
 gpu.setResolution(W, H)
-local dirs = {"DOWN", "UP", "NORTH", "SOUTH", "WEST", "EAST"}
-local opposite = {DOWN="UP", UP="DOWN", NORTH="SOUTH", SOUTH="NORTH", WEST="EAST", EAST="WEST"}
-local interfaces, mutatrons = {}, {}
-local meIndex, mutIndex, sideIndex = 1, 1, 1
-local princesses, drones, labware = {}, {}, nil
+
+local colors = {bg=0x101820, fg=0xE6E6E6, blue=0x5EE7E0,
+  green=0x65EC89, gray=0x99A8B4, yellow=0xFFD27A, red=0xFF6E79}
+local directions = {"UP", "DOWN", "NORTH", "SOUTH", "WEST", "EAST"}
+local reverse = {UP="DOWN", DOWN="UP", NORTH="SOUTH", SOUTH="NORTH", WEST="EAST", EAST="WEST"}
+local names = {UP="ВВЕРХ", DOWN="ВНИЗ", NORTH="СЕВЕР", SOUTH="ЮГ", WEST="ЗАПАД", EAST="ВОСТОК"}
+local logPath = "/home/beemaster_v4.log"
+local mes, muts, deviceInfo = {}, {}, {}
+local meIndex, mutIndex, sideIndex = 1, 1, 0
+local beesP, beesD, supplies = {}, {}, {}
 local pIndex, dIndex, pPage, dPage = 1, 1, 1, 1
+local page, awaiting, quit = "main", nil, false
 local buttons = {}
-local status = "Select bees. Click LOAD BOTH twice to confirm."
-local statusColor = 0xFFFFFF
-local pending = nil
-local quit = false
-local fg = 0xFFFFFF
-local highlight = 0x33CC99
-local soft = 0xAAAAAA
-local warn = 0xFFCC66
-local errCol = 0xFF7777
+local message, note, messageColor = "Поиск оборудования...", "", colors.gray
+local inventoryWarnings = ""
 
-local function sub(s, n)
-  return unicode.sub(tostring(s or ""), 1, n)
+local function shorten(value, count)
+  return unicode.sub(tostring(value or ""), 1, math.max(0, count))
 end
-local function write(x, y, str, color)
-  if x > W or y < 1 or y > H then return end
-  gpu.setForeground(color or fg)
-  gpu.set(x, y, sub(str, W - x + 1))
+local function log(line)
+  local f = io.open(logPath, "a")
+  if f then f:write(tostring(line), "\n"); f:close() end
 end
-local function line(y, text, color)
-  gpu.setBackground(0x101820)
-  gpu.fill(1, y, W, 1, " ")
-  write(2, y, text, color)
+local function say(text, color, extra)
+  message = tostring(text)
+  note = tostring(extra or "")
+  messageColor = color or colors.fg
+  log(message .. (note ~= "" and (" | " .. note) or ""))
 end
-local function button(x, y, key, label, color)
-  local text = "[" .. label .. "]"
-  local len = unicode.len(text)
-  write(x, y, text, color or highlight)
-  buttons[#buttons + 1] = {x=x, y=y, len=len, key=key}
+local function invoke(proxy, method, ...)
+  local args = {...}
+  return pcall(function()
+    return proxy[method](table.unpack(args))
+  end)
 end
-local function notify(message, color)
-  status = tostring(message)
-  pending = nil
-  if color then statusColor = color else statusColor = fg end
-end
-
-local function methods(address)
-  local ok, m = pcall(component.methods, address)
-  return ok and type(m) == "table" and m or {}
-end
-local function canExport(p, side)
-  local ok, result = pcall(p.canExport, side)
-  if ok and result == true then return true, side end
-  local ok2, result2 = pcall(p.canExport, side:lower())
-  if ok2 and result2 == true then return true, side:lower() end
-  return false, side
-end
-local function discover()
-  interfaces, mutatrons = {}, {}
-  for address, kind in component.list() do
-    local p = component.proxy(address)
-    local m = methods(address)
-    if kind == "me_interface" and m.exportItem and m.getAvailableItems and m.canExport then
-      local around = {}
-      for _, d in ipairs(dirs) do
-        local yes, name = canExport(p, d)
-        if yes then around[#around + 1] = {label=d, arg=name} end
-      end
-      interfaces[#interfaces+1] = {address=address, proxy=p, sides=around}
-    elseif kind == "peripheral" and m.getInventorySize and m.getStackInSlot and m.pushItem then
-      local ok, size = pcall(p.getInventorySize)
-      if ok and size == 10 then
-        mutatrons[#mutatrons+1] = {address=address, proxy=p}
-      end
-    end
-  end
-  table.sort(interfaces, function(a,b) return a.address < b.address end)
-  table.sort(mutatrons, function(a,b) return a.address < b.address end)
-  if meIndex > #interfaces then meIndex = 1 end
-  if mutIndex > #mutatrons then mutIndex = 1 end
-  sideIndex = 1
-end
-local function selectedME() return interfaces[meIndex] end
-local function selectedMut() return mutatrons[mutIndex] end
+local function selectedME() return mes[meIndex] end
+local function selectedMut() return muts[mutIndex] end
 local function selectedSide()
   local m = selectedME()
-  return m and m.sides[sideIndex] or nil
+  if not m then return nil end
+  return m.sides[sideIndex]
 end
-local function itemAt(slot)
-  local p = selectedMut()
-  if not p then return nil end
-  local ok, item = pcall(p.proxy.getStackInSlot, slot)
-  if not ok then error("Cannot read slot " .. slot .. ": " .. tostring(item)) end
+local function readSlot(index)
+  local m = selectedMut()
+  if not m then return nil end
+  local ok, item = invoke(m.proxy, "getStackInSlot", index)
+  if not ok then error("Невозможно прочитать слот " .. index .. ": " .. tostring(item)) end
   if type(item) ~= "table" or next(item) == nil then return nil end
   return item
 end
-local function itemName(item)
-  if not item then return "empty" end
+local function itemTitle(item)
+  if not item then return "пусто" end
   local ind = type(item.individual) == "table" and item.individual or {}
-  return tostring(item.display_name or item.label or ind.displayName or item.name or "item")
+  return tostring(item.label or item.display_name or ind.displayName or item.name or item.id or "?")
 end
-local function roleOf(id)
-  id = tostring(id or ""):lower()
-  if id:find("beeprincess", 1, true) then return "princess" end
-  if id:find("beedrone", 1, true) then return "drone" end
-  if id:find("beequeen", 1, true) then return "queen" end
+local function role(itemId)
+  local id = tostring(itemId or ""):lower()
+  if id:find("beeprincess", 1, true) then return "p" end
+  if id:find("beedrone", 1, true) then return "d" end
+  if id:find("beequeen", 1, true) then return "q" end
+end
+local function sideWorks(proxy, direction)
+  for _, arg in ipairs({direction, direction:lower()}) do
+    local ok, v = invoke(proxy, "canExport", arg)
+    if ok and v == true then return arg end
+  end
   return nil
 end
-local function refreshItems()
-  local m = selectedME()
-  assert(m, "No ME interface detected")
-  local ok, entries = pcall(m.proxy.getAvailableItems)
-  assert(ok and type(entries)=="table", "getAvailableItems failed: " .. tostring(entries))
-  princesses, drones, labware = {}, {}, nil
-  for _, v in pairs(entries) do
-    if type(v)=="table" and type(v.fingerprint)=="table" then
-      local id = tostring(v.fingerprint.id or "")
-      local qty = tonumber(v.size) or 0
-      local r = roleOf(id)
-      if qty > 0 and (r == "princess" or r == "drone") then
-        v._label = nil
-        if r == "princess" then
-          princesses[#princesses+1] = v
+local function identify()
+  mes, muts, deviceInfo = {}, {}, {}
+  for address, kind in component.list() do
+    local item = {address=address, kind=kind, state=""}
+    deviceInfo[#deviceInfo+1] = item
+    if kind == "me_interface" or kind == "peripheral" then
+      local ok, proxy = pcall(component.proxy, address)
+      if not ok then
+        item.state = "proxy: " .. tostring(proxy)
+      elseif kind == "me_interface" then
+        -- Do NOT depend on component.methods(): OpenPeripheral may expose aliases differently.
+        local readOK, stacks = invoke(proxy, "getAvailableItems")
+        if readOK and type(stacks) == "table" then
+          local m = {address=address, proxy=proxy, data=stacks, sides={}, confirmed=0}
+          mes[#mes+1] = m
+          local exported = false
+          for _, d in ipairs(directions) do
+            local v = sideWorks(proxy, d)
+            if v then
+              m.sides[#m.sides+1] = {name=d, arg=v, confirmed=true}
+              m.confirmed = m.confirmed + 1
+              exported = true
+            end
+          end
+          if not exported then
+            -- Unknown neighbours: still allow manual selection for testing.
+            for _, d in ipairs(directions) do
+              m.sides[#m.sides+1] = {name=d, arg=d, confirmed=false}
+            end
+          end
+          item.state = "МЭ OK, записей: " .. tostring(#stacks) .. ", направлений: " .. tostring(m.confirmed)
         else
-          drones[#drones+1] = v
+          item.state = "МЭ API error: " .. tostring(stacks)
         end
-      elseif qty > 0 and id:lower():find("labware", 1, true) then
-        if not labware or qty > (tonumber(labware.size) or 0) then labware = v end
+      else
+        local sizeOK, size = invoke(proxy, "getInventorySize")
+        if sizeOK and tonumber(size) == 10 then
+          local slotOK = invoke(proxy, "getStackInSlot", 1)
+          if slotOK then
+            muts[#muts+1] = {address=address, proxy=proxy}
+            item.state = "МУТАТРОН? инвентарь 10 слотов"
+          else
+            item.state = "10 слотов, нет доступа к слоту 1"
+          end
+        elseif sizeOK then
+          item.state = "Инвентарь: " .. tostring(size)
+        else
+          item.state = "Нет размера инвентаря"
+        end
+      end
+    else
+      item.state = "другой компонент"
+    end
+    log(kind .. " " .. address .. " -> " .. item.state)
+  end
+  table.sort(mes, function(a,b) return a.address < b.address end)
+  table.sort(muts, function(a,b) return a.address < b.address end)
+  if meIndex > #mes or meIndex < 1 then meIndex = 1 end
+  if mutIndex > #muts or mutIndex < 1 then mutIndex = 1 end
+  sideIndex = 0
+  local m = selectedME()
+  if m then
+    if m.confirmed == 1 then sideIndex = 1 end
+  end
+end
+local function refreshBees()
+  beesP, beesD, supplies = {}, {}, {}
+  local m = selectedME()
+  if not m then
+    say("МЭ не обнаружена. Открой ДИАГНОСТИКУ.", colors.red)
+    return
+  end
+  local ok, entries = invoke(m.proxy, "getAvailableItems")
+  if not ok or type(entries) ~= "table" then
+    say("Ошибка чтения МЭ: " .. tostring(entries), colors.red)
+    return
+  end
+  m.data = entries
+  for _, entry in pairs(entries) do
+    if type(entry) == "table" then
+      local fp = entry.fingerprint
+      if type(fp) == "table" and type(fp.id) == "string" then
+        local id = fp.id:lower()
+        local count = tonumber(entry.size) or 0
+        if count > 0 then
+          local r = role(id)
+          if r == "p" then
+            beesP[#beesP+1] = entry
+          elseif r == "d" then
+            beesD[#beesD+1] = entry
+          elseif id:find("labware", 1, true) then
+            supplies[#supplies+1] = entry
+          end
+        end
       end
     end
   end
-  local function sorting(a,b)
-    local aa,bb=tonumber(a.size) or 0, tonumber(b.size) or 0
-    if aa~=bb then return aa > bb end
+  local function sorter(a,b)
+    local ac, bc = tonumber(a.size) or 0, tonumber(b.size) or 0
+    if ac ~= bc then return ac > bc end
     return tostring(a.fingerprint.nbt_hash or "") < tostring(b.fingerprint.nbt_hash or "")
   end
-  table.sort(princesses, sorting)
-  table.sort(drones, sorting)
-  pIndex = math.min(math.max(1,pIndex), #princesses)
-  dIndex = math.min(math.max(1,dIndex), #drones)
-  pPage, dPage = 1,1
-  notify(string.format("ME updated: %d princess stacks / %d drone stacks", #princesses, #drones))
+  table.sort(beesP, sorter)
+  table.sort(beesD, sorter)
+  table.sort(supplies, sorter)
+  pIndex, dIndex, pPage, dPage = 1,1,1,1
+  say("МЭ прочитана: " .. #beesP .. " вариантов принцесс, " .. #beesD .. " трутней", colors.green)
 end
-local function labelOf(v)
-  if not v then return "none" end
-  if v._label then return v._label end
-  local label = "NBT:"..tostring(v.fingerprint.nbt_hash or "none"):sub(1,11)
+local function itemLabel(entry)
+  if not entry then return "?" end
+  if entry._bm_label then return entry._bm_label end
+  local fp = entry.fingerprint
+  local str = tostring(fp.id or "?") .. " (NBT " .. tostring(fp.nbt_hash or "нет"):sub(1,7) .. ")"
   local m = selectedME()
-  if m and type(m.proxy.getItemDetail)=="function" then
-    local ok, item=pcall(m.proxy.getItemDetail, v.fingerprint, false)
-    if ok and type(item)=="table" then
-      label = itemName(item)
-      local ind=item.individual or {}
-      if ind.ident then label = label .. " {" .. tostring(ind.ident) .. "}" end
+  if m then
+    local ok, info = invoke(m.proxy, "getItemDetail", fp, false)
+    if ok and type(info) == "table" then
+      str = itemTitle(info)
+      local ind = type(info.individual) == "table" and info.individual or {}
+      if ind.ident then str = str .. " / " .. tostring(ind.ident) end
     end
   end
-  v._label = label
-  return label
+  entry._bm_label = str
+  return str
 end
-local function draw()
-  gpu.setBackground(0x101820)
-  gpu.setForeground(fg)
-  gpu.fill(1,1,W,H," ")
-  buttons = {}
-  write(2,1,"BEE MASTER V3 | GENDUSTRY 1.7.10 | TEST GUI",highlight)
-  local m, t, side = selectedME(), selectedMut(), selectedSide()
-  write(2,2,"ME: "..(m and m.address:sub(1,8) or "NOT FOUND").." ("..meIndex.."/"..#interfaces..")    MUT: "..(t and t.address:sub(1,8) or "NOT FOUND").." ("..mutIndex.."/"..#mutatrons..")")
-  write(2,3,"Export side: "..(side and side.label or "NONE").."  (ME must touch the mutatron)  Labware in ME: "..(labware and tostring(labware.size) or "0"),soft)
-  write(2,4,"Choose bees -> LOAD -> ARM labware -> click mutation in GUI -> TAKE QUEEN",warn)
-  write(2,5,string.rep("-",W-3),soft)
-  write(2,6,"PRINCESSES  ("..#princesses.." variants)",highlight)
+local function paint(x,y,str,color)
+  if x > W or y < 1 or y > H then return end
+  gpu.setForeground(color or colors.fg)
+  gpu.set(x, y, shorten(str, W-x+1))
+end
+local function bar(y,text,color)
+  gpu.setBackground(colors.bg)
+  gpu.fill(1,y,W,1," ")
+  paint(2,y,text,color)
+end
+local function button(x,y,text,key,clr)
+  local label = "[" .. text .. "]"
+  paint(x,y,label,clr or colors.blue)
+  buttons[#buttons+1] = {x=x, y=y, len=unicode.len(label), key=key}
+end
+local function listing(rows, pageNumber, current, baseY)
   for k=1,5 do
-    local i=(pPage-1)*5+k
-    local v=princesses[i]
+    local idx = (pageNumber-1)*5+k
+    local v=rows[idx]
     if v then
-      write(2,6+k, (i==pIndex and "> " or "  ")..i..". "..sub(labelOf(v), W-22).." x"..tostring(v.size),i==pIndex and highlight or fg)
+      local qty = tonumber(v.size) or 0
+      local str = (current == idx and "> " or "  ") .. idx .. ". " ..
+        shorten(itemLabel(v), W-24) .. "  x" .. qty
+      paint(2,baseY+k-1,str,current==idx and colors.green or colors.fg)
     end
   end
-  button(2,12,"p-prev","< P")
-  button(11,12,"p-next","P >")
-  write(23,12,"page "..pPage.."/"..math.max(1,math.ceil(#princesses/5)),soft)
-  write(2,13,"DRONES ("..#drones.." variants)",highlight)
-  for k=1,5 do
-    local i=(dPage-1)*5+k
-    local v=drones[i]
-    if v then
-      write(2,13+k,(i==dIndex and "> " or "  ")..i..". "..sub(labelOf(v), W-22).." x"..tostring(v.size),i==dIndex and highlight or fg)
-    end
-  end
-  button(2,19,"d-prev","< D")
-  button(11,19,"d-next","D >")
-  write(23,19,"page "..dPage.."/"..math.max(1,math.ceil(#drones/5)),soft)
-  if t then
-    local a,b,out,lab=itemAt(1),itemAt(2),itemAt(3),itemAt(4)
-    write(2,20,"Mutatron: P="..sub(itemName(a),15).." D="..sub(itemName(b),15).." OUT="..sub(itemName(out),16),fg)
-    local opt={}
+end
+local function drawMain()
+  local m,mut,side = selectedME(),selectedMut(),selectedSide()
+  paint(2,1,"BEE MASTER V4  |  МУТАТРОН + МЭ  |  MC 1.7.10",colors.blue)
+  paint(2,2,"МЭ: " .. (m and "НАЙДЕНА "..m.address:sub(1,8) or "НЕ НАЙДЕНА") ..
+    "   МУТАТРОН: " .. (mut and "НАЙДЕН "..mut.address:sub(1,8) or "НЕ НАЙДЕН"),m and mut and colors.green or colors.red)
+  local sideText = side and names[side.name] or "НЕ ВЫБРАНА"
+  local verified = side and (side.confirmed and "проверена" or "не проверена") or ""
+  paint(2,3,"Выход МЭ: "..sideText.." ("..verified..")  | Посуда в МЭ: "..#supplies.." видов",colors.gray)
+  paint(2,4,"1. Выбери родителей  2. Загрузи  3. Выбери мутацию в блоке  4. ПУСК",colors.yellow)
+  paint(2,5,string.rep("-",W-3),colors.gray)
+  paint(2,6,"ПРИНЦЕССЫ В МЭ (записей: "..#beesP..")",colors.blue)
+  listing(beesP,pPage,pIndex,7)
+  button(2,12,"ПРЕД.","p-prev")
+  button(13,12,"СЛЕД.","p-next")
+  paint(25,12,"Страница "..pPage.." / "..math.max(1,math.ceil(#beesP/5)),colors.gray)
+  paint(2,13,"ТРУТНИ В МЭ (записей: "..#beesD..")",colors.blue)
+  listing(beesD,dPage,dIndex,14)
+  button(2,19,"ПРЕД.","d-prev")
+  button(13,19,"СЛЕД.","d-next")
+  paint(25,19,"Страница "..dPage.." / "..math.max(1,math.ceil(#beesD/5)),colors.gray)
+  if mut then
+    local p,d,q,lab=readSlot(1),readSlot(2),readSlot(3),readSlot(4)
+    paint(2,20,"МУТАТРОН: П="..shorten(itemTitle(p),14).."  Т="..shorten(itemTitle(d),14)..
+      "  ИТОГ="..shorten(itemTitle(q),13),colors.fg)
+    local variants={}
     for i=5,10 do
-      local v=itemAt(i)
-      if v then opt[#opt+1]=sub(itemName(v),13) end
+      local v=readSlot(i)
+      if v then variants[#variants+1] = shorten(itemTitle(v),12) end
     end
-    write(2,21,"Options: "..(#opt>0 and table.concat(opt,", ") or "none").." | Labware="..(lab and "YES" or "NO"),warn)
+    paint(2,21,"Мутации: "..(#variants>0 and table.concat(variants, ", ") or "нет")..
+      " | Посуда: "..(lab and "ЕСТЬ" or "НЕТ"),colors.yellow)
   else
-    write(2,20,"Mutatron not detected",errCol)
+    paint(2,20,"Мутатор не найден: нажми ДИАГНОСТИКА",colors.red)
   end
-  button(2,22,"load-p","LOAD P")
-  button(13,22,"load-d","LOAD D")
-  button(24,22,"load-both","LOAD BOTH")
-  button(39,22,"start","ARM")
-  button(49,22,"take","TAKE QUEEN")
-  button(2,23,"side","SIDE >")
-  button(13,23,"refresh","REFRESH")
-  button(26,23,"me","ME >")
-  button(36,23,"mut","MUT >")
-  button(48,23,"quit","EXIT")
-  line(24,"STATUS: "..status,statusColor)
-  write(2,25,"Touch buttons. Double-click to confirm. ARM inserts labware only.",soft)
+  button(2,22,"ПРИНЦЕССУ","load-p")
+  button(18,22,"ТРУТНЯ","load-d")
+  button(31,22,"ОБОИХ","load-both")
+  button(43,22,"ПУСК","start",colors.yellow)
+  button(55,22,"ЗАБРАТЬ","take",colors.green)
+  button(2,23,"МЭ >","me")
+  button(11,23,"МУТ >","mut")
+  button(22,23,"СТОРОНА >","side")
+  button(38,23,"ОБНОВИТЬ","refresh")
+  button(53,23,"ДИАГНОСТИКА","diag")
+  button(73,23,"ВЫХОД","quit")
+  bar(24,"СТАТУС: " .. message,messageColor)
+  paint(2,25,shorten(note ~= "" and note or
+    "Двойное нажатие = подтвердить перенос. ПУСК подаст посуду.",W-2),colors.gray)
 end
-local function requireSetup()
-  assert(selectedME() and selectedMut(), "ME or mutatron missing")
-  assert(selectedSide(), "No export side. ME interface must touch an inventory")
-end
-local function loadOne(which)
-  requireSetup()
-  local slot = which=="princess" and 1 or 2
-  local list = which=="princess" and princesses or drones
-  local idx = which=="princess" and pIndex or dIndex
-  local v = list[idx]
-  assert(v, "No selected "..which)
-  assert(not itemAt(4), "Remove labware first (slot 4)")
-  assert(not itemAt(3), "Output slot 3 is occupied")
-  assert(not itemAt(slot), "Target slot "..slot.." is occupied")
-  local m, side=selectedME(),selectedSide()
-  local ok, result = pcall(m.proxy.exportItem, v.fingerprint, side.arg, 1, slot)
-  assert(ok,"exportItem error: "..tostring(result))
-  local current = itemAt(slot)
-  assert(current and roleOf(current.name or current.id)==which,
-    "Not found in mutatron slot "..slot..". Check SIDE and ME adjacency!")
-  return itemName(current).." -> slot "..slot
-end
-local function actionLoad(kind)
-  if kind=="p" then
-    notify("Loaded "..loadOne("princess"),highlight)
-  elseif kind=="d" then
-    notify("Loaded "..loadOne("drone"),highlight)
-  else
-    requireSetup()
-    assert(not itemAt(1) and not itemAt(2) and not itemAt(3) and not itemAt(4),
-      "Mutatron slots 1-4 must be empty")
-    local a=loadOne("princess")
-    local ok,b=pcall(loadOne,"drone")
-    if not ok then
-      notify("P loaded; D failed: "..tostring(b)..". P stays in machine!",errCol)
-    else
-      notify("Loaded: "..a.."; "..b..". Choose mutation in GUI.",highlight)
-    end
-  end
-end
-local function actionStart()
-  requireSetup()
-  assert(itemAt(1) and itemAt(2), "Load princess and drone first")
-  assert(not itemAt(3), "Output slot occupied")
-  assert(not itemAt(4), "Labware already inserted")
-  local opts=0
-  for i=5,10 do if itemAt(i) then opts=opts+1 end end
-  assert(opts>0, "No mutations offered for this pair")
-  assert(labware, "No Genetics Labware in ME")
-  local m,side=selectedME(),selectedSide()
-  local ok,res=pcall(m.proxy.exportItem,labware.fingerprint,side.arg,1,4)
-  assert(ok, "Labware export failed: "..tostring(res))
-  local x=itemAt(4)
-  notify("ARM: Labware "..(x and "inserted" or "not visible / used")..". NOW click mutation in mutatron GUI.",highlight)
-end
-local function queenCount(species)
+local function drawDiag()
+  paint(2,1,"BEE MASTER V4 | ДИАГНОСТИКА",colors.blue)
+  paint(2,2,"Найдено: МЭ "..#mes..", мутатронов "..#muts..
+    ", всех компонентов "..#deviceInfo, colors.green)
+  paint(2,3,"Проверка: чтение getAvailableItems и размер инвентаря 10",colors.gray)
+  paint(2,4,"Доступные стороны МЭ (относительно МЭ-интерфейса):",colors.yellow)
   local m=selectedME()
-  if not m or type(m.proxy.getItemsInNetwork)~="function" then return nil end
-  local ok,items=pcall(m.proxy.getItemsInNetwork)
-  if not ok or type(items)~="table" then return nil end
-  local count=0
-  for _,item in pairs(items) do
-    if type(item)=="table" and roleOf(item.name or item.id)=="queen" then
-      local individual = item.individual or {}
-      if species and species==individual.ident then count=count+(tonumber(item.size or item.qty) or 1) end
+  if m then
+    local sides={}
+    for _,v in ipairs(m.sides) do
+      if v.confirmed then sides[#sides+1]=v.name end
+    end
+    paint(2,5,#sides>0 and table.concat(sides,", ") or
+      "Автоопределение недоступно: направление выбирается вручную",colors.gray)
+  else
+    paint(2,5,"МЭ нет в списке: смотри ошибки ниже",colors.red)
+  end
+  paint(2,7,"КОМПОНЕНТЫ (полный вывод в " .. logPath .. ")",colors.blue)
+  local y=8
+  for _,obj in ipairs(deviceInfo) do
+    if obj.kind=="me_interface" or obj.kind=="peripheral" then
+      if y<=20 then
+        paint(2,y,shorten(obj.kind,14).." "..obj.address:sub(1,8).."  "..shorten(obj.state,W-32),colors.fg)
+        y=y+1
+      end
     end
   end
-  return count
+  button(2,22,"НАЗАД","back")
+  button(18,22,"ПОВТОРНЫЙ ПОИСК","refresh")
+  button(43,22,"МЭ >","me")
+  button(54,22,"МУТ >","mut")
+  button(73,22,"ВЫХОД","quit")
+  bar(24,"СТАТУС: "..message,messageColor)
+  paint(2,25,"Если компонентов 0: проверь кабель OC и адаптеры. Файл: "..logPath,colors.gray)
 end
-local function actionTake()
-  requireSetup()
-  local q=itemAt(3)
-  assert(q and roleOf(q.name or q.id)=="queen", "Output slot 3 has no queen")
-  local side=selectedSide()
-  local target=opposite[side.label]
-  assert(target,"Unknown reverse direction")
-  local sp=(q.individual or {}).ident
-  local before=queenCount(sp)
-  local mut=selectedMut()
-  local ok,res=pcall(mut.proxy.pushItem,target,3,1)
-  if not ok then ok,res=pcall(mut.proxy.pushItem,target:lower(),3,1) end
-  assert(ok,"pushItem failed: "..tostring(res)..". Try ME import bus + chest")
-  local left=itemAt(3)
-  assert(not left, "Queen is still in slot 3 (moved "..tostring(res)..")")
-  local after=queenCount(sp)
-  if before and after and after>before then
-    notify("Queen returned to ME! Count "..before.." -> "..after,highlight)
+local function redraw()
+  gpu.setBackground(colors.bg)
+  gpu.fill(1,1,W,H," ")
+  buttons={}
+  if page=="diag" then drawDiag() else drawMain() end
+end
+local function requireReady()
+  assert(selectedME(),"МЭ не найдена")
+  assert(selectedMut(),"Мутатор не найден")
+  assert(selectedSide(),"Выбери направление МЭ кнопкой СТОРОНА >")
+end
+local function exportOne(which)
+  requireReady()
+  local index = which=="p" and pIndex or dIndex
+  local candidates = which=="p" and beesP or beesD
+  local entry=candidates[index]
+  assert(entry, "Не выбрана " .. (which=="p" and "принцесса" or "трутень"))
+  local target=which=="p" and 1 or 2
+  assert(not readSlot(4),"Убери посуду из слота 4 перед тестом")
+  assert(not readSlot(3),"Слот результата 3 занят")
+  assert(not readSlot(target),"Целевой слот "..target.." уже занят")
+  local me,side=selectedME(),selectedSide()
+  local ok,result=invoke(me.proxy,"exportItem",entry.fingerprint,side.arg,1,target)
+  if not ok then
+    local low = side.arg:lower()
+    ok,result=invoke(me.proxy,"exportItem",entry.fingerprint,low,1,target)
+  end
+  if not ok then error("Экспорт МЭ: "..tostring(result)) end
+  local moved=readSlot(target)
+  assert(moved, "Слот "..target.." пуст. Проверь направление и соседство блоков")
+  assert(role(moved.name or moved.id)==which,
+    "В слот "..target.." попал другой предмет: "..itemTitle(moved))
+  return itemTitle(moved)
+end
+local function loadAction(mode)
+  if mode=="p" or mode=="d" then
+    local title=exportOne(mode)
+    say("Загружено: "..title,colors.green)
   else
-    notify("Queen left mutatron, but ME count not confirmed. Check ME interface!",warn)
+    requireReady()
+    assert(not readSlot(1) and not readSlot(2) and not readSlot(3) and not readSlot(4),
+      "Перед загрузкой ОБОИХ очисти слоты 1-4")
+    local title=exportOne("p")
+    local ok,result=pcall(exportOne,"d")
+    if ok then
+      say("Оба родителя загружены!",colors.green,title.." + "..result)
+    else
+      say("Принцесса загружена, трутень НЕ загружен!",colors.red,tostring(result))
+    end
   end
 end
-local function runAction(key)
-  if key=="quit" then quit=true return end
+local function startAction()
+  requireReady()
+  assert(readSlot(1) and readSlot(2),"Нужны принцесса и трутень")
+  assert(not readSlot(3),"Слот результата занят")
+  assert(not readSlot(4),"Посуда уже в мутаторе")
+  local available=0
+  for i=5,10 do if readSlot(i) then available=available+1 end end
+  assert(available>0,"Нет возможных мутаций: смени пару родителей")
+  assert(supplies[1],"В МЭ нет лабораторной посуды Gendustry")
+  local me,side=selectedME(),selectedSide()
+  local ok,result=invoke(me.proxy,"exportItem",supplies[1].fingerprint,side.arg,1,4)
+  if not ok then ok,result=invoke(me.proxy,"exportItem",supplies[1].fingerprint,side.arg:lower(),1,4) end
+  assert(ok,"Посуда не подана: "..tostring(result))
+  local item=readSlot(4)
+  say("Подача посуды: "..(item and "есть в слоте" or "слот пуст (возможно, пошла работа)"),
+    colors.yellow,"Мутацию нужно выбрать в интерфейсе мутатрона")
+end
+local function countQueen(species)
+  local m=selectedME()
+  if not m then return nil end
+  local ok,entries=invoke(m.proxy,"getItemsInNetwork")
+  if not ok or type(entries)~="table" then return nil end
+  local number=0
+  for _,e in pairs(entries) do
+    if type(e)=="table" and role(e.name or e.id)=="q" then
+      local ind=type(e.individual)=="table" and e.individual or {}
+      if ind.ident==species then number=number+(tonumber(e.size or e.qty) or 1) end
+    end
+  end
+  return number
+end
+local function takeAction()
+  requireReady()
+  local output=readSlot(3)
+  assert(output and role(output.name or output.id)=="q", "В выходном слоте 3 нет матки")
+  local side=selectedSide()
+  local opposite=reverse[side.name]
+  assert(opposite,"Неизвестное направление")
+  local species=(output.individual or {}).ident
+  local before=countQueen(species)
+  local mut=selectedMut()
+  local ok,moved=invoke(mut.proxy,"pushItem",opposite,3,1)
+  if not ok then ok,moved=invoke(mut.proxy,"pushItem",opposite:lower(),3,1) end
+  assert(ok,"Возврат не сработал: "..tostring(moved))
+  if readSlot(3) then
+    say("Матка всё ещё в слоте 3; перенос не подтверждён",colors.red,
+      "Возможно, нужна МЭ-шина импорта или другое направление")
+    return
+  end
+  local after=countQueen(species)
+  if before and after and after>before then
+    say("Матка возвращена в МЭ! "..before.." -> "..after,colors.green)
+  else
+    say("Матка вышла из мутатрона, но МЭ её ещё не подтвердила",colors.yellow,
+      "Проверь МЭ-интерфейс и саму сеть")
+  end
+end
+local function refreshAll()
+  identify()
+  refreshBees()
+  log("SCAN: ME="..#mes.." MUT="..#muts.." P="..#beesP.." D="..#beesD)
+end
+local function confirmAction(key)
+  if awaiting ~= key then
+    awaiting=key
+    if key=="start" then
+      say("ПОДТВЕРДИ ПУСК: нажми ПУСК ещё раз",colors.yellow,
+        "Программа подаст посуду. Мутацию выбираешь в GUI мутатрона.")
+    elseif key=="take" then
+      say("ПОДТВЕРДИ ВОЗВРАТ: нажми ЗАБРАТЬ ещё раз",colors.yellow)
+    else
+      say("ПОДТВЕРДИ ПЕРЕНОС ПЧЁЛ: нажми эту же кнопку ещё раз",colors.yellow,
+        "Проверим только загрузку. Без посуды скрещивания не будет.")
+    end
+    return
+  end
+  awaiting=nil
+  local ok,err=pcall(function()
+    if key=="load-p" then loadAction("p")
+    elseif key=="load-d" then loadAction("d")
+    elseif key=="load-both" then loadAction("both")
+    elseif key=="start" then startAction()
+    elseif key=="take" then takeAction() end
+  end)
+  if not ok then say("ОШИБКА: "..tostring(err),colors.red,"Подробности: "..logPath) end
+end
+local function click(key)
+  if key=="quit" then quit=true;return end
+  if key=="back" then page="main";awaiting=nil;return end
+  if key=="diag" then page="diag";awaiting=nil;return end
+  if key=="refresh" then
+    awaiting=nil
+    local ok,err=pcall(refreshAll)
+    if not ok then say("Сканирование: "..tostring(err),colors.red) end
+    return
+  end
+  if key=="me" then
+    if #mes>0 then meIndex=(meIndex % #mes)+1 end
+    local m=selectedME()
+    sideIndex=(m and m.confirmed==1) and 1 or 0
+    refreshBees()
+    awaiting=nil
+    return
+  end
+  if key=="mut" then
+    if #muts>0 then mutIndex=(mutIndex % #muts)+1 end
+    awaiting=nil
+    say("Выбран мутатрон "..(selectedMut() and selectedMut().address:sub(1,8) or "не найден"))
+    return
+  end
   if key=="side" then
     local m=selectedME()
     if m and #m.sides>0 then sideIndex=(sideIndex % #m.sides)+1 end
-    notify("Direction switched. Make sure this neighbor is the mutatron.")
-  elseif key=="me" then
-    if #interfaces>0 then meIndex=(meIndex % #interfaces)+1 end
-    sideIndex=1
-    pIndex,dIndex=1,1
-    refreshItems()
-  elseif key=="mut" then
-    if #mutatrons>0 then mutIndex=(mutIndex % #mutatrons)+1 end
-    notify("Mutatron selected; ensure it touches selected ME interface")
-  elseif key=="refresh" then
-    discover()
-    refreshItems()
-  elseif key=="p-prev" then pPage=math.max(1,pPage-1);pending=nil
-  elseif key=="p-next" then pPage=math.min(math.max(1,math.ceil(#princesses/5)),pPage+1);pending=nil
-  elseif key=="d-prev" then dPage=math.max(1,dPage-1);pending=nil
-  elseif key=="d-next" then dPage=math.min(math.max(1,math.ceil(#drones/5)),dPage+1);pending=nil
-  elseif key=="load-p" or key=="load-d" or key=="load-both" or key=="start" or key=="take" then
-    if pending~=key then
-      pending=key
-      if key=="start" then
-        status="CONFIRM ARM: load labware, THEN click mutation in machine GUI. Click ARM again."
-      elseif key=="take" then
-        status="CONFIRM TAKE: transfer output queen back toward ME. Click TAKE QUEEN again."
-      else
-        status="CONFIRM LOAD: will move real bees from ME. Click same button again."
-      end
-      statusColor=warn
-      return
-    end
-    pending=nil
-    local ok,err=pcall(function()
-      if key=="start" then actionStart()
-      elseif key=="take" then actionTake()
-      elseif key=="load-p" then actionLoad("p")
-      elseif key=="load-d" then actionLoad("d")
-      else actionLoad("both") end
-    end)
-    if not ok then notify("ERROR: "..tostring(err),errCol) end
+    awaiting=nil
+    local side=selectedSide()
+    say("Направление МЭ: "..(side and names[side.name] or "нет"),colors.yellow,
+      "Для экспорта МЭ-интерфейс должен касаться нужного мутатрона")
+    return
   end
+  if key=="p-prev" then pPage=math.max(1,pPage-1);awaiting=nil;return end
+  if key=="p-next" then pPage=math.min(math.max(1,math.ceil(#beesP/5)),pPage+1);awaiting=nil;return end
+  if key=="d-prev" then dPage=math.max(1,dPage-1);awaiting=nil;return end
+  if key=="d-next" then dPage=math.min(math.max(1,math.ceil(#beesD/5)),dPage+1);awaiting=nil;return end
+  confirmAction(key)
 end
 local function main()
-  discover()
-  if #interfaces>0 then
-    local ok,why=pcall(refreshItems)
-    if not ok then notify("ME scan failed: "..tostring(why),errCol) end
-  else
-    notify("No ME interface component found",errCol)
-  end
+  local f=io.open(logPath,"w")
+  if f then f:write("BeeMaster V4 started\n");f:close() end
+  local ok,err=pcall(refreshAll)
+  if not ok then say("Ошибка поиска: "..tostring(err),colors.red) end
   while not quit do
-    local ok,why=pcall(draw)
-    if not ok then notify("Display error: "..tostring(why),errCol) end
-    local name,_,x,y=event.pull()
+    local drawn,problem=pcall(redraw)
+    if not drawn then
+      say("Ошибка экрана: "..tostring(problem),colors.red)
+      page="diag"
+    end
+    local name,_,x,y=event.pull(1)
     if name=="touch" then
-      local matched=false
-      if y>=7 and y<=11 and x>=2 then
-        local i=(pPage-1)*5+(y-6)
-        if princesses[i] then pIndex=i;pending=nil;matched=true end
-      elseif y>=14 and y<=18 and x>=2 then
-        local i=(dPage-1)*5+(y-13)
-        if drones[i] then dIndex=i;pending=nil;matched=true end
+      local handled=false
+      if page=="main" then
+        if y>=7 and y<=11 and x>=2 then
+          local n=(pPage-1)*5+y-6
+          if beesP[n] then pIndex=n;awaiting=nil;handled=true end
+        elseif y>=14 and y<=18 and x>=2 then
+          local n=(dPage-1)*5+y-13
+          if beesD[n] then dIndex=n;awaiting=nil;handled=true end
+        end
       end
-      if not matched then
-        local key=nil
+      if not handled then
         for _,b in ipairs(buttons) do
-          if y==b.y and x>=b.x and x<b.x+b.len then key=b.key;break end
-        end
-        if key then
-          local success,why=pcall(runAction,key)
-          if not success then notify("ERROR: "..tostring(why),errCol) end
-        else
-          pending=nil
+          if y==b.y and x>=b.x and x<b.x+b.len then
+            local ok2,err2=pcall(click,b.key)
+            if not ok2 then say("ОШИБКА: "..tostring(err2),colors.red) end
+            handled=true
+            break
+          end
         end
       end
+      if not handled then awaiting=nil end
     elseif name=="key_down" then
-      local char=x
-      if type(char)=="number" and char>=32 and char<=126 then
-        local key=string.char(char):lower()
-        if key=="q" then quit=true
-        elseif key=="r" then
-          local ok,why=pcall(runAction,"refresh")
-          if not ok then notify("ERROR: "..tostring(why),errCol) end
-        end
+      if x==113 or x==81 then quit=true
+      elseif x==114 or x==82 then
+        local ok2,err2=pcall(refreshAll)
+        if not ok2 then say("ОШИБКА: "..tostring(err2),colors.red) end
       end
     end
   end
 end
-local ok,err=pcall(main)
-gpu.setForeground(oldFG)
-gpu.setBackground(oldBG)
-gpu.setResolution(oldW,oldH)
-gpu.fill(1,1,oldW,oldH," ")
-if not ok then io.stderr:write("Bee test error: "..tostring(err).."\n") end
-print("Bee test closed. No automatic cleanup of bee items.")
+local ok,errorText=pcall(main)
+gpu.setForeground(prevFG)
+gpu.setBackground(prevBG)
+gpu.setResolution(prevW,prevH)
+if not ok then io.stderr:write("BeeMaster V4 ERROR: ",tostring(errorText),"\n") end
+print("BeeMaster V4 закрыт. Пчёлы не выгружаются автоматически.")
