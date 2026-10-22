@@ -149,7 +149,7 @@ local function refreshItems()
   pIndex = math.min(math.max(1,pIndex), #princesses)
   dIndex = math.min(math.max(1,dIndex), #drones)
   pPage, dPage = 1,1
-  notify("ME updated. Princess types: "..#princesses..", drone types: "..#drones)")
+  notify("ME updated. Princess types: "..#princesses..", drone types: "..#drones)
 end
 local function labelOf(v)
   if not v then return "none" end
