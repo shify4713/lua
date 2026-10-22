@@ -12,7 +12,7 @@ local CFG = {
   minDroneReserve = 4, requireKnownMutation = true,
   useImprinter = true, useApiary = true,
   -- Set true ONLY if the filled template in ME is verified to have your wanted genes.
-  trustSingleFilledTemplate = true,
+  trustSingleFilledTemplate = false,
   -- Protect the last available princess/drone of a species.
   allowLastPrincess = false,
   allowLastDrone = false,
@@ -26,14 +26,19 @@ local COLOR = {bg=0x0E1722, fg=0xE9EDF0, blue=0x54DEDC,
   green=0x70E39B, yellow=0xFFE08C, red=0xFF7583, gray=0x99A8B9}
 local dirs = {'UP','DOWN','NORTH','SOUTH','WEST','EAST'}
 local opposite = {UP='DOWN',DOWN='UP',NORTH='SOUTH',SOUTH='NORTH',WEST='EAST',EAST='WEST'}
-local DATA='/home/beemaster_factory.dat'
-local LOG='/home/beemaster_factory.log'
+local DATA='/home/beemaster_v4.dat'
+local LOG='/home/beemaster_v4.log'
 local originalW,originalH=gpu.getResolution()
-local width,height=math.min(gpu.maxResolution(),100),math.min(select(2,gpu.maxResolution()),29)
+local maxW,maxH=gpu.maxResolution()
+local width,height=maxW,maxH
 assert(width>=70 and height>=20,'Screen needs 70x20 or larger')
 gpu.setResolution(width,height)
 local buttons={}
-local devices={me={},mut={},imp={},api={},other={}}
+local devices={me={},mut={},imp={},api={},other={},peripherals={}}
+local bindings={} -- address => {role='MUT'/'IMP'/'API'/'OFF', me='interface address'}
+local initializing=true
+local initStatus='Подключение к компонентам'
+local settingsOffset=0
 local graph,catalog,available,nameToUid,routes = {},{},{},{},{}
 local paused=true
 local mode,alert='Ожидание','Первый запуск: проверь подключение и нажми СТАРТ'
@@ -68,7 +73,7 @@ local function save()
     f:write(serialization.serialize({failures=failures,known=known,created=created,stage=stage,job=job,
       trustSingleFilledTemplate=CFG.trustSingleFilledTemplate,
       allowLastPrincess=CFG.allowLastPrincess,
-      allowLastDrone=CFG.allowLastDrone,apiStats=apiStats}))
+      allowLastDrone=CFG.allowLastDrone,apiStats=apiStats,bindings=bindings,apiJobs=apiJobs}))
     f:close()
   end
 end
@@ -86,6 +91,8 @@ local function load()
     CFG.allowLastPrincess=x.allowLastPrincess == true
     CFG.allowLastDrone=x.allowLastDrone == true
     apiStats=x.apiStats or apiStats
+    bindings=x.bindings or {}
+    apiJobs=x.apiJobs or {}
   end
 end
 local function invoke(proxy,method,...)
@@ -131,54 +138,65 @@ local function compList()
   return found
 end
 local function discover()
-  local prior=devices
-  devices={me={},mut={},imp={},api={},other={}}
+  local old=devices
+  devices={me={},mut={},imp={},api={},other={},peripherals={}}
   for _,obj in ipairs(compList()) do
     local p=obj.p
     if obj.kind=='me_interface' then
       local ok,v=invoke(p,'getItemsInNetwork')
-      if ok and type(v)=='table' then devices.me[#devices.me+1]=obj end
+      if ok and type(v)=='table' then
+        devices.me[#devices.me+1]=obj
+      else
+        devices.me[#devices.me+1]=obj
+        log('ME read probe warning '..obj.addr:sub(1,8)..': '..tostring(v))
+      end
     else
       local ok,size=invoke(p,'getInventorySize')
-      local n='';local valid,name=invoke(p,'getInventoryName')
-      if valid then n=norm(name) end
       obj.size=ok and tonumber(size) or 0
-      obj.name=n
-      if obj.size==15 then
-        devices.api[#devices.api+1]=obj
-      elseif obj.size==4 then
-        local hasTank,info=invoke(p,'getTankInfo','UNKNOWN')
-        -- A standard Mutatron has a mutagen tank; an Imprinter does not.
-        if n:find('imprint',1,true) or n:find('импринт',1,true) then
-          devices.imp[#devices.imp+1]=obj
-        elseif n:find('mutatron',1,true) then
-          devices.mut[#devices.mut+1]=obj
-        elseif hasTank and type(info)=='table' and next(info) then
-          devices.mut[#devices.mut+1]=obj
-        else
-          devices.other[#devices.other+1]=obj
-        end
-      else
-        devices.other[#devices.other+1]=obj
+      if obj.size>0 then
+        local yes,n=invoke(p,'getInventoryName')
+        obj.name=(yes and tostring(n or '') or 'peripheral')
+        devices.peripherals[#devices.peripherals+1]=obj
       end
     end
   end
-  -- Only unambiguous four-slot non-tank device may be treated as imprinter.
-  -- Unknown four-slot inventories are NOT treated as Imprinters: sampler and transposer are four-slot too.
-  if #devices.imp==0 then
-    for _,candidate in ipairs(devices.other) do
-      if candidate.size==4 then
-        log('Four-slot unrecognized: '..tostring(candidate.name)..' '..candidate.addr:sub(1,8))
-      end
-    end
+  -- Only exact size/selected role is trusted. All four-slot machines may
+  -- have the identical OC component type 'peripheral'. No guesswork.
+  for _,obj in ipairs(devices.peripherals) do
+    local b=bindings[obj.addr]
+    if b and b.role=='MUT' and obj.size==4 then
+      devices.mut[#devices.mut+1]=obj
+    elseif b and b.role=='IMP' and obj.size==4 then
+      devices.imp[#devices.imp+1]=obj
+    elseif ((b and b.role=='API') or (not b and obj.size==15)) and obj.size==15 then
+      devices.api[#devices.api+1]=obj
+    else devices.other[#devices.other+1]=obj end
   end
-  if #devices.mut==0 then
-    notice('Не определён ОБЫЧНЫЙ мутатрон (4 слота + мутаген).',true)
-  end
-  if #devices.me==0 then notice('Нет читаемого МЭ-интерфейса.',true) end
-  if #devices.mut>1 then notice('Несколько мутатронов: оставь один на первом запуске.',true) end
   routes={}
-  log('Scan: ME='..#devices.me..' MUT='..#devices.mut..' IMP='..#devices.imp..' API='..#devices.api)
+  log('Devices: ME='..#devices.me..' MUT='..#devices.mut..' IMP='..#devices.imp..' API='..#devices.api)
+end
+local function boundME(obj)
+  if not obj then return nil end
+  local b=bindings[obj.addr]
+  if b and b.me then
+    for _,me in ipairs(devices.me) do
+      if me.addr==b.me then return me end
+    end
+    return nil
+  end
+  if #devices.me==1 then return devices.me[1] end
+  return nil
+end
+local function downRoute(obj)
+  local me=boundME(obj)
+  if not me then return nil end
+  return {me=me,dir='DOWN',arg='DOWN'}
+end
+local function rebuildRoutes()
+  routes={}
+  if #devices.mut==1 then routes.mut=downRoute(devices.mut[1]) end
+  if #devices.imp==1 then routes.imp=downRoute(devices.imp[1]) end
+  for _,api in ipairs(devices.api) do routes['api-'..api.addr]=downRoute(api) end
 end
 local function primaryME()
   return devices.me[1] and devices.me[1].p
@@ -310,11 +328,19 @@ local function graphScan()
   else log('WARNING: getBeeBreedingData unavailable: '..tostring(all)) end
   log('Recipes='..#graph)
 end
+local UPGRADES={
+  [0]='Ускорение продукции',[1]='Короткая жизнь',[2]='Цветение',[3]='Территория',
+  [4]='Увлажнитель',[5]='Осушитель',[6]='Обогрев',[7]='Охлаждение',
+  [10]='Изоляция',[11]='Освещение',[12]='Имитация неба',
+  [13]='Биом: Ад',[14]='Автоматизация',[15]='Пыльца',
+  [16]='Биом: Пустыня',[17]='Биом: Равнины',[18]='Биом: Джунгли',
+  [19]='Генетический стабилизатор',[20]='Биом: Тайга',[21]='Биом: Океан',
+  [22]='Очиститель'}
 local function allUpgrades(api)
   local ret={}
   for i=3,6 do
     local x=stack(api.p,i)
-    if x then ret[#ret+1]=title(x)..' x'..math.max(1,qty(x)) end
+    if x then ret[#ret+1]=(UPGRADES[tonumber(x.damage or x.dmg)] or title(x))..' x'..math.max(1,qty(x)) end
   end
   return ret
 end
@@ -348,63 +374,27 @@ local function hasVariant(kind)
   local list=devices[kind] or {}
   return #list==1
 end
-local function canExport(p,dir)
-  for _,d in ipairs({dir,dir:lower()}) do
-    local ok,v=invoke(p,'canExport',d)
-    if ok and v then return d end
-  end
-  return nil
-end
-local function routeCandidates()
-  local candidates={}
-  for _,me in ipairs(devices.me) do
-    for _,d in ipairs(dirs) do
-      local valid=canExport(me.p,d)
-      if valid then candidates[#candidates+1]={me=me,dir=d,arg=valid} end
-    end
-  end
-  return candidates
-end
-local function sameRoute(a,b)
-  return a and b and a.me.addr==b.me.addr and a.dir==b.dir
-end
-local function currentAmount(p,slot)
-  local v=stack(p,slot); return v and math.max(1,qty(v)) or 0
-end
 local function exactMeExport(route,entry,n,slot)
-  if not route or not entry or not entry.fingerprint then return false,'No route/fingerprint' end
-  local ok,r=invoke(route.me.p,'exportItem',entry.fingerprint,route.arg,n,slot)
-  if not ok then return false,tostring(r) end
-  if r==nil or r==false then return false,'No items transferred' end
+  if not route or not entry or not entry.fingerprint then
+    return false,'Не указан МЭ-интерфейс для этой машины'
+  end
+  local ok,yes=invoke(route.me.p,'canExport','DOWN')
+  if ok and not yes then
+    return false,'У выбранного МЭ-интерфейса нет инвентаря СНИЗУ'
+  end
+  local called,r=invoke(route.me.p,'exportItem',entry.fingerprint,'DOWN',n,slot)
+  if not called then return false,tostring(r) end
+  if r==nil or r==false then return false,'Ничего не передано из МЭ' end
   local amount=type(r)=='table' and tonumber(r.size or r.qty)
-  if amount and amount<1 then return false,'Export quantity 0' end
+  if amount and amount<1 then return false,'Передано 0 предметов' end
   return true,r
 end
-local function probeMachine(machine,slot,kind)
-  -- Export one harmless labware item into a free labware slot, check which machine received it.
-  -- Never probe when the machine contains a bee; no processing can be triggered.
-  if not machine or not machine.p or stack(machine.p,slot) then return false,'Slot occupied' end
-  if kind=='mut' and (stack(machine.p,1) or stack(machine.p,2) or stack(machine.p,3)) then
-    return false,'Mutatron occupied'
+local function acquireRoute()
+  rebuildRoutes()
+  if not routes.mut then log('МУТ: выбери МЭ-интерфейс в настройках') end
+  if #devices.imp>0 and not routes.imp then
+    log('ИМП: выбери МЭ-интерфейс в настройках')
   end
-  if kind=='imp' and (stack(machine.p,1) or stack(machine.p,3) or stack(machine.p,4)) then
-    return false,'Imprinter occupied'
-  end
-  local sample=getResource('labware')
-  if not sample then return false,'No Labware in ME' end
-  local hits=0
-  for _,r in ipairs(routeCandidates()) do
-    local before=currentAmount(machine.p,slot)
-    local ok=exactMeExport(r,sample,1,slot)
-    local after=currentAmount(machine.p,slot)
-    if ok and after>before then
-      routes[kind]=r
-      hits=hits+1
-      log('Route found '..kind..': '..r.me.addr:sub(1,8)..'/'..r.dir)
-      break
-    end
-  end
-  return hits>0,hits>0 and 'OK' or 'ME interface must touch machine'
 end
 local function refill(machine,route,slot)
   if not machine or not route then return false end
@@ -417,27 +407,16 @@ local function refill(machine,route,slot)
   local count=math.min(CFG.targetLabware-have,qty(lab))
   if count<=0 then return false end
   local ok=exactMeExport(route,lab,count,slot)
-  return ok
+  if not ok then return false end
+  local after=stack(machine.p,slot)
+  return after and norm(itemid(after)):find('labware',1,true)~=nil
 end
 local function input(machine,route,fp,slot,mayConsume)
-  assert(not stack(machine.p,slot),'Input slot already occupied: '..slot)
+  assert(not stack(machine.p,slot),'Слот уже занят: '..slot)
   local ok,r=exactMeExport(route,{fingerprint=fp},1,slot)
-  if not ok then error('ME export slot '..slot..': '..tostring(r)) end
+  if not ok then error('МЭ -> слот '..slot..': '..tostring(r)) end
   if not mayConsume then
-    assert(stack(machine.p,slot),'Item not visible in slot '..slot)
-  end
-end
-local function acquireRoute()
-  if not hasVariant('mut') then return end
-  if not routes.mut then
-    local ok,why=probeMachine(devices.mut[1],4,'mut')
-    if not ok then log('MUT route: '..why) end
-  end
-  -- An unknown 4-slot peripheral may be the Imprinter, Sampler or Transposer.
-  -- Never feed bees to it unless its name identifies it as an Imprinter.
-  if hasVariant('imp') and not routes.imp and not devices.imp[1].tentative then
-    local ok,why=probeMachine(devices.imp[1],2,'imp')
-    if not ok then log('IMP route: '..why) end
+    assert(stack(machine.p,slot),'Предмет не появился в слоте '..slot..'. Проверь назначенный МЭ')
   end
 end
 local function meCount(fp)
@@ -694,7 +673,7 @@ local function chooseApiaryTask()
       end
       -- Missing second species princess: mate one of the spare Stone princesses
       -- with a target drone. This can produce the missing lineage.
-      if d and sp.p<2 and sp.q==0 and stone and uid~=stone and
+      if d and sp.d>=2 and sp.p<2 and sp.q==0 and stone and uid~=stone and
         speciesAmount(stone,'p')>CFG.stonePrincessReserve then
         local key='stone:'..uid
         local attempts=failures[key] or 0
@@ -739,78 +718,47 @@ local function findApiaryRoute(api)
 end
 local function loadToApiary(task)
   if not CFG.useApiary then return false,'Пасеки отключены' end
-  local matchingApi=nil
-  local preferred={}
-  for _,api in ipairs(devices.api) do
-    if not busyApiary(api) then
-      if findApiaryRoute(api) then preferred[#preferred+1]=api end
-      matchingApi=matchingApi or api
-    end
-  end
-  if #preferred>0 then matchingApi=preferred[1] end
-  if not matchingApi then return false,'Свободные пасеки закончились' end
   local first=task.queen or task.p
-  if not first then return false,'Нет матки или принцессы для задачи' end
-  local allRoutes={}
-  local pre=findApiaryRoute(matchingApi)
-  if pre then allRoutes[#allRoutes+1]=pre end
-  for _,r in ipairs(routeCandidates()) do
-    if hasAnyInputForApiary(r) and (not pre or not sameRoute(pre,r)) then
-      allRoutes[#allRoutes+1]=r
+  if not first then return false,'Не найдена принцесса или матка' end
+  local api,route
+  for _,candidate in ipairs(devices.api) do
+    if not busyApiary(candidate) then
+      local r=routes['api-'..candidate.addr]
+      if r then api,route=candidate,r;break end
     end
   end
-  if #allRoutes==0 then return false,'Нет доступных направлений экспорта МЭ' end
-  local targetBefore={}
-  for _,api in ipairs(devices.api) do if not busyApiary(api) then targetBefore[api.addr]=true end end
-  local winningRoute,winningApi,exportProblem=nil,nil,nil
-  for _,r in ipairs(allRoutes) do
-    local success,msg=exactMeExport(r,{fingerprint=first.fp},1,1)
-    if success then
-      -- Immediately find the apiary that received the princess/queen.
-      for _,api in ipairs(devices.api) do
-        if targetBefore[api.addr] then
-          local obj=stack(api.p,1)
-          if obj and (role(obj)=='P' or role(obj)=='Q') then
-            winningRoute,winningApi=r,api
-            break
-          end
-        end
-      end
-      if not winningApi then
-        notice('МЭ приняла экспорт, но матка не появилась в пасеках. Проверь соседей МЭ.',true)
-        return false,'Неизвестное назначение предмета'
-      end
-      break
-    else exportProblem=tostring(msg) end
+  if not api then return false,'Нет свободной пасеки с привязанным МЭ-интерфейсом' end
+  local ok,why=exactMeExport(route,{fingerprint=first.fp},1,1)
+  if not ok then return false,why end
+  local bee=stack(api.p,1)
+  if not bee or (role(bee)~='P' and role(bee)~='Q') then
+    notice('Экспорт есть, но в указанной пасеке нет пчелы. Проверь интерфейс НАД пасекой!',true)
+    return false,'Неправильная привязка пасеки к МЭ'
   end
-  if not winningApi then return false,exportProblem or 'Нет подходящей МЭ-стороны к пасеке' end
-  routes['api-'..winningApi.addr]=winningRoute
-  -- Make state durable BEFORE sending the drone, because mating may happen instantly.
-  local w={apiAddr=winningApi.addr,uid=task.uid,kind=task.kind,
+  local w={apiAddr=api.addr,uid=task.uid,kind=task.kind,
     source=task.source,step='breeding',started=computer.uptime(),
-    lastRole=role(stack(winningApi.p,1)),
-    beforeP=speciesAmount(task.uid,'p'),beforeD=speciesAmount(task.uid,'d'),
-    postQueen=false,importStarted=0,key=task.key,
-    targetLabel=(catalog[task.uid] or {}).name or task.uid}
-  apiJobs[winningApi.addr]=w
+    lastRole=role(bee),beforeP=speciesAmount(task.uid,'p'),
+    beforeD=speciesAmount(task.uid,'d'),postQueen=false,importStarted=nil,
+    key=task.key,targetLabel=(catalog[task.uid] or {}).name or task.uid}
+  apiJobs[api.addr]=w
   save()
   if task.d then
-    local ok,why=exactMeExport(winningRoute,{fingerprint=task.d.fp},1,2)
-    if not ok then
-      notice('Пасека получила принцессу, но НЕ получила трутня: '..tostring(why),true)
-      return false,why
+    local sent,msg=exactMeExport(route,{fingerprint=task.d.fp},1,2)
+    if not sent then
+      notice('Пасека получила принцессу, но не получила трутня: '..tostring(msg),true)
+      return false,msg
     end
-    local z=stack(winningApi.p,1)
-    local dz=stack(winningApi.p,2)
+    local z=stack(api.p,1)
+    local dz=stack(api.p,2)
     if z and role(z)=='P' and not dz then
-      notice('Трутень отправлен, но пасека его не приняла. Проверь инвентарь.',true)
+      notice('Не вижу трутня в пасеке после передачи. Проверь подключение!',true)
       return false,'Трутень не дошёл'
     end
   end
   apiStats.started=(apiStats.started or 0)+1
   pendingApiaryRefresh=true
-  log('APIARY '..task.kind..' '..task.uid..' -> '..winningApi.addr:sub(1,8))
-  mode='Пасека: '..w.targetLabel..' ('..task.kind..')'
+  log('API '..task.kind..' '..task.uid..' => '..api.addr:sub(1,8))
+  mode='Пасека: '..w.targetLabel
   save()
   return true
 end
@@ -820,6 +768,7 @@ local function observeApiaryJobs(now)
   local awaitingImport=false
   for addr,w in pairs(apiJobs) do
     local api=liveApiary(addr)
+    if w.importStarted==0 then w.importStarted=nil end
     if not api then notice('Потеряно подключение к пасеке с пчёлами.',true);return end
     local bee=stack(api.p,1)
     local br=role(bee)
@@ -933,125 +882,299 @@ local function cycle()
 end
 local function ulen(s) return unicode.len(tostring(s or '')) end
 local function cut(s,n) return unicode.sub(tostring(s or ''),1,math.max(0,n)) end
-local function paint(x,y,s,color)
-  if y<1 or y>height or x>width then return end
-  gpu.setForeground(color or COLOR.fg)
+local function fill(x,y,w,h,bg)
+  if x<1 or y<1 or w<1 or h<1 then return end
+  gpu.setBackground(bg);gpu.fill(x,y,math.min(w,width-x+1),math.min(h,height-y+1),' ')
+end
+local function paint(x,y,s,fg,bg)
+  if y<1 or y>height or x<1 or x>width then return end
+  if bg then gpu.setBackground(bg) end
+  gpu.setForeground(fg or COLOR.fg)
   gpu.set(x,y,cut(s,width-x+1))
 end
-local function btn(x,y,text,cb,clr)
-  local s='[ '..text..' ]'
-  paint(x,y,s,clr or COLOR.blue)
-  buttons[#buttons+1]={x=x,y=y,len=ulen(s),cb=cb}
+local function button(x,y,t,action,fg,bg,w)
+  local label=' '..t..' '
+  w=w or (ulen(label)+2)
+  fill(x,y,w,1,bg or 0x192D42)
+  paint(x+math.max(0,math.floor((w-ulen(label))/2)),y,label,fg or COLOR.blue,bg or 0x192D42)
+  buttons[#buttons+1]={x=x,y=y,w=w,action=action}
 end
-local function line(y,text,col)
-  gpu.setBackground(COLOR.bg);gpu.fill(1,y,width,1,' ')
-  paint(2,y,text,col)
+local function box(x,y,w,h,title,fg)
+  fill(x,y,w,h,0x142233)
+  fill(x,y,w,1,0x1D3347)
+  paint(x+2,y,title or '',fg or COLOR.blue,0x1D3347)
+end
+local function hline(y,text,fg)
+  fill(1,y,width,1,COLOR.bg)
+  paint(2,y,text,fg)
+end
+local function statusBar()
+  fill(1,1,width,3,0x142739)
+  fill(1,1,1,3,COLOR.blue)
+  paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
+  paint(16,1,'4.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  local st=initializing and 'СКАНИРОВАНИЕ' or (paused and 'ПАУЗА' or 'РАБОТА')
+  local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
+  paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
+  paint(3,2,cut((initializing and initStatus or mode),width-6),COLOR.fg,0x142739)
+  fill(1,3,width,1,0x1C364A)
+end
+local function meter(x,y,w,pct)
+  local inner=math.max(6,w-8)
+  local filled=math.floor(inner*math.max(0,math.min(100,pct))/100)
+  paint(x,y,'['..string.rep('=',filled)..string.rep('.',inner-filled)..'] '..pct..'%',COLOR.blue,0x142233)
+end
+local function equipmentLabel(obj)
+  return obj and (obj.addr:sub(1,8)) or 'НЕТ'
+end
+local function rolesLine()
+  local m=#devices.mut==1 and 'ОК' or 'НЕ НАЗНАЧЕН'
+  local imp=#devices.imp==1 and 'ЕСТЬ' or 'НЕТ'
+  return 'МЭ '..#devices.me..'  |  МУТАТРОН '..m..'  |  ИМПРИНТЕР '..imp..'  |  ПАСЕКИ '..#devices.api
+end
+local function drawHome()
+  local W=width;local H=height
+  statusBar()
+  local total,done,produced=0,0,0
+  for uid in pairs(targetSpecies) do total=total+1;if known[uid] then done=done+1 end end
+  for uid in pairs(created) do produced=produced+1 end
+  local pct=total>0 and math.floor(100*done/total) or 0
+  box(2,5,W-3,5,'ПРОГРЕСС СЕЛЕКЦИИ',COLOR.green)
+  paint(4,7,'Открыто видов: '..done..' / '..(total>0 and total or '?')..'    Получено программой: '..produced,COLOR.fg,0x142233)
+  meter(4,8,math.min(W-10,65),pct)
+  local leftW=math.max(33,math.floor((W-5)*.54))
+  local rightX=leftW+3
+  local rightW=W-rightX-1
+  local sectionY=11
+  local bottom=H-6
+  local sectionH=math.max(7,bottom-sectionY+1)
+  box(2,sectionY,leftW,sectionH,'АКТИВНЫЕ ЗАДАЧИ')
+  box(rightX,sectionY,rightW,sectionH,'ОБОРУДОВАНИЕ / ПАСЕКИ')
+  local mx=4;local my=sectionY+2
+  paint(mx,my,'Мутация: '..(job and (job.name or job.wanted or '?') or 'нет задачи'),COLOR.fg,0x142233)
+  local steps={mutation='МУТАТРОН',imprint='ИМПРИНТЕР',post_queen='ПЕРЕДАЧА В ПАСЕКУ'}
+  paint(mx,my+1,'Этап: '..(job and (steps[stage] or stage) or 'ожидание'),COLOR.gray,0x142233)
+  paint(mx,my+3,'Пасеки выращивают трутней до 5 шт.',COLOR.green,0x142233)
+  if #missed>0 then paint(mx,my+4,cut('Условия/улучшения для проверки: '..#missed,leftW-4),COLOR.yellow,0x142233) end
+  local r=my+5
+  local apiRowCount=0
+  for _,w in pairs(apiJobs) do
+    if r<=sectionY+sectionH-2 then
+      local k=w.kind=='farm' and 'ТРУТНИ' or w.kind=='stone' and 'ПРИНЦЕССА' or 'ПОТОМСТВО'
+      paint(mx,r,cut('> '..k..': '..(w.targetLabel or '?'),leftW-4),COLOR.fg,0x142233)
+      r=r+1;apiRowCount=apiRowCount+1
+    end
+  end
+  if apiRowCount==0 and r<=sectionY+sectionH-2 then
+    paint(mx,r,'Пасеки ожидают задания',COLOR.gray,0x142233)
+  end
+  local xr=rightX+2;local yy=sectionY+2
+  paint(xr,yy,cut('МУТ: '..equipmentLabel(devices.mut[1])..(routes.mut and ' -> DOWN' or ' - маршрут не выбран'),rightW-3),routes.mut and COLOR.green or COLOR.yellow,0x142233)
+  paint(xr,yy+1,cut('ИМП: '..equipmentLabel(devices.imp[1])..(routes.imp and ' -> DOWN' or ''),rightW-3),COLOR.gray,0x142233)
+  local lab=getResource('labware')
+  paint(xr,yy+2,cut('Посуда в МЭ: '..(lab and qty(lab) or '?')..' | Гены: '..(CFG.trustSingleFilledTemplate and 'ВКЛ' or 'ВЫКЛ'),rightW-3),COLOR.gray,0x142233)
+  local row=yy+4
+  for i,api in ipairs(devices.api) do
+    if row>sectionY+sectionH-2 then break end
+    local j=apiJobs[api.addr]
+    local st=j and (j.kind=='farm' and 'трутни' or j.kind=='stone' and 'принцесса' or 'потомство') or 'свободна'
+    paint(xr,row,cut(i..'. '..st..' | '..equipmentLabel(api),rightW-3),j and COLOR.green or COLOR.fg,0x142233)
+    row=row+1
+    local ups=table.concat(api.upgrades or {},', ')
+    if row<=sectionY+sectionH-2 then
+      paint(xr,row,cut('   '..(ups~='' and ups or 'Нет улучшений'),rightW-3),COLOR.gray,0x142233)
+      row=row+1
+    end
+  end
+  fill(2,H-5,W-3,2,0x182C3F)
+  paint(3,H-5,cut('! '..alert,W-6),COLOR.yellow,0x182C3F)
+  paint(3,H-4,cut(rolesLine(),W-6),COLOR.gray,0x182C3F)
+  fill(1,H-2,W,3,0x102235)
+  local x=3
+  button(x,H-1,paused and 'СТАРТ' or 'ПАУЗА','pause',paused and COLOR.green or COLOR.yellow,0x203B49,14)
+  x=x+16
+  button(x,H-1,'ОБОРУДОВАНИЕ','settings',COLOR.blue,0x203B49,19)
+  x=x+21
+  button(x,H-1,'ОБНОВИТЬ','scan',COLOR.fg,0x203B49,15)
+  x=x+17
+  button(x,H-1,'ВЫХОД','exit',COLOR.red,0x203B49,12)
+end
+local function roleName(r)
+  if r=='MUT' then return 'МУТАТРОН' elseif r=='IMP' then return 'ИМПРИНТЕР'
+  elseif r=='API' then return 'ПАСЕКА' else return 'НЕ ИСПОЛЬЗ.' end
+end
+local function roleOf(obj)
+  local b=bindings[obj.addr]
+  if b then return b.role or 'OFF' end
+  if obj.size==15 then return 'API' end
+  return 'OFF'
+end
+local function meIndex(addr)
+  for i,m in ipairs(devices.me) do if m.addr==addr then return i end end
+  return nil
+end
+local function drawSettings()
+  local W,H=width,height
+  statusBar()
+  box(2,5,W-3,H-11,'НАСТРОЙКА ОБОРУДОВАНИЯ',COLOR.blue)
+  paint(4,7,'Кликни по РОЛИ, затем по МЭ. Выгрузка всегда СНИЗУ (DOWN).',COLOR.gray,0x142233)
+  paint(4,8,'МЭ-интерфейс должен стоять НЕПОСРЕДСТВЕННО НАД назначенной машиной.',COLOR.yellow,0x142233)
+  local yy=10
+  for i,m in ipairs(devices.me) do
+    if yy>=H-14 then break end
+    paint(4,yy,'МЭ '..i..': '..m.addr:sub(1,8)..'  ('..m.kind..')',COLOR.green,0x142233)
+    yy=yy+1
+  end
+  yy=math.max(yy+1,13)
+  local visible=math.max(1,H-yy-9)
+  local maxOffset=math.max(0,#devices.peripherals-visible)
+  settingsOffset=math.min(maxOffset,math.max(0,settingsOffset))
+  for j=1,visible do
+    local i=j+settingsOffset
+    local obj=devices.peripherals[i]
+    if not obj then break end
+    local r=roleOf(obj)
+    local b=bindings[obj.addr] or {}
+    local mIndex=meIndex(b.me)
+    local routeTxt=(mIndex and ('МЭ '..mIndex) or (#devices.me==1 and not b.me and 'МЭ 1 АВТО' or 'МЭ НЕ ВЫБРАН'))
+    local y=yy+j-1
+    fill(3,y,W-5,1,(j%2==0) and 0x192A3B or 0x142233)
+    paint(4,y,string.format('%02d  %2d сл.',i,obj.size),COLOR.gray)
+    button(18,y,roleName(r),'role:'..obj.addr,COLOR.blue,0x243D50,18)
+    button(39,y,routeTxt,'me:'..obj.addr,(mIndex or #devices.me==1) and COLOR.green or COLOR.yellow,0x243D50,20)
+    paint(62,y,cut(obj.addr:sub(1,8)..' '..obj.name,W-65),COLOR.gray)
+  end
+  if #devices.peripherals>visible then
+    button(5,H-7,'ВЫШЕ','up',COLOR.blue,0x243D50,12)
+    button(19,H-7,'НИЖЕ','down',COLOR.blue,0x243D50,12)
+    paint(35,H-7,'Всего: '..#devices.peripherals..' | Видимые: '..(settingsOffset+1)..'-'..math.min(#devices.peripherals,settingsOffset+visible),COLOR.gray)
+  end
+  fill(2,H-5,W-3,2,0x182C3F)
+  paint(3,H-5,cut('Важно: МУТ и ИМП имеют 4 слота. ПАСЕКА имеет 15 слотов.',W-6),COLOR.yellow,0x182C3F)
+  paint(3,H-4,cut('Если устройство заменено, назначь его заново. Изменения сохраняются.',W-6),COLOR.gray,0x182C3F)
+  fill(1,H-2,W,3,0x102235)
+  button(3,H-1,'ГОТОВО','home',COLOR.green,0x203B49,13)
+  button(19,H-1,CFG.trustSingleFilledTemplate and 'ПРИВИВКА ГЕНОВ: ВКЛ' or 'ПРИВИВКА ГЕНОВ: ВЫКЛ','genes',CFG.trustSingleFilledTemplate and COLOR.green or COLOR.yellow,0x203B49,29)
+  button(51,H-1,'ОБНОВИТЬ','discover',COLOR.blue,0x203B49,17)
 end
 local function draw()
-  buttons={};gpu.setBackground(COLOR.bg);gpu.fill(1,1,width,height,' ')
-  line(1,' BeeMaster 3.0  |  АВТОМАТИЧЕСКАЯ ПЧЕЛОФЕРМА',COLOR.blue)
-  line(2,string.rep('─',math.min(width-4,95)),COLOR.gray)
-  line(3,'РЕЖИМ: '..(paused and 'ПАУЗА' or 'РАБОТАЕТ')..'     '..mode,
-    paused and COLOR.yellow or COLOR.green)
-  line(4,'МЭ: '..#devices.me..' | Мутатрон: '..#devices.mut..' | Импринтер: '..#devices.imp..' | Пасеки: '..#devices.api)
-  line(5,'Подача в мутатрон: '..(routes.mut and 'ГОТОВО' or 'НЕТ')..'   Импринтер: '..(routes.imp and (template and 'ДОСТУПЕН' or 'НЕТ ШАБЛОНА') or 'ПРОПУСК'),COLOR.gray)
-  local total,done,current,produced=0,0,0,0
-  for uid in pairs(targetSpecies) do
-    total=total+1
-    if known[uid] then done=done+1 end
-  end
-  for uid,spec in pairs(catalog) do
-    if spec.p>0 or spec.q>0 then current=current+1 end
-  end
-  for _ in pairs(created) do produced=produced+1 end
-  line(7,'ОТКРЫТО ВИДОВ: '..done..' / '..(total>0 and total or '?')..' | Выведено программой: '..produced,COLOR.green)
-  line(8,'Рецептов: '..#graph..' | Пасек: '..workersCount()..'/'..#devices.api..' | Трутни: '..CFG.minDroneReserve..' резерв',COLOR.gray)
-  local pct=total>0 and math.floor(100*done/total) or 0
-  local barLen=math.min(42,width-23)
-  local marks=math.floor(barLen*pct/100)
-  line(9,'['..string.rep('#',marks)..string.rep('-',barLen-marks)..'] '..pct..'%',COLOR.blue)
-  line(10,'ТЕКУЩАЯ РАБОТА',COLOR.blue)
-  line(11,job and ('Цель: '..(job.name or job.nurseryName or job.wanted or '—')) or 'Активной задачи нет')
-  line(12,job and ('Этап: '..stage..' | Результат: '..(job.resultTitle or 'ожидание')) or 'Две пасеки могут растить трутней и принцесс одновременно',COLOR.gray)
-  local lab=getResource('labware')
-  local imprintOK=(#devices.imp==1 and (template or stack(devices.imp[1].p,1)))
-  line(14,'РЕСУРСЫ: посуда '..(lab and qty(lab) or 0)..' | шаблон '..(imprintOK and 'ГОТОВ' or 'нет')..' | импринтер '..(imprintOK and 'ДА' or 'НЕТ'))
-  line(15,'ПАСЕКИ / ЭМУЛЯЦИИ БИОМОВ',COLOR.blue)
-  if #devices.api==0 then line(16,'Нет доступных промышленных пасек.',COLOR.yellow) end
-  for i,a in ipairs(devices.api) do
-    if 15+i>=height-8 then break end
-    local task=apiJobs[a.addr]
-    local status=task and (task.kind=='farm' and 'ТРУТНИ' or task.kind=='stone' and 'НОВАЯ ПРИНЦЕССА' or 'ПОТОМСТВО') or 'СВОБОДНА'
-    local progress=''
-    if task then local yes,p=invoke(a.p,'breedingProgress');if yes and tonumber(p) then progress=' '..math.floor(p)..'%' end end
-    local s=i..'. ['..status..progress..'] '..(a.queen and title(a.queen) or 'нет матки')
-    local u=table.concat(a.upgrades or {},', ')
-    line(15+i,cut(s..' | '..u,width-4))
-  end
-  line(height-8,'Пасек завершено: '..(apiStats.completed or 0)..' | без результата: '..(apiStats.failed or 0)..
-    ' | выведено принцесс: '..(apiStats.princesses or 0),COLOR.gray)
-  line(height-7,'ПОСЛЕДНЕЕ СООБЩЕНИЕ',COLOR.blue)
-  line(height-6,cut(alert,width-4),COLOR.yellow)
-  line(height-5,'Лог: '..LOG,COLOR.gray)
-  btn(2,height-3,paused and 'СТАРТ' or 'ПАУЗА','pause',paused and COLOR.green or COLOR.yellow)
-  btn(23,height-3,'ОБНОВИТЬ','scan')
-  btn(49,height-3,'ВЫХОД','exit',COLOR.red)
-  paint(2,height,'Складывай продукцию в МЭ шинами импорта. Программа не тратит последнюю принцессу.',COLOR.gray)
+  buttons={}
+  fill(1,1,width,height,COLOR.bg)
+  if page=='settings' then drawSettings() else drawHome() end
 end
 local quit=false
+local function changeRole(addr)
+  if not paused or stage~='idle' or next(apiJobs) then
+    notice('Изменять оборудование можно только при остановленных задачах.',true);return
+  end
+  local obj
+  for _,v in ipairs(devices.peripherals) do if v.addr==addr then obj=v;break end end
+  if not obj then return end
+  local old=roleOf(obj)
+  local r
+  if obj.size==4 then
+    if old=='OFF' then
+      r=(#devices.mut>0 and 'IMP' or 'MUT')
+    elseif old=='MUT' then r='IMP'
+    else r='OFF' end
+  elseif obj.size==15 then
+    r=old=='API' and 'OFF' or 'API'
+  else notice('Только 4- и 15-слотовые устройства поддерживаются',false);return end
+  bindings[addr]=bindings[addr] or {}
+  if r=='MUT' or r=='IMP' then
+    for k,b in pairs(bindings) do if k~=addr and b.role==r then b.role='OFF' end end
+  end
+  bindings[addr].role=r
+  discover();rebuildRoutes();save()
+  notice('Роль '..addr:sub(1,8)..' = '..roleName(r))
+end
+local function changeME(addr)
+  if not paused or stage~='idle' or next(apiJobs) then
+    notice('Маршрут нельзя менять во время операций.',true);return
+  end
+  if #devices.me==0 then notice('МЭ-интерфейсы не обнаружены.',true);return end
+  bindings[addr]=bindings[addr] or {}
+  if not bindings[addr].role then
+    for _,v in ipairs(devices.peripherals) do
+      if v.addr==addr then bindings[addr].role=(v.size==15 and 'API' or 'OFF');break end
+    end
+  end
+  local i=meIndex(bindings[addr].me) or 0
+  i=i+1
+  if i>#devices.me then i=0 end
+  bindings[addr].me=i==0 and nil or devices.me[i].addr
+  rebuildRoutes();save()
+  notice('Привязка МЭ: '..(i>0 and tostring(i) or 'АВТО/НЕ ВЫБРАН'))
+end
+local function refreshEverything(reloadComponents)
+  initializing=true;initStatus='Чтение МЭ и генетики'
+  if reloadComponents then discover() end
+  if primaryME() then meInventory() else error('МЭ-интерфейс не найден') end
+  graphScan();scanApiaries();acquireRoute()
+  initializing=false
+  notice('Инвентаризация завершена. Проверь оборудование.')
+end
 local function tap(key)
   if key=='pause' then
-    paused=not paused
-    if not paused then
-      if not routes.mut then
-        paused=true
-        notice('Нет МЭ-маршрута в мутатрон. Поставь МЭ-интерфейс вплотную.',true)
-      elseif #graph==0 then
-        paused=true
-        notice('Без данных getBeeBreedingData автовыведение не запускается.',true)
-      else notice('Автоматика включена') end
-    else notice('Пауза: текущие предметы не перемещаются') end
+    if initializing then return end
+    if paused then
+      if not routes.mut then notice('Назначь мутатрон и его МЭ в ОБОРУДОВАНИИ.',true);return end
+      if #graph==0 then notice('Нет дерева мутаций: подключи пасеку с getBeeBreedingData.',true);return end
+      paused=false;nextPlanAt=0;notice('АВТОМАТИКА ЗАПУЩЕНА')
+    else paused=true;notice('ПАУЗА: новые задачи не выдаются') end
     save()
+  elseif key=='settings' then
+    paused=true;page='settings';save()
+  elseif key=='home' then
+    page='home';discover();rebuildRoutes();save()
   elseif key=='scan' then
     paused=true
-    local ok,err=pcall(function()
-      discover();meInventory();graphScan();scanApiaries();acquireRoute()
-    end)
-    if ok then nextPlanAt=0;notice('Обновление завершено. Сначала проверь маршрут и пасеки.')
-    else notice('Сканирование: '..tostring(err),true) end
-  elseif key=='exit' then quit=true
-  end
+    local ok,err=pcall(refreshEverything,true)
+    initializing=false
+    if not ok then notice('Ошибка обновления: '..tostring(err),true) end
+  elseif key=='discover' then
+    paused=true;discover();rebuildRoutes();notice('Оборудование перечитано')
+  elseif key=='genes' then
+    if not paused or stage~='idle' then notice('Поставь на паузу и закончи текущую задачу.',true);return end
+    CFG.trustSingleFilledTemplate=not CFG.trustSingleFilledTemplate
+    save()
+    if CFG.trustSingleFilledTemplate then
+      notice('Гены включены! Проверь, что шаблон НЕ содержит ген ВИДА.')
+    else notice('Импринтер не будет обрабатывать маток.') end
+  elseif key=='up' then settingsOffset=math.max(0,settingsOffset-4)
+  elseif key=='down' then settingsOffset=settingsOffset+4
+  elseif key:sub(1,5)=='role:' then changeRole(key:sub(6))
+  elseif key:sub(1,3)=='me:' then changeME(key:sub(4))
+  elseif key=='exit' then quit=true end
 end
-
 local function startup()
-  load()
-  local ok,err=pcall(function()
-    discover()
-    if primaryME() then meInventory() end
-    graphScan();scanApiaries();acquireRoute()
-  end)
-  if not ok then notice('Ошибка старта: '..tostring(err),true) end
-  if stage~='idle' then
-    paused=true
-    notice('После рестарта найдена незавершённая задача. Проверь оборудование.',true)
+  load();paused=true
+  local ok,err=pcall(discover)
+  if not ok then notice('Поиск компонентов: '..tostring(err),true) end
+  acquireRoute()
+  if stage~='idle' or next(apiJobs) then
+    notice('Восстановлены незавершённые операции. Проверь машины до пуска.',true)
   end
-  save()
-  log('BeeMaster Factory started')
+  log('BeeMaster 4.0 started')
 end
-
 startup()
-local lastDraw,lastCycle=0,0
+-- First show graphics, then query a large ME network.
+local okDraw,whyDraw=pcall(draw)
+if not okDraw then print('Ошибка экрана: '..tostring(whyDraw)) end
+local okInit,errInit=pcall(refreshEverything,false)
+if not okInit then initializing=false;notice('Начальная загрузка: '..tostring(errInit),true) end
+local lastDraw,lastCycle,lastApiaryCheck=0,0,0
 while not quit do
   local now=computer.uptime()
-  if now-lastCycle>=CFG.tick then
+  if not initializing and now-lastCycle>=CFG.tick then
     lastCycle=now
     cycle()
   end
-  if now-lastApiary>=CFG.apiaryScan then
-    lastApiary=now
+  if not initializing and now-lastApiaryCheck>=CFG.apiaryScan then
+    lastApiaryCheck=now
     if #devices.api>0 then
       local ok=pcall(scanApiaries)
-      if not ok then log('Apiary read error') end
+      if not ok then log('Ошибка проверки пасек') end
     end
   end
   if now-lastDraw>=1 then
@@ -1059,11 +1182,11 @@ while not quit do
     local ok,err=pcall(draw)
     if not ok then print('GUI: '..tostring(err));quit=true end
   end
-  local _,_,x,y=event.pull(0.35,'touch')
+  local _,_,x,y=event.pull(0.25,'touch')
   if x and y then
     for _,b in ipairs(buttons) do
-      if y==b.y and x>=b.x and x<b.x+b.len then
-        local ok,err=pcall(tap,b.cb)
+      if y==b.y and x>=b.x and x<b.x+b.w then
+        local ok,err=pcall(tap,b.action)
         if not ok then notice('Кнопка: '..tostring(err),true) end
         break
       end
@@ -1074,4 +1197,4 @@ save()
 gpu.setResolution(originalW,originalH)
 gpu.setForeground(COLOR.fg)
 gpu.setBackground(0)
-print('BeeMaster stopped; status saved in '..DATA)
+print('BeeMaster stopped; saved '..DATA)
