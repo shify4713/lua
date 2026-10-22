@@ -1,0 +1,416 @@
+local component = require("component")
+local event = require("event")
+local unicode = require("unicode")
+local computer = require("computer")
+
+local gpu = component.gpu
+assert(gpu, "GPU is required")
+local oldW, oldH = gpu.getResolution()
+local oldFG, oldBG = gpu.getForeground(), gpu.getBackground()
+local maxW, maxH = gpu.maxResolution()
+local W, H = math.min(80, maxW), math.min(25, maxH)
+assert(W >= 70 and H >= 25, "Need a tier 2+ screen (min 70x25)")
+
+gpu.setResolution(W, H)
+local dirs = {"DOWN", "UP", "NORTH", "SOUTH", "WEST", "EAST"}
+local opposite = {DOWN="UP", UP="DOWN", NORTH="SOUTH", SOUTH="NORTH", WEST="EAST", EAST="WEST"}
+local interfaces, mutatrons = {}, {}
+local meIndex, mutIndex, sideIndex = 1, 1, 1
+local princesses, drones, labware = {}, {}, nil
+local pIndex, dIndex, pPage, dPage = 1, 1, 1, 1
+local buttons = {}
+local status = "Select bees. Click LOAD BOTH twice to confirm."
+local statusColor = 0xFFFFFF
+local pending = nil
+local quit = false
+local fg = 0xFFFFFF
+local highlight = 0x33CC99
+local soft = 0xAAAAAA
+local warn = 0xFFCC66
+local errCol = 0xFF7777
+
+local function sub(s, n)
+  return unicode.sub(tostring(s or ""), 1, n)
+end
+local function write(x, y, str, color)
+  if x > W or y < 1 or y > H then return end
+  gpu.setForeground(color or fg)
+  gpu.set(x, y, sub(str, W - x + 1))
+end
+local function line(y, text, color)
+  gpu.setBackground(0x101820)
+  gpu.fill(1, y, W, 1, " ")
+  write(2, y, text, color)
+end
+local function button(x, y, key, label, color)
+  local text = "[" .. label .. "]"
+  local len = unicode.len(text)
+  write(x, y, text, color or highlight)
+  buttons[#buttons + 1] = {x=x, y=y, len=len, key=key}
+end
+local function notify(message, color)
+  status = tostring(message)
+  pending = nil
+  if color then statusColor = color else statusColor = fg end
+end
+
+local function methods(address)
+  local ok, m = pcall(component.methods, address)
+  return ok and type(m) == "table" and m or {}
+end
+local function canExport(p, side)
+  local ok, result = pcall(p.canExport, side)
+  if ok and result == true then return true, side end
+  local ok2, result2 = pcall(p.canExport, side:lower())
+  if ok2 and result2 == true then return true, side:lower() end
+  return false, side
+end
+local function discover()
+  interfaces, mutatrons = {}, {}
+  for address, kind in component.list() do
+    local p = component.proxy(address)
+    local m = methods(address)
+    if kind == "me_interface" and m.exportItem and m.getAvailableItems and m.canExport then
+      local around = {}
+      for _, d in ipairs(dirs) do
+        local yes, name = canExport(p, d)
+        if yes then around[#around + 1] = {label=d, arg=name} end
+      end
+      interfaces[#interfaces+1] = {address=address, proxy=p, sides=around}
+    elseif kind == "peripheral" and m.getInventorySize and m.getStackInSlot and m.pushItem then
+      local ok, size = pcall(p.getInventorySize)
+      if ok and size == 10 then
+        mutatrons[#mutatrons+1] = {address=address, proxy=p}
+      end
+    end
+  end
+  table.sort(interfaces, function(a,b) return a.address < b.address end)
+  table.sort(mutatrons, function(a,b) return a.address < b.address end)
+  if meIndex > #interfaces then meIndex = 1 end
+  if mutIndex > #mutatrons then mutIndex = 1 end
+  sideIndex = 1
+end
+local function selectedME() return interfaces[meIndex] end
+local function selectedMut() return mutatrons[mutIndex] end
+local function selectedSide()
+  local m = selectedME()
+  return m and m.sides[sideIndex] or nil
+end
+local function itemAt(slot)
+  local p = selectedMut()
+  if not p then return nil end
+  local ok, item = pcall(p.proxy.getStackInSlot, slot)
+  if not ok then error("Cannot read slot " .. slot .. ": " .. tostring(item)) end
+  if type(item) ~= "table" or next(item) == nil then return nil end
+  return item
+end
+local function itemName(item)
+  if not item then return "empty" end
+  local ind = type(item.individual) == "table" and item.individual or {}
+  return tostring(item.display_name or item.label or ind.displayName or item.name or "item")
+end
+local function roleOf(id)
+  id = tostring(id or ""):lower()
+  if id:find("beeprincess", 1, true) then return "princess" end
+  if id:find("beedrone", 1, true) then return "drone" end
+  if id:find("beequeen", 1, true) then return "queen" end
+  return nil
+end
+local function refreshItems()
+  local m = selectedME()
+  assert(m, "No ME interface detected")
+  local ok, entries = pcall(m.proxy.getAvailableItems)
+  assert(ok and type(entries)=="table", "getAvailableItems failed: " .. tostring(entries))
+  princesses, drones, labware = {}, {}, nil
+  for _, v in pairs(entries) do
+    if type(v)=="table" and type(v.fingerprint)=="table" then
+      local id = tostring(v.fingerprint.id or "")
+      local qty = tonumber(v.size) or 0
+      local r = roleOf(id)
+      if qty > 0 and (r == "princess" or r == "drone") then
+        v._label = nil
+        if r == "princess" then
+          princesses[#princesses+1] = v
+        else
+          drones[#drones+1] = v
+        end
+      elseif qty > 0 and id:lower():find("labware", 1, true) then
+        if not labware or qty > (tonumber(labware.size) or 0) then labware = v end
+      end
+    end
+  end
+  local function sorting(a,b)
+    local aa,bb=tonumber(a.size) or 0, tonumber(b.size) or 0
+    if aa~=bb then return aa > bb end
+    return tostring(a.fingerprint.nbt_hash or "") < tostring(b.fingerprint.nbt_hash or "")
+  end
+  table.sort(princesses, sorting)
+  table.sort(drones, sorting)
+  pIndex = math.min(math.max(1,pIndex), #princesses)
+  dIndex = math.min(math.max(1,dIndex), #drones)
+  pPage, dPage = 1,1
+  notify("ME updated. Princess types: "..#princesses..", drone types: "..#drones)")
+end
+local function labelOf(v)
+  if not v then return "none" end
+  if v._label then return v._label end
+  local label = "NBT:"..tostring(v.fingerprint.nbt_hash or "none"):sub(1,11)
+  local m = selectedME()
+  if m and type(m.proxy.getItemDetail)=="function" then
+    local ok, item=pcall(m.proxy.getItemDetail, v.fingerprint, false)
+    if ok and type(item)=="table" then
+      label = itemName(item)
+      local ind=item.individual or {}
+      if ind.ident then label = label .. " {" .. tostring(ind.ident) .. "}" end
+    end
+  end
+  v._label = label
+  return label
+end
+local function draw()
+  gpu.setBackground(0x101820)
+  gpu.setForeground(fg)
+  gpu.fill(1,1,W,H," ")
+  buttons = {}
+  write(2,1,"BEE MASTER | GENDUSTRY 1.7.10 | TEST GUI",highlight)
+  local m, t, side = selectedME(), selectedMut(), selectedSide()
+  write(2,2,"ME: "..(m and m.address:sub(1,8) or "NOT FOUND").." ("..meIndex.."/"..#interfaces..")    MUT: "..(t and t.address:sub(1,8) or "NOT FOUND").." ("..mutIndex.."/"..#mutatrons..")")
+  write(2,3,"Export side: "..(side and side.label or "NONE").."  (ME must touch the mutatron)  Labware in ME: "..(labware and tostring(labware.size) or "0"),soft)
+  write(2,4,"Choose bees -> LOAD -> ARM labware -> click mutation in GUI -> TAKE QUEEN",warn)
+  write(2,5,string.rep("-",W-3),soft)
+  write(2,6,"PRINCESSES  ("..#princesses.." variants)",highlight)
+  for k=1,5 do
+    local i=(pPage-1)*5+k
+    local v=princesses[i]
+    if v then
+      write(2,6+k, (i==pIndex and "> " or "  ")..i..". "..sub(labelOf(v), W-22).." x"..tostring(v.size),i==pIndex and highlight or fg)
+    end
+  end
+  button(2,12,"p-prev","< P")
+  button(11,12,"p-next","P >")
+  write(23,12,"page "..pPage.."/"..math.max(1,math.ceil(#princesses/5)),soft)
+  write(2,13,"DRONES ("..#drones.." variants)",highlight)
+  for k=1,5 do
+    local i=(dPage-1)*5+k
+    local v=drones[i]
+    if v then
+      write(2,13+k,(i==dIndex and "> " or "  ")..i..". "..sub(labelOf(v), W-22).." x"..tostring(v.size),i==dIndex and highlight or fg)
+    end
+  end
+  button(2,19,"d-prev","< D")
+  button(11,19,"d-next","D >")
+  write(23,19,"page "..dPage.."/"..math.max(1,math.ceil(#drones/5)),soft)
+  if t then
+    local a,b,out,lab=itemAt(1),itemAt(2),itemAt(3),itemAt(4)
+    write(2,20,"Mutatron: P="..sub(itemName(a),15).." D="..sub(itemName(b),15).." OUT="..sub(itemName(out),16),fg)
+    local opt={}
+    for i=5,10 do
+      local v=itemAt(i)
+      if v then opt[#opt+1]=sub(itemName(v),13) end
+    end
+    write(2,21,"Options: "..(#opt>0 and table.concat(opt,", ") or "none").." | Labware="..(lab and "YES" or "NO"),warn)
+  else
+    write(2,20,"Mutatron not detected",errCol)
+  end
+  button(2,22,"load-p","LOAD P")
+  button(13,22,"load-d","LOAD D")
+  button(24,22,"load-both","LOAD BOTH")
+  button(39,22,"start","ARM")
+  button(49,22,"take","TAKE QUEEN")
+  button(2,23,"side","SIDE >")
+  button(13,23,"refresh","REFRESH")
+  button(26,23,"me","ME >")
+  button(36,23,"mut","MUT >")
+  button(48,23,"quit","EXIT")
+  line(24,"STATUS: "..status,statusColor)
+  write(2,25,"Touch buttons. Double-click to confirm. ARM inserts labware only.",soft)
+end
+local function requireSetup()
+  assert(selectedME() and selectedMut(), "ME or mutatron missing")
+  assert(selectedSide(), "No export side. ME interface must touch an inventory")
+end
+local function loadOne(which)
+  requireSetup()
+  local slot = which=="princess" and 1 or 2
+  local list = which=="princess" and princesses or drones
+  local idx = which=="princess" and pIndex or dIndex
+  local v = list[idx]
+  assert(v, "No selected "..which)
+  assert(not itemAt(4), "Remove labware first (slot 4)")
+  assert(not itemAt(3), "Output slot 3 is occupied")
+  assert(not itemAt(slot), "Target slot "..slot.." is occupied")
+  local m, side=selectedME(),selectedSide()
+  local ok, result = pcall(m.proxy.exportItem, v.fingerprint, side.arg, 1, slot)
+  assert(ok,"exportItem error: "..tostring(result))
+  local current = itemAt(slot)
+  assert(current and roleOf(current.name or current.id)==which,
+    "Not found in mutatron slot "..slot..". Check SIDE and ME adjacency!")
+  return itemName(current).." -> slot "..slot
+end
+local function actionLoad(kind)
+  if kind=="p" then
+    notify("Loaded "..loadOne("princess"),highlight)
+  elseif kind=="d" then
+    notify("Loaded "..loadOne("drone"),highlight)
+  else
+    requireSetup()
+    assert(not itemAt(1) and not itemAt(2) and not itemAt(3) and not itemAt(4),
+      "Mutatron slots 1-4 must be empty")
+    local a=loadOne("princess")
+    local ok,b=pcall(loadOne,"drone")
+    if not ok then
+      notify("P loaded; D failed: "..tostring(b)..". P stays in machine!",errCol)
+    else
+      notify("Loaded: "..a.."; "..b..". Choose mutation in GUI.",highlight)
+    end
+  end
+end
+local function actionStart()
+  requireSetup()
+  assert(itemAt(1) and itemAt(2), "Load princess and drone first")
+  assert(not itemAt(3), "Output slot occupied")
+  assert(not itemAt(4), "Labware already inserted")
+  local opts=0
+  for i=5,10 do if itemAt(i) then opts=opts+1 end end
+  assert(opts>0, "No mutations offered for this pair")
+  assert(labware, "No Genetics Labware in ME")
+  local m,side=selectedME(),selectedSide()
+  local ok,res=pcall(m.proxy.exportItem,labware.fingerprint,side.arg,1,4)
+  assert(ok, "Labware export failed: "..tostring(res))
+  local x=itemAt(4)
+  notify("ARM: Labware "..(x and "inserted" or "not visible / used")..". NOW click mutation in mutatron GUI.",highlight)
+end
+local function queenCount(species)
+  local m=selectedME()
+  if not m or type(m.proxy.getItemsInNetwork)~="function" then return nil end
+  local ok,items=pcall(m.proxy.getItemsInNetwork)
+  if not ok or type(items)~="table" then return nil end
+  local count=0
+  for _,item in pairs(items) do
+    if type(item)=="table" and roleOf(item.name or item.id)=="queen" then
+      local individual = item.individual or {}
+      if species and species==individual.ident then count=count+(tonumber(item.size or item.qty) or 1) end
+    end
+  end
+  return count
+end
+local function actionTake()
+  requireSetup()
+  local q=itemAt(3)
+  assert(q and roleOf(q.name or q.id)=="queen", "Output slot 3 has no queen")
+  local side=selectedSide()
+  local target=opposite[side.label]
+  assert(target,"Unknown reverse direction")
+  local sp=(q.individual or {}).ident
+  local before=queenCount(sp)
+  local mut=selectedMut()
+  local ok,res=pcall(mut.proxy.pushItem,target,3,1)
+  if not ok then ok,res=pcall(mut.proxy.pushItem,target:lower(),3,1) end
+  assert(ok,"pushItem failed: "..tostring(res)..". Try ME import bus + chest")
+  local left=itemAt(3)
+  assert(not left, "Queen is still in slot 3 (moved "..tostring(res)..")")
+  local after=queenCount(sp)
+  if before and after and after>before then
+    notify("Queen returned to ME! Count "..before.." -> "..after,highlight)
+  else
+    notify("Queen left mutatron, but ME count not confirmed. Check ME interface!",warn)
+  end
+end
+local function runAction(key)
+  if key=="quit" then quit=true return end
+  if key=="side" then
+    local m=selectedME()
+    if m and #m.sides>0 then sideIndex=(sideIndex % #m.sides)+1 end
+    notify("Direction switched. Make sure this neighbor is the mutatron.")
+  elseif key=="me" then
+    if #interfaces>0 then meIndex=(meIndex % #interfaces)+1 end
+    sideIndex=1
+    pIndex,dIndex=1,1
+    refreshItems()
+  elseif key=="mut" then
+    if #mutatrons>0 then mutIndex=(mutIndex % #mutatrons)+1 end
+    notify("Mutatron selected; ensure it touches selected ME interface")
+  elseif key=="refresh" then
+    discover()
+    refreshItems()
+  elseif key=="p-prev" then pPage=math.max(1,pPage-1);pending=nil
+  elseif key=="p-next" then pPage=math.min(math.max(1,math.ceil(#princesses/5)),pPage+1);pending=nil
+  elseif key=="d-prev" then dPage=math.max(1,dPage-1);pending=nil
+  elseif key=="d-next" then dPage=math.min(math.max(1,math.ceil(#drones/5)),dPage+1);pending=nil
+  elseif key=="load-p" or key=="load-d" or key=="load-both" or key=="start" or key=="take" then
+    if pending~=key then
+      pending=key
+      if key=="start" then
+        status="CONFIRM ARM: load labware, THEN click mutation in machine GUI. Click ARM again."
+      elseif key=="take" then
+        status="CONFIRM TAKE: transfer output queen back toward ME. Click TAKE QUEEN again."
+      else
+        status="CONFIRM LOAD: will move real bees from ME. Click same button again."
+      end
+      statusColor=warn
+      return
+    end
+    pending=nil
+    local ok,err=pcall(function()
+      if key=="start" then actionStart()
+      elseif key=="take" then actionTake()
+      elseif key=="load-p" then actionLoad("p")
+      elseif key=="load-d" then actionLoad("d")
+      else actionLoad("both") end
+    end)
+    if not ok then notify("ERROR: "..tostring(err),errCol) end
+  end
+end
+local function main()
+  discover()
+  if #interfaces>0 then
+    local ok,why=pcall(refreshItems)
+    if not ok then notify("ME scan failed: "..tostring(why),errCol) end
+  else
+    notify("No ME interface component found",errCol)
+  end
+  while not quit do
+    local ok,why=pcall(draw)
+    if not ok then notify("Display error: "..tostring(why),errCol) end
+    local name,_,x,y=event.pull()
+    if name=="touch" then
+      local matched=false
+      if y>=7 and y<=11 and x>=2 then
+        local i=(pPage-1)*5+(y-6)
+        if princesses[i] then pIndex=i;pending=nil;matched=true end
+      elseif y>=14 and y<=18 and x>=2 then
+        local i=(dPage-1)*5+(y-13)
+        if drones[i] then dIndex=i;pending=nil;matched=true end
+      end
+      if not matched then
+        local key=nil
+        for _,b in ipairs(buttons) do
+          if y==b.y and x>=b.x and x<b.x+b.len then key=b.key;break end
+        end
+        if key then
+          local success,why=pcall(runAction,key)
+          if not success then notify("ERROR: "..tostring(why),errCol) end
+        else
+          pending=nil
+        end
+      end
+    elseif name=="key_down" then
+      local char=x
+      if type(char)=="number" and char>=32 and char<=126 then
+        local key=string.char(char):lower()
+        if key=="q" then quit=true
+        elseif key=="r" then
+          local ok,why=pcall(runAction,"refresh")
+          if not ok then notify("ERROR: "..tostring(why),errCol) end
+        end
+      end
+    end
+  end
+end
+local ok,err=pcall(main)
+gpu.setForeground(oldFG)
+gpu.setBackground(oldBG)
+gpu.setResolution(oldW,oldH)
+gpu.fill(1,1,oldW,oldH," ")
+if not ok then io.stderr:write("Bee test error: "..tostring(err).."\n") end
+print("Bee test closed. No automatic cleanup of bee items.")
