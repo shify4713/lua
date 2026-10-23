@@ -1,4 +1,4 @@
--- BeeMaster Factory 11.0 / Minecraft 1.7.10 / OpenOS 1.6.x / Lua 5.2
+-- BeeMaster Factory 12.0 / Minecraft 1.7.10 / OpenOS 1.6.x / Lua 5.2
 -- AE2 + OpenPeripheralIntegration + Forestry + Gendustry
 -- One ordinary Mutatron, optional Imprinter, 1+ Industrial Apiaries.
 -- Single adapter may expose multiple adjacent peripherals. Routes are explicit.
@@ -40,9 +40,9 @@ local COLOR = {bg=0x0E1722, fg=0xE9EDF0, blue=0x54DEDC,
   green=0x70E39B, yellow=0xFFE08C, red=0xFF7583, gray=0x99A8B9}
 local dirs = {'UP','DOWN','NORTH','SOUTH','WEST','EAST'}
 local opposite = {UP='DOWN',DOWN='UP',NORTH='SOUTH',SOUTH='NORTH',WEST='EAST',EAST='WEST'}
-local DATA='/home/beemaster_v11.dat'
-local OLD_DATA='/home/beemaster_v10.dat'
-local LOG='/home/beemaster_v11.log'
+local DATA='/home/beemaster_v12.dat'
+local OLD_DATA='/home/beemaster_v11.dat'
+local LOG='/home/beemaster_v12.log'
 local originalW,originalH=gpu.getResolution()
 local maxW,maxH=gpu.maxResolution()
 local width,height=maxW,maxH
@@ -118,6 +118,7 @@ local function load()
   local f=io.open(DATA,'r')
   local fromOld=false
   if not f then f=io.open(OLD_DATA,'r'); fromOld=(f~=nil) end
+  if not f then f=io.open('/home/beemaster_v10.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v9.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v8.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v7.dat','r'); fromOld=(f~=nil) end
@@ -426,15 +427,29 @@ extraGroup([[
 ]],'NORMAL','NORMAL')
 -- Forestry base species fallback if the individual's genome is not analyzed.
 -- When analyzed, the real species climate from Forestry always wins.
-local FORESTRY_CLIMATES={
-  modest={'HOT','ARID'},frugal={'HOT','ARID'},austere={'HOT','ARID'},
-  tropical={'WARM','DAMP'},exotic={'WARM','DAMP'},edenic={'WARM','DAMP'},
-  sinister={'HELLISH','ARID'},fiendish={'HELLISH','ARID'},demonic={'HELLISH','ARID'},
-  wintry={'ICY','NORMAL'},icy={'ICY','NORMAL'},glacial={'ICY','NORMAL'},
-  frigid={'ICY','NORMAL'},
-  forest={'NORMAL','NORMAL'},meadows={'NORMAL','NORMAL'},common={'NORMAL','NORMAL'},
-  cultivated={'NORMAL','NORMAL'},rocky={'NORMAL','NORMAL'}
-}
+-- ForestryMC/ForestryMC, branch mc-1.7.10, BeeDefinition.java.
+-- All 44 native species, no guesses based on translated names.
+local FORESTRY_CLIMATES={}
+function forestryGroup(words,t,h)
+  for name in words:gmatch('%S+') do FORESTRY_CLIMATES[name]={t,h} end
+end
+forestryGroup([[
+  forest meadows common cultivated noble majestic imperial diligent unweary
+  industrious steadfast valiant heroic vindictive vengeful avenging leporine
+  tricky rural farmerly agrarian monastic secluded hermitic
+]],'NORMAL','NORMAL')
+forestryGroup('sinister fiendish demonic','HELLISH','ARID')
+forestryGroup('modest frugal austere','HOT','ARID')
+forestryGroup('tropical exotic edenic','WARM','DAMP')
+forestryGroup('ended spectral phantasmal','COLD','NORMAL')
+forestryGroup('wintry icy glacial merry tipsy','ICY','NORMAL')
+forestryGroup('marshy miry boggy','NORMAL','DAMP')
+-- Rocky is from Extra Bees in this pack; accept the legacy Forestry alias.
+FORESTRY_CLIMATES.rocky={'NORMAL','NORMAL'}
+-- A local plains apiary without emulators is treated as NORMAL/NORMAL.
+-- If the farm is built elsewhere, set these two values to the actual biome.
+CFG.baseApiaryTemp='NORMAL'
+CFG.baseApiaryHumidity='NORMAL'
 
 function BIOME.allUpgrades(api)
   local ret,emulations={},{}
@@ -526,40 +541,112 @@ function BIOME.classify(t,h)
 end
 
 function BIOME.needed(task)
-  -- Check the bee that will actually live in the apiary, not a hypothetical
-  -- offspring. On stone-princess crosses the worker is STONE, not the drone.
+  -- Stone Princess + target drone: the stored mother is Stone.
+  -- The resulting queen's ACTUAL expressed species can still depend on genes.
   return (task.kind=='stone' and task.source) or task.uid
 end
+
+function phenotypeClimate(task)
+  local worker=BIOME.needed(task)
+  local t,h,source=BIOME.climate(worker)
+  local bee=(catalog[worker] or {}).name or worker
+  return t,h,source,bee
+end
+
+function actualClimate(api)
+  -- Industrial apiary biome emulation IDs (Gendustry 1.7.10 Upgrades.cfg).
+  if not api.emulations then return nil,nil,'Улучшения не прочитаны' end
+  local id
+  for emu in pairs(api.emulations) do
+    if id then return nil,nil,'Несколько эмуляций: условия неоднозначны' end
+    id=emu
+  end
+  if id=='hell' then return 'HELLISH','ARID',id end
+  if id=='desert' then return 'HOT','ARID',id end
+  if id=='jungle' then return 'WARM','DAMP',id end
+  if id=='winter' then return 'COLD','NORMAL',id end
+  if id=='ocean' then return 'NORMAL','NORMAL',id end
+  if id=='plains' then return 'NORMAL','NORMAL',id end
+  return CFG.baseApiaryTemp,CFG.baseApiaryHumidity,'base'
+end
+
+function readTolerance(task)
+  local worker=BIOME.needed(task)
+  local e=task.queen or task.p
+  local ind=e and e.detail and e.detail.individual
+  if not ind or ind.ident~=worker then return nil,nil end
+  local active=ind.active
+  if type(active)~='table' then return nil,nil end
+  return active.temperatureTolerance,active.humidityTolerance
+end
+
+function tolRange(value)
+  local s=norm(value):upper():gsub('[ -]','_')
+  if s=='' or s=='NONE' or s=='NO_TOLERANCE' then return 0,0 end
+  local n=tonumber(s:match('(%d+)')) or 0
+  if s:find('BOTH',1,true) then return n,n end
+  if s:find('UP',1,true) then return 0,n end
+  if s:find('DOWN',1,true) then return n,0 end
+  return 0,0
+end
+
 function BIOME.ok(task,api)
   if not CFG.strictSpecialBiomes then return true end
-  local worker=BIOME.needed(task)
-  local temp,hum,source=BIOME.climate(worker)
-  local desired=BIOME.classify(temp,hum)
-  local beeName=(catalog[worker] or {}).name or worker
-  if api.emulationCount and api.emulationCount>1 then
-    return false,'Пасека с несколькими эмуляциями: нельзя установить реальный биом'
+  local temp,hum,source,bee=phenotypeClimate(task)
+  if not temp or not hum then
+    return false,'НЕИЗВЕСТЕН КЛИМАТ: '..bee..' ('..tostring(source)..')'
   end
-  if desired=='unknown' then
-    return false,'НЕИЗВЕСТЕН КЛИМАТ: '..beeName..' ('..tostring(source)..')'
+  local atm,ahm,id=actualClimate(api)
+  if not atm then return false,'Нельзя определить климат пасеки: '..tostring(id) end
+  local target=BIOME.classify(temp,hum)
+  if target=='unknown' then return false,'Неизвестная комбинация '..temp..'/'..hum..' для '..bee end
+
+  -- Never waste biome emulators on normal species; queue them for normal apiaries.
+  if target=='normal' then
+    if id=='base' or id=='plains' then return true end
+    if id=='ocean' then return true end  -- reserve ocean only if no simpler housing
+    return false,'ОЧЕРЕДЬ ОБЫЧНОЙ ПАСЕКИ: '..bee..' (не '..(BIOME.title[id] or id)..')'
   end
-  -- A no-emulator apiary is presumed to be in a normal overworld biome.
-  -- Do not put warm bees in winter, even if a lucky mutation has tolerance.
-  if desired=='normal' then
-    if not api.emulations then return false,'У пасеки не прочитаны улучшения' end
-    for emu,_ in pairs(api.emulations) do
-      if emu~='plains' and emu~='ocean' then
-        return false,'Для '..beeName..' нужна обычная пасека, не '..(BIOME.title[emu] or emu)
+
+  -- Explicit matching covers all specialized colonies from Forestry/Extra Bees.
+  local needed=(target=='damp') and 'ВЛАЖНАЯ ПАСЕКА' or (BIOME.title[target] or target)
+  if temp==atm and hum==ahm then return true end
+  local specialMatch=(target==id)
+  if temp=='ICY' and atm=='COLD' and target=='winter' then
+    -- Taiga emulator is COLD, not ICY. With active +1 or BOTH tolerance
+    -- we have real positive evidence; otherwise do not claim it's definitely suitable.
+    local tt=readTolerance(task)
+    local down,up=tolRange(tt)
+    if up>=1 then return true end
+    -- Native frozen Forestry species have an UP_1 allele in the FROZEN branch.
+    -- This fallback is appropriate only while there is no readable analyzed genome.
+    if tt==nil then
+      local native=norm(BIOME.needed(task)):match('^forestry%.species%.?([%w_]+)$')
+      if native and ({wintry=true,icy=true,glacial=true})[native] then return true end
+      if native and ({merry=true,tipsy=true})[native] then return true end
+    end
+    return false,'ЗИМА НАЙДЕНА, НО ПЧЕЛЕ '..bee..' нужен ICY, а Тайга COLD: требуется устойчивость +1'
+  end
+  if target=='damp' then
+    -- Marshy/Miry/Boggy inherit BOTH_1 temperature tolerance from Forestry's
+    -- BOGGY branch, so Jungle (WARM/DAMP) can be a valid alternative.
+    if atm=='WARM' and ahm=='DAMP' then
+      local tt=readTolerance(task)
+      local down,up=tolRange(tt)
+      if up>=1 then return true end
+      if tt==nil then
+        local native=norm(BIOME.needed(task)):match('^forestry%.species%.?([%w_]+)$')
+        if native and ({marshy=true,miry=true,boggy=true})[native] then return true end
       end
     end
-    return true
+    -- Other Normal/Damp species have to be tested against their actual
+    -- temperature tolerance; otherwise a humidified normal apiary is required.
+    return false,'Для '..bee..' нужен NORMAL/DAMP: влажная пасека или Джунгли с +1 к теплу'
   end
-  if desired=='damp' then
-    -- Cannot verify a swamp / humidifier by merely reading an ME interface.
-    -- Reject special emulators rather than assume they supply DAMP humidity.
-    return false,'НУЖНА ВЛАЖНОСТЬ DAMP для '..beeName..' (нет подтверждённой влажной пасеки)'
+  if specialMatch then
+    return false,'Эмуляция '..needed..' есть, но климат не совпадает: '..temp..'/'..hum..' vs '..atm..'/'..ahm
   end
-  if api.emulations and api.emulations[desired] then return true end
-  return false,'НУЖНА ЭМУЛЯЦИЯ '..(BIOME.title[desired] or desired)..' для '..beeName..' ['..temp..'/'..hum..']'
+  return false,'Для '..bee..' требуется '..needed..' ['..temp..'/'..hum..']'
 end
 local function hasVariant(kind)
   local list=devices[kind] or {}
@@ -1063,7 +1150,10 @@ local function chooseApiaryTask()
       local needs=recipeNeeds(uid)
       -- Queen straight from Mutatron: put in an apiary to get renewable princesses and drones.
       if q and sp.p<2 and not (job and job.result==uid and stage~='post_queen' and stage~='idle') then
-        choices[#choices+1]={kind='queen',uid=uid,queen=q,priority=500+(needs and 250 or 0)}
+        -- Two Imperial queens + 38 drones do NOT mean drone shortage.
+        -- Grow extra princesses only when needed for a missing lineage.
+        choices[#choices+1]={kind='queen',uid=uid,queen=q,
+          priority=(needs and 540 or 65)+(sp.p==0 and 25 or 0)}
       end
       -- Species can be sustained without Stone princesses as soon as a princess and drone exist.
       if p and d and sp.d<=CFG.minDroneReserve then
@@ -1105,25 +1195,38 @@ function BIOME.choose(task,forced)
     if not routes['api-'..forced.addr] then return nil,nil,'Нет МЭ для выбранной пасеки' end
     local ok,why=BIOME.ok(task,forced)
     if not ok then return nil,nil,why end
+    if busyApiary(forced) then return nil,nil,'Пасека с нужным климатом уже занята' end
     return forced,routes['api-'..forced.addr]
   end
-  local free=0
-  for _,candidate in ipairs(devices.api) do
-    if not busyApiary(candidate) and routes['api-'..candidate.addr] then
-      free=free+1
-      local ok=BIOME.ok(task,candidate)
-      if ok then return candidate,routes['api-'..candidate.addr] end
+  -- 1: inspect all possible apiaries, NOT just the first free one.
+  -- 2: distinguish occupied suitable housing from missing climate.
+  -- 3: preserve scarce specialized housings for special species.
+  local best,bestScore,matched,busyMatch,anyFree,anyMapped=nil,-9999,false,false,false,false
+  local detail
+  for _,api in ipairs(devices.api) do
+    if routes['api-'..api.addr] then
+      local yes,why=BIOME.ok(task,api)
+      if yes then
+        matched=true
+        if busyApiary(api) then busyMatch=true
+        else
+          local emus=api.emulations or {}
+          local score=0
+          if emus.plains then score=3
+          elseif not next(emus) then score=5
+          elseif emus.ocean then score=1 end
+          if score>bestScore then best,bestScore=api,score end
+        end
+      elseif not detail then detail=why end
+      if not busyApiary(api) then anyFree=true end
     end
   end
-  if free>0 then
-    for _,candidate in ipairs(devices.api) do
-      if routes['api-'..candidate.addr] and not busyApiary(candidate) then
-        local ok,why=BIOME.ok(task,candidate)
-        if not ok then return nil,nil,why end
-      end
-    end
+  if best then return best,routes['api-'..best.addr] end
+  if matched and busyMatch then
+    return nil,nil,'ПОДХОДЯЩАЯ ПАСЕКА ЕСТЬ, НО ЗАНЯТА — ожидание очереди'
   end
-  return nil,nil,'Нет свободной пасеки с назначенным МЭ'
+  if not anyFree then return nil,nil,'Все пасеки заняты — ожидание очереди' end
+  return nil,nil,detail or 'Нет пасеки нужного климата'
 end
 local function liveApiary(addr)
   for _,api in ipairs(devices.api) do if api.addr==addr then return api end end
@@ -1520,18 +1623,17 @@ local function scheduleApiaries()
       -- Check biome BEFORE touching any bee, including before Imprinter.
       local candidate,route,blocked=BIOME.choose(task)
       if not candidate then
-        if blocked and (blocked:find('ЭМУЛЯЦ',1,true) or blocked:find('КЛИМАТ',1,true) or blocked:find('ВЛАЖНОСТЬ',1,true) or blocked:find('обычная пасека',1,true)) then
+        if blocked then
           CFG.biomeStatus=blocked
-          if CFG.lastBiomeAlert~=blocked then
-            log('Biome: '..blocked)
-            CFG.lastBiomeAlert=blocked
+          CFG.biomeWarned=CFG.biomeWarned or {}
+          local last=CFG.biomeWarned[task.uid] or -99999
+          if t-last>=300 and not blocked:find('занят',1,true) then
+            log('Биом/очередь: '..blocked)
+            CFG.biomeWarned[task.uid]=t
           end
-          -- Another species might run in a normal apiary; try next task.
-        else
-          apiaryReason=blocked or 'Нет свободной пасеки с МЭ'
-          nextApiaryPlanAt=t+CFG.perApiaryCooldown
-          break
         end
+        -- Don't break the whole scheduler: another species may fit another apiary.
+        -- Busy winter housing is not an absent emulator.
       else
         if imprintEnabled() then
           if not routes.imp then
@@ -2150,7 +2252,7 @@ local function startup()
   if stage~='idle' or next(apiJobs) or apiPrep then
     notice('Восстановлены незавершённые операции. Проверь машины до пуска.',true)
   end
-  log('BeeMaster 11.0 started')
+  log('BeeMaster 12.0 started')
 end
 startup()
 -- First show graphics, then query a large ME network.
