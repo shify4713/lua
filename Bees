@@ -1,3 +1,9 @@
+-- BeeMaster Factory 9.0 / Minecraft 1.7.10 / OpenOS 1.6.x / Lua 5.2
+-- AE2 + OpenPeripheralIntegration + Forestry + Gendustry
+-- One ordinary Mutatron, optional Imprinter, 1+ Industrial Apiaries.
+-- Single adapter may expose multiple adjacent peripherals. Routes are explicit.
+-- Menu browsing never pauses the breeding engine; GUI uses row-level diff redraw.
+
 local component = require('component')
 local event = require('event')
 local computer = require('computer')
@@ -11,6 +17,10 @@ local CFG = {
   targetLabware = 64, minPrincessReserve = 1,
   minDroneReserve = 4, requireKnownMutation = true,
   useImprinter = true, useApiary = true,
+  -- Try pushing an imprinted bee UP into the ME Interface above the Imprinter.
+  -- If that inventory rejects the bee, an AE import bus or pipe can still do it.
+  autoPushImprinterOutput = true,
+  imprintOutputSide = 'UP',
   -- Set true ONLY if the filled template in ME is verified to have your wanted genes.
   trustSingleFilledTemplate = false,
   -- Protect the last available princess/drone of a species.
@@ -26,9 +36,9 @@ local COLOR = {bg=0x0E1722, fg=0xE9EDF0, blue=0x54DEDC,
   green=0x70E39B, yellow=0xFFE08C, red=0xFF7583, gray=0x99A8B9}
 local dirs = {'UP','DOWN','NORTH','SOUTH','WEST','EAST'}
 local opposite = {UP='DOWN',DOWN='UP',NORTH='SOUTH',SOUTH='NORTH',WEST='EAST',EAST='WEST'}
-local DATA='/home/beemaster_v7.dat'
-local OLD_DATA='/home/beemaster_v6.dat'
-local LOG='/home/beemaster_v7.log'
+local DATA='/home/beemaster_v9.dat'
+local OLD_DATA='/home/beemaster_v8.dat'
+local LOG='/home/beemaster_v9.log'
 local originalW,originalH=gpu.getResolution()
 local maxW,maxH=gpu.maxResolution()
 local width,height=maxW,maxH
@@ -57,6 +67,7 @@ local nextPlanAt=0
 local template=nil
 local supplyAt=0
 local supplyStatus={}
+local imprintOutputStatus='Ожидание результата'
 local apiaryReason='Проверка пасек не выполнялась'
 local lastPhysicalRoute={}
 local deviceActionNote='Выбери устройство, затем роль и свой МЭ-интерфейс над ним.'
@@ -64,6 +75,7 @@ local recentlyScanned=''
 local page='home'
 local recent={}
 local apiJobs={}
+local apiPrep=nil -- Single queued, in-progress imprint sequence before an apiary
 local apiStats={completed=0,failed=0,drones=0,princesses=0}
 local created={}
 local lastApiResult=0
@@ -92,7 +104,7 @@ local function save()
     f:write(serialization.serialize({failures=failures,known=known,created=created,stage=stage,job=job,
       trustSingleFilledTemplate=CFG.trustSingleFilledTemplate,
       allowLastPrincess=CFG.allowLastPrincess,
-      allowLastDrone=CFG.allowLastDrone,apiStats=apiStats,bindings=bindings,apiJobs=apiJobs}))
+      allowLastDrone=CFG.allowLastDrone,apiStats=apiStats,bindings=bindings,apiJobs=apiJobs,apiPrep=apiPrep}))
     f:close()
   end
 end
@@ -100,6 +112,7 @@ local function load()
   local f=io.open(DATA,'r')
   local fromOld=false
   if not f then f=io.open(OLD_DATA,'r'); fromOld=(f~=nil) end
+  if not f then f=io.open('/home/beemaster_v7.dat','r'); fromOld=(f~=nil) end
   if not f then return end
   local s=f:read('*a');f:close()
   local ok,x=pcall(serialization.unserialize,s)
@@ -115,8 +128,9 @@ local function load()
     apiStats=x.apiStats or apiStats
     bindings=x.bindings or {}
     apiJobs=x.apiJobs or {}
+    apiPrep=x.apiPrep
     if fromOld then
-      log('Imported v6 settings and active task journal; start remains paused for inspection')
+      log('Imported v8 settings and active jobs; start remains paused for inspection')
     end
   end
 end
@@ -419,7 +433,7 @@ local function beeSpeciesFor(fp,me)
   return type(detail)=='table' and type(detail.individual)=='table'
      and detail.individual.ident or nil
 end
-local function liveFingerprint(route,request,n)
+local function liveFingerprint(route,request,n,strict)
   if not route or not route.me then return nil,'Не выбран МЭ-интерфейс' end
   local fp=request and request.fingerprint
   if type(fp)~='table' or not fp.id then return nil,'Некорректный отпечаток предмета' end
@@ -435,6 +449,9 @@ local function liveFingerprint(route,request,n)
       if count>=required then return item end
     end
   end
+  -- Strict when sending an ALREADY imprinted bee: never silently substitute an
+  -- untreated individual of the same species.
+  if strict then return nil,'Обработанная в импринтере пчела больше не найдена по точному NBT' end
   -- This fallback applies only to bees, not genetic templates/samples.
   local wantedKind=role({id=fp.id})
   local wantedSpecies=beeSpeciesFor(fp)
@@ -489,7 +506,7 @@ local function debitInventory(fp,n)
     end
   end
 end
-local function exactMeExport(route,entry,n,slot)
+local function exactMeExport(route,entry,n,slot,strict)
   if not route or not entry or not entry.fingerprint then
     return false,'Не указан МЭ-интерфейс для этой машины'
   end
@@ -497,7 +514,7 @@ local function exactMeExport(route,entry,n,slot)
   if ok and not yes then
     return false,'У выбранного МЭ-интерфейса нет инвентаря СНИЗУ'
   end
-  local current,why=liveFingerprint(route,entry,n)
+  local current,why=liveFingerprint(route,entry,n,strict)
   if not current then
     exportFailureCount=exportFailureCount+1
     stockWarning=tostring(why)
@@ -738,15 +755,10 @@ local function nextAfterQueen()
     failures[job.recipe]=(failures[job.recipe] or 0)+1
     log('OTHER mutation '..job.resultTitle..' (attempt '..failures[job.recipe]..')')
   end
-  if CFG.useImprinter and CFG.trustSingleFilledTemplate and (template or
-      (#devices.imp==1 and stack(devices.imp[1].p,1))) and routes.imp then
-    job.step='imprint_start';stage='imprint';mode='Прививка генов: '..job.resultTitle
-  else
-    if CFG.useImprinter and #devices.imp>0 and not CFG.trustSingleFilledTemplate then
-      log('Imprinter skipped: template not manually approved')
-    end
-    job.step='post_queen';stage='post_queen'
-  end
+  -- All individuals, including queens from this Mutatron, are imprinted
+  -- by the APIARY admission pipeline. Do not imprint only this queen here.
+  -- This ensures ME princesses and drones pass through the SAME rule.
+  job.step='post_queen';stage='post_queen'
   save()
 end
 local function observeNewQueen()
@@ -869,6 +881,7 @@ local function inProgressTarget(uid,kind)
   for _,w in pairs(apiJobs) do
     if w.uid==uid and (not kind or w.kind==kind) then return true end
   end
+  if apiPrep and apiPrep.uid==uid and (not kind or apiPrep.kind==kind) then return true end
   return false
 end
 local function workersCount()
@@ -934,6 +947,7 @@ local function chooseApiaryTask()
   return choices
 end
 local function busyApiary(api)
+  if apiPrep and apiPrep.apiAddr==api.addr then return true end
   for _,w in pairs(apiJobs) do if w.apiAddr==api.addr then return true end end
   if stack(api.p,1) or stack(api.p,2) then return true end
   for n=7,15 do if stack(api.p,n) then return true end end
@@ -949,15 +963,19 @@ local function findApiaryRoute(api)
   -- the target apiary after an actual safe breeding operation.
   return nil
 end
-local function loadToApiary(task)
+local function loadToApiary(task,forcedApi,strict)
   if not CFG.useApiary then return false,'Пасеки отключены' end
   local first=task.queen or task.p
   if not first then return false,'Не найдена принцесса или матка' end
   local api,route
-  for _,candidate in ipairs(devices.api) do
-    if not busyApiary(candidate) then
-      local r=routes['api-'..candidate.addr]
-      if r then api,route=candidate,r;break end
+  if forcedApi then
+    api=forcedApi;route=routes['api-'..api.addr]
+  else
+    for _,candidate in ipairs(devices.api) do
+      if not busyApiary(candidate) then
+        local r=routes['api-'..candidate.addr]
+        if r then api,route=candidate,r;break end
+      end
     end
   end
   if not api then
@@ -965,7 +983,7 @@ local function loadToApiary(task)
     return false,apiaryReason
   end
   -- Verify the pair exists in THIS interface, not just in another ME view.
-  local firstLive,missing=liveFingerprint(route,{fingerprint=first.fp},1)
+  local firstLive,missing=liveFingerprint(route,{fingerprint=first.fp},1,strict)
   if not firstLive then
     apiaryReason='В МЭ над пасекой не найден родитель: '..tostring(missing)
     stockWarning=apiaryReason
@@ -973,14 +991,14 @@ local function loadToApiary(task)
   end
   local droneLive=nil
   if task.d then
-    droneLive,missing=liveFingerprint(route,{fingerprint=task.d.fp},1)
+    droneLive,missing=liveFingerprint(route,{fingerprint=task.d.fp},1,strict)
     if not droneLive then
       apiaryReason='Не найден трутень в МЭ над пасекой: '..tostring(missing)
       stockWarning=apiaryReason
       return false,apiaryReason
     end
   end
-  local ok,why=exactMeExport(route,firstLive,1,1)
+  local ok,why=exactMeExport(route,firstLive,1,1,strict)
   if not ok then
     apiaryReason='Пасека '..api.addr:sub(1,8)..': '..tostring(why)
     return false,apiaryReason
@@ -1000,7 +1018,7 @@ local function loadToApiary(task)
   apiJobs[api.addr]=w
   save()
   if task.d then
-    local sent,msg=exactMeExport(route,droneLive,1,2)
+    local sent,msg=exactMeExport(route,droneLive,1,2,strict)
     if not sent then
       notice('Пасека получила принцессу, но не получила трутня: '..tostring(msg),true)
       return false,msg
@@ -1019,6 +1037,227 @@ local function loadToApiary(task)
   save()
   return true
 end
+-- Every bee destined for an apiary travels through the optional Imprinter.
+-- One queued apiary task is prepared at a time, independent of running apiaries.
+-- No bee can bypass a configured Imprinter with unapproved/missing genes.
+local function imprintEnabled()
+  return CFG.useImprinter and #devices.imp==1
+end
+local function apiaryTaskSummary(prep)
+  return prep and ((catalog[prep.uid] or {}).name or prep.uid) or '?'
+end
+local function queueApiaryImprint(task,api)
+  local first=task.queen or task.p
+  if not first then return false,'В задаче нет исходной матки или принцессы' end
+  apiPrep={apiAddr=api.addr,uid=task.uid,kind=task.kind,source=task.source,
+    key=task.key,firstFp=first.fp,secondFp=task.d and task.d.fp or nil,
+    firstKind=role({id=first.fp.id}),secondKind=task.d and 'D' or nil,
+    phase='imprint_start',part=1,started=computer.uptime()}
+  apiaryReason='Импринтер: подготовка родителей для '..apiaryTaskSummary(apiPrep)
+  log('Queued imprint before apiary: '..apiaryTaskSummary(apiPrep))
+  save()
+  return true
+end
+local function stockSnapshotFor(route,kind,species)
+  local items=getList(route.me.p)
+  local counts={}
+  for _,v in pairs(items) do
+    if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0
+       and role({id=v.fingerprint.id})==kind
+       and beeSpeciesFor(v.fingerprint,route.me)==species then
+      counts[fingerprintKey(v.fingerprint)]=qty(v)
+    end
+  end
+  return counts
+end
+local function findImprintedReturn(prep,route)
+  local ref=prep.currentFp
+  local expected=prep.currentSpecies
+  local wanted=prep.currentKind
+  local before=prep.baseline or {}
+  local ok,items=pcall(getList,route.me.p)
+  if not ok then return nil,'МЭ импринтера недоступна: '..tostring(items) end
+  local candidates={}
+  local exact=nil
+  for _,v in pairs(items) do
+    if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0
+       and role({id=v.fingerprint.id})==wanted then
+      local k=fingerprintKey(v.fingerprint)
+      if k==fingerprintKey(ref) then exact=v end
+      if qty(v)>(before[k] or 0) then
+        -- An imprint must NOT turn the bee into another species.
+        local sp=beeSpeciesFor(v.fingerprint,route.me)
+        if sp==expected then
+          candidates[#candidates+1]=v
+        end
+      end
+    end
+  end
+  if #candidates>1 then
+    return nil,'Несколько новых пчёл этого вида в МЭ: нельзя безопасно определить результат'
+  end
+  if #candidates==1 then return candidates[1].fingerprint end
+  -- If the template did not change NBT, the original item returns with the
+  -- same fingerprint and the former exact count. Waiting for free input/output
+  -- slots prevents treating an unprocessed item as a finished one.
+  if exact and qty(exact)>=(before[fingerprintKey(ref)] or 0) then
+    return exact.fingerprint
+  end
+  return nil,nil
+end
+-- A peripheral can push only to a PHYSICALLY ADJACENT inventory.
+-- In this layout the ME Interface is UP from the Imprinter. We never
+-- pretend that OC can directly teleport an item to a remote apiary.
+-- Once an imported item becomes visible in ME, the separate interface
+-- over the apiary can export it DOWN.
+local function pushImprinterOutput(imp, expectedRole, expectedSpecies)
+  local out=stack(imp.p,4)
+  if not out then return false end
+  if role(out)~=expectedRole then
+    imprintOutputStatus='ВЫХОД НЕ ПЧЕЛА: '..title(out)
+    return false
+  end
+  local got=(out.individual or {}).ident
+  if got and expectedSpecies and got~=expectedSpecies then
+    imprintOutputStatus='ОПАСНО: ПОСЛЕ ПРИВИВКИ ИЗМЕНИЛСЯ ВИД'
+    return false
+  end
+  if not CFG.autoPushImprinterOutput then
+    imprintOutputStatus='Ожидание возврата через МЭ-шину импорта'
+    return false
+  end
+  local rr=routes.imp
+  if not rr or lastPhysicalRoute[imp.addr]~=rr.me.addr then
+    imprintOutputStatus='Выход ожидает подтверждения МЭ над импринтером'
+    return false
+  end
+  local ok,moved=invoke(imp.p,'pushItem',CFG.imprintOutputSide,4,1)
+  if ok and tonumber(moved) and tonumber(moved)>0 then
+    imprintOutputStatus='Импринтер: выдано '..tostring(moved)..' -> МЭ сверху'
+    log(imprintOutputStatus)
+    return true
+  end
+  imprintOutputStatus='Выход заблокирован: нужна МЭ-шина импорта/труба'
+  return false
+end
+
+local function processApiaryImprint(now)
+  local prep=apiPrep
+  if not prep then return end
+  local api=liveApiary(prep.apiAddr)
+  if not api then notice('Пропала пасека для подготовленных пчёл',true);return end
+  if prep.phase=='apiary_load' then
+    local t={uid=prep.uid,kind=prep.kind,source=prep.source,key=prep.key,
+      p=(prep.firstKind=='P') and {fp=prep.firstFp} or nil,
+      queen=(prep.firstKind=='Q') and {fp=prep.firstFp} or nil,
+      d=prep.secondFp and {fp=prep.secondFp} or nil}
+    local ok,why=loadToApiary(t,api,true)
+    if ok then
+      apiPrep=nil
+      pendingApiaryRefresh=true
+      apiaryReason='После прививки пчёлы отправлены в пасеку'
+      save()
+    else
+      -- Do not replace missing processed bees with untreated individuals.
+      apiaryReason='Привитые пчёлы не доставлены: '..tostring(why)
+      notice(apiaryReason,true);save()
+    end
+    return
+  end
+  local imp=devices.imp[1]
+  local route=routes.imp
+  if not (imp and route) then
+    notice('Импринтер ожидается, но не назначен его МЭ-интерфейс',true);return
+  end
+  if not CFG.trustSingleFilledTemplate then
+    apiaryReason='Пчёлы ждут прививки: включи ГЕНЫ в ОБОРУДОВАНИИ после проверки шаблона'
+    return
+  end
+  if prep.phase=='imprint_start' then
+    local beeFp=prep.part==1 and prep.firstFp or prep.secondFp
+    if not beeFp then prep.phase='apiary_load';save();return end
+    if stack(imp.p,3) or stack(imp.p,4) then
+      apiaryReason='Импринтер занят / заблокирован. Проверь слоты 3 и 4.'
+      return
+    end
+    if not stack(imp.p,1) then
+      if not template then
+        apiaryReason='Нет единственного заполненного шаблона генов для импринтера'
+        return
+      end
+      local ok,msg=exactMeExport(route,{fingerprint=template.fp},1,1,true)
+      if not ok then apiaryReason='Не подан шаблон: '..tostring(msg);return end
+      if not stack(imp.p,1) then
+        apiaryReason='Шаблон не появился в слоте 1 импринтера';return
+      end
+      lastPhysicalRoute[imp.addr]=route.me.addr
+    end
+    if not stack(imp.p,2) and not supplyMachine(imp,route,2,'ИМП') then
+      apiaryReason='Не хватает посуды в импринтере'
+      return
+    end
+    local live,why=liveFingerprint(route,{fingerprint=beeFp},1)
+    if not live then apiaryReason='Родитель пока не найден в МЭ импринтера: '..tostring(why);return end
+    local kind=role({id=live.fingerprint.id})
+    local species=beeSpeciesFor(live.fingerprint,route.me)
+    if not species or kind~=role({id=beeFp.id}) then
+      apiaryReason='Неверный генетический тип кандидата для импринтера';return
+    end
+    local okay,base=pcall(stockSnapshotFor,route,kind,species)
+    if not okay then apiaryReason='Не удалось прочитать запас МЭ перед прививкой: '..tostring(base);return end
+    prep.baseline=base;prep.currentFp=live.fingerprint
+    prep.currentKind=kind;prep.currentSpecies=species
+    local success,msg=exactMeExport(route,live,1,3,true)
+    if not success then apiaryReason='МЭ не подала пчелу в импринтер: '..tostring(msg);return end
+    -- Verify the selected ME interface is the real path: a bee is in slot 3,
+    -- or the machine has already processed it into slot 4.
+    if stack(imp.p,3) or stack(imp.p,4) then
+      lastPhysicalRoute[imp.addr]=route.me.addr
+    end
+    prep.phase='imprint_wait';prep.started=now;prep.lastChecked=0
+    apiaryReason='Прививка: '..apiaryTaskSummary(prep)..' | '..(prep.part==1 and 'матка / принцесса' or 'трутень')
+    log('Imprinter accepted '..kind..' '..species)
+    save()
+  elseif prep.phase=='imprint_wait' then
+    local out=stack(imp.p,4)
+    if out and (role(out)~=prep.currentKind) then
+      notice('Импринтер выдал отходы или другой тип пчелы: '..title(out),true);return
+    end
+    if out then
+      pushImprinterOutput(imp,prep.currentKind,prep.currentSpecies)
+      out=stack(imp.p,4)
+    end
+    local inp=stack(imp.p,3)
+    if inp or out then
+      if now-prep.started>CFG.timeout then
+        notice('Пчела остаётся в импринтере. '..imprintOutputStatus..'. Проверь питание и МЭ.',true)
+      end
+      return
+    end
+    if now-(prep.lastChecked or 0)<CFG.busyScan then return end
+    prep.lastChecked=now
+    local fp,why=findImprintedReturn(prep,route)
+    if why then notice(why,true);return end
+    if fp then
+      if prep.part==1 then
+        prep.firstFp=fp
+        prep.part=2
+      else prep.secondFp=fp;prep.part=3 end
+      if prep.part==2 and prep.secondFp then
+        prep.phase='imprint_start'
+      else prep.phase='apiary_load' end
+      prep.baseline=nil;prep.currentFp=nil
+      prep.currentKind=nil;prep.currentSpecies=nil
+      apiaryReason=prep.phase=='imprint_start' and 'Первая пчела привита, готовлю трутня' or 'Пчёлы привиты, отправляю в пасеку'
+      log('Imprint returned; next phase '..prep.phase)
+      pendingApiaryRefresh=true
+      save()
+    elseif now-prep.started>CFG.timeout then
+      notice('После импринтера пчела не вернулась в МЭ. Проверь импорт',true)
+    end
+  end
+end
+
 local function observeApiaryJobs(now)
   local requestME=false
   local due=now-lastME>=CFG.scanInterval
@@ -1085,6 +1324,7 @@ local function observeApiaryJobs(now)
 end
 local function scheduleApiaries()
   if not CFG.useApiary or #devices.api==0 or paused then return end
+  if apiPrep then return end
   local t=computer.uptime()
   if t<nextApiaryPlanAt then return end
   local free=0
@@ -1102,16 +1342,33 @@ local function scheduleApiaries()
   for _,task in ipairs(choices) do
     if n>=free then break end
     if not inProgressTarget(task.uid) then
-      local ok,why=loadToApiary(task)
+      local ok,why
+      if imprintEnabled() then
+        local candidate
+        for _,a in ipairs(devices.api) do
+          if not busyApiary(a) and routes['api-'..a.addr] then candidate=a;break end
+        end
+        if not candidate then
+          ok=false;why='Пасеке не назначен МЭ над ней'
+        elseif not routes.imp then
+          ok=false;why='Импринтер назначен, но для него не выбран МЭ'
+        elseif not CFG.trustSingleFilledTemplate then
+          ok=false;why='Включи ГЕНЫ в настройках, иначе запуск пасек заблокирован (без обхода импринтера)'
+        else
+          ok,why=queueApiaryImprint(task,candidate)
+        end
+      else
+        ok,why=loadToApiary(task)
+      end
       if ok then n=n+1
       else
         apiaryReason=tostring(why)
         log('Apiary setup: '..tostring(why))
         nextApiaryPlanAt=t+45
         pendingApiaryRefresh=true
-        -- A physical route problem cannot be solved by trying different bees.
         break
       end
+      if apiPrep then break end -- One imprinted bee at a time; other active apiaries keep working.
     end
   end
 end
@@ -1143,6 +1400,7 @@ local function cycle()
       end
     else notice('Неизвестное состояние '..stage,true);return end
     observeApiaryJobs(now)
+    if stage~='imprint' then processApiaryImprint(now) end
     if not paused then scheduleApiaries() end
   end)
   if not ok then notice('Ошибка: '..tostring(err),true);save() end
@@ -1244,7 +1502,7 @@ local function equipmentLabel(obj)
 end
 local function rolesLine()
   local m=#devices.mut==1 and 'ОК' or 'НЕ НАЗНАЧЕН'
-  local imp=#devices.imp==1 and 'ЕСТЬ' or 'НЕТ'
+  local imp=#devices.imp==1 and 'ПЕРЕД ПАСЕКОЙ' or 'НЕТ'
   return 'МЭ '..#devices.me..'  |  МУТАТРОН '..m..'  |  ИМПРИНТЕР '..imp..'  |  ПАСЕКИ '..#devices.api
 end
 local function drawHome()
@@ -1275,6 +1533,14 @@ local function drawHome()
   if deficit~='' then paint(mx,my+4,cut('Ближайшая цель: '..deficit,leftW-4),COLOR.yellow,0x142233)
   elseif #missed>0 then paint(mx,my+4,cut('Особые условия: '..#missed,leftW-4),COLOR.yellow,0x142233) end
   local r=my+5
+  if apiPrep and r<=sectionY+sectionH-2 then
+    local phaseNames={imprint_start='ПОДГОТОВКА',imprint_wait='ПРИВИВКА',apiary_load='ЗАГРУЗКА'}
+    paint(mx,r,cut('> ИМПРИНТЕР: '..apiaryTaskSummary(apiPrep)..' | '..(phaseNames[apiPrep.phase] or '?')..' '..apiPrep.part..'/2',leftW-4),COLOR.blue,0x142233)
+    if r+1<=sectionY+sectionH-2 then
+      paint(mx,r+1,cut('  Выход: '..imprintOutputStatus,leftW-4),COLOR.gray,0x142233)
+    end
+    r=r+1
+  end
   local apiRowCount=0
   for _,w in pairs(apiJobs) do
     if r<=sectionY+sectionH-2 then
@@ -1296,7 +1562,7 @@ local function drawHome()
   end
   local xr=rightX+2;local yy=sectionY+2
   paint(xr,yy,cut('МУТ: '..equipmentLabel(devices.mut[1])..(routes.mut and ('  ME '..(routes.mut.me.addr:sub(1,6))..' v') or ' МЭ НЕ ВЫБРАН'),rightW-3),routes.mut and COLOR.green or COLOR.yellow,0x142233)
-  paint(xr,yy+1,cut('ИМП: '..equipmentLabel(devices.imp[1])..(routes.imp and ('  ME '..(routes.imp.me.addr:sub(1,6))) or ' МЭ НЕ ВЫБРАН')..' | ГЕНЫ '..(CFG.trustSingleFilledTemplate and 'ВКЛ' or 'ВЫКЛ'),rightW-3),routes.imp and COLOR.green or COLOR.yellow,0x142233)
+  paint(xr,yy+1,cut('ИМП → ПАСЕКИ: '..equipmentLabel(devices.imp[1])..(routes.imp and ('  ME '..(routes.imp.me.addr:sub(1,6))) or ' МЭ НЕ ВЫБРАН')..' | ГЕНЫ '..(CFG.trustSingleFilledTemplate and 'ВКЛ' or 'ВЫКЛ'),rightW-3),routes.imp and COLOR.green or COLOR.yellow,0x142233)
   local lab=getResource('labware')
   paint(xr,yy+2,cut('Посуда: МЭ '..(lab and qty(lab) or '?')..' | МУТ '..(supplyStatus['МУТ'] or '?')..' | ИМП '..(supplyStatus['ИМП'] or '?'),rightW-3),COLOR.gray,0x142233)
   local row=yy+4
@@ -1360,7 +1626,7 @@ local function drawSettings()
   statusBar()
   box(2,5,W-3,H-11,'НАСТРОЙКА   /   ОБОРУДОВАНИЕ',COLOR.blue)
   paint(4,7,cut('ВЫБЕРИ БЛОК → НАЗНАЧЬ РОЛЬ → УКAЖИ МЭ-ИНТЕРФЕЙС ПРЯМО НАД НИМ',W-7),COLOR.fg,0x142233)
-  paint(4,8,cut('Один OC-адаптер может обслуживать несколько соседних машин. Каждому нужен свой МЭ для DOWN.',W-7),COLOR.gray,0x142233)
+  paint(4,8,cut('Импринтер назначен: ВСЕ родители проходят прививку. Выход: UP -> МЭ -> пасека DOWN.',W-7),COLOR.gray,0x142233)
   local first=11
   local visible=math.max(2,H-20)
   local maxOffset=math.max(0,#devices.peripherals-visible)
@@ -1494,9 +1760,9 @@ end
 local quit=false
 local function activeMachine(addr)
   if not addr then return false end
-  if apiJobs[addr] then return true end
+  if apiJobs[addr] or (apiPrep and apiPrep.apiAddr==addr) then return true end
   if (stage=='mutation' or stage=='post_queen') and devices.mut[1] and devices.mut[1].addr==addr then return true end
-  if (stage=='imprint' or stage=='post_queen') and devices.imp[1] and devices.imp[1].addr==addr then return true end
+  if ((stage=='imprint' or stage=='post_queen') or apiPrep) and devices.imp[1] and devices.imp[1].addr==addr then return true end
   return false
 end
 local function changeRole(addr,newRole)
@@ -1666,8 +1932,8 @@ local function tap(key)
     CFG.trustSingleFilledTemplate=not CFG.trustSingleFilledTemplate
     save()
     if CFG.trustSingleFilledTemplate then
-      deviceActionNote='Прививка ВКЛ для следующих маток. Шаблон обязан быть БЕЗ ГЕНА ВИДА!'
-    else deviceActionNote='Прививка ВЫКЛ для следующих маток.' end
+      deviceActionNote='Прививка ВКЛ для ВСЕХ пчёл перед пасеками. Шаблон — БЕЗ ГЕНА ВИДА!'
+    else deviceActionNote='Прививка ВЫКЛ: если импринтер назначен, новые пасеки ждут разрешения.' end
   elseif key=='meup' then meOffset=math.max(0,meOffset-3)
   elseif key=='medown' then meOffset=meOffset+3
   elseif key=='up' then settingsOffset=math.max(0,settingsOffset-4)
@@ -1690,10 +1956,10 @@ local function startup()
   local ok,err=pcall(discover)
   if not ok then notice('Поиск компонентов: '..tostring(err),true) end
   acquireRoute()
-  if stage~='idle' or next(apiJobs) then
+  if stage~='idle' or next(apiJobs) or apiPrep then
     notice('Восстановлены незавершённые операции. Проверь машины до пуска.',true)
   end
-  log('BeeMaster 7.0 started')
+  log('BeeMaster 9.0 started')
 end
 startup()
 -- First show graphics, then query a large ME network.
