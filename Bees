@@ -26,9 +26,9 @@ local COLOR = {bg=0x0E1722, fg=0xE9EDF0, blue=0x54DEDC,
   green=0x70E39B, yellow=0xFFE08C, red=0xFF7583, gray=0x99A8B9}
 local dirs = {'UP','DOWN','NORTH','SOUTH','WEST','EAST'}
 local opposite = {UP='DOWN',DOWN='UP',NORTH='SOUTH',SOUTH='NORTH',WEST='EAST',EAST='WEST'}
-local DATA='/home/beemaster_v6.dat'
-local OLD_DATA='/home/beemaster_v5.dat'
-local LOG='/home/beemaster_v6.log'
+local DATA='/home/beemaster_v7.dat'
+local OLD_DATA='/home/beemaster_v6.dat'
+local LOG='/home/beemaster_v7.log'
 local originalW,originalH=gpu.getResolution()
 local maxW,maxH=gpu.maxResolution()
 local width,height=maxW,maxH
@@ -40,6 +40,13 @@ local bindings={} -- address => {role='MUT'/'IMP'/'API'/'OFF', me='interface add
 local initializing=true
 local initStatus='Подключение к компонентам'
 local settingsOffset=0
+local meOffset=0
+local selectedDevice=nil
+local drawInterval=2.5
+local lastUIActivity=0
+local guiRowsPrevious={}
+local guiRowsNow=nil
+local guiBg=0x0E1722
 local graph,catalog,available,nameToUid,routes = {},{},{},{},{}
 local paused=true
 local mode,alert='Ожидание','Первый запуск: проверь подключение и нажми СТАРТ'
@@ -52,6 +59,7 @@ local supplyAt=0
 local supplyStatus={}
 local apiaryReason='Проверка пасек не выполнялась'
 local lastPhysicalRoute={}
+local deviceActionNote='Выбери устройство, затем роль и свой МЭ-интерфейс над ним.'
 local recentlyScanned=''
 local page='home'
 local recent={}
@@ -108,8 +116,7 @@ local function load()
     bindings=x.bindings or {}
     apiJobs=x.apiJobs or {}
     if fromOld then
-      stage='idle'; job=nil; apiJobs={}
-      log('Settings migrated from v5; old active jobs cleared for safety')
+      log('Imported v6 settings and active task journal; start remains paused for inspection')
     end
   end
 end
@@ -161,13 +168,9 @@ local function discover()
   for _,obj in ipairs(compList()) do
     local p=obj.p
     if obj.kind=='me_interface' then
-      local ok,v=invoke(p,'getItemsInNetwork')
-      if ok and type(v)=='table' then
-        devices.me[#devices.me+1]=obj
-      else
-        devices.me[#devices.me+1]=obj
-        log('ME read probe warning '..obj.addr:sub(1,8)..': '..tostring(v))
-      end
+      -- Component type alone identifies a ME Interface. Heavy network reads
+      -- happen during the inventory cycle, not every GUI/discovery visit.
+      devices.me[#devices.me+1]=obj
     else
       local ok,size=invoke(p,'getInventorySize')
       obj.size=ok and tonumber(size) or 0
@@ -1146,15 +1149,32 @@ local function cycle()
 end
 local function ulen(s) return unicode.len(tostring(s or '')) end
 local function cut(s,n) return unicode.sub(tostring(s or ''),1,math.max(0,n)) end
+local function pushDraw(y,entry)
+  if not guiRowsNow or y<1 or y>height then return end
+  local row=guiRowsNow[y]
+  if not row then row={};guiRowsNow[y]=row end
+  row[#row+1]=entry
+end
 local function fill(x,y,w,h,bg)
-  if x<1 or y<1 or w<1 or h<1 then return end
-  gpu.setBackground(bg);gpu.fill(x,y,math.min(w,width-x+1),math.min(h,height-y+1),' ')
+  if x<1 or y<1 or w<1 or h<1 or x>width or y>height then return end
+  w=math.min(w,width-x+1);h=math.min(h,height-y+1)
+  guiBg=bg
+  if guiRowsNow then
+    for ly=y,y+h-1 do pushDraw(ly,{k='f',x=x,w=w,bg=bg}) end
+  else
+    gpu.setBackground(bg);gpu.fill(x,y,w,h,' ')
+  end
 end
 local function paint(x,y,s,fg,bg)
   if y<1 or y>height or x<1 or x>width then return end
-  if bg then gpu.setBackground(bg) end
-  gpu.setForeground(fg or COLOR.fg)
-  gpu.set(x,y,cut(s,width-x+1))
+  local value=cut(s,width-x+1)
+  local background=bg or guiBg
+  guiBg=background
+  if guiRowsNow then
+    pushDraw(y,{k='s',x=x,txt=value,fg=fg or COLOR.fg,bg=background})
+  else
+    gpu.setBackground(background);gpu.setForeground(fg or COLOR.fg);gpu.set(x,y,value)
+  end
 end
 local function button(x,y,t,action,fg,bg,w)
   local label=' '..t..' '
@@ -1172,15 +1192,46 @@ local function hline(y,text,fg)
   fill(1,y,width,1,COLOR.bg)
   paint(2,y,text,fg)
 end
+local function flushDraw()
+  local nextPrev={}
+  local changed=0
+  for y=1,height do
+    local row=guiRowsNow[y] or {}
+    local sigPieces={}
+    for _,o in ipairs(row) do
+      if o.k=='f' then
+        sigPieces[#sigPieces+1]='f'..o.x..','..o.w..','..o.bg..';'
+      else
+        sigPieces[#sigPieces+1]='s'..o.x..','..o.fg..','..o.bg..','..o.txt..';'
+      end
+    end
+    local sig=table.concat(sigPieces)
+    nextPrev[y]=sig
+    if guiRowsPrevious[y]~=sig then
+      changed=changed+1
+      gpu.setBackground(COLOR.bg)
+      gpu.fill(1,y,width,1,' ')
+      for _,o in ipairs(row) do
+        gpu.setBackground(o.bg)
+        if o.k=='f' then gpu.fill(o.x,y,o.w,1,' ')
+        else gpu.setForeground(o.fg);gpu.set(o.x,y,o.txt) end
+      end
+    end
+  end
+  guiRowsPrevious=nextPrev
+  return changed
+end
 local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'6.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  paint(16,1,'7.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
   local st=initializing and 'СКАНИРОВАНИЕ' or (paused and 'ПАУЗА' or 'РАБОТА')
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
-  paint(3,2,cut((initializing and initStatus or mode),width-6),COLOR.fg,0x142739)
+  local what=(initializing and initStatus or mode)
+  if page~='home' then what=what..'   •  Открыто меню: автоматика продолжает работу' end
+  paint(3,2,cut(what,width-6),COLOR.fg,0x142739)
   fill(1,3,width,1,0x1C364A)
 end
 local function meter(x,y,w,pct)
@@ -1233,11 +1284,19 @@ local function drawHome()
     end
   end
   if apiRowCount==0 and r<=sectionY+sectionH-2 then
-    paint(mx,r,'Пасеки: '..cut(apiaryReason,leftW-14),COLOR.gray,0x142233)
+    paint(mx,r,cut('Пасеки: '..apiaryReason,leftW-4),COLOR.gray,0x142233)
+    r=r+2
+  end
+  if r<=sectionY+sectionH-9 then
+    paint(mx,r,'ПОСЛЕДНИЕ СОБЫТИЯ',COLOR.green,0x142233);r=r+1
+    for i=math.max(1,#recent-7),#recent do
+      if r>sectionY+sectionH-2 then break end
+      paint(mx,r,cut(recent[i],leftW-4),COLOR.gray,0x142233);r=r+1
+    end
   end
   local xr=rightX+2;local yy=sectionY+2
   paint(xr,yy,cut('МУТ: '..equipmentLabel(devices.mut[1])..(routes.mut and ('  ME '..(routes.mut.me.addr:sub(1,6))..' v') or ' МЭ НЕ ВЫБРАН'),rightW-3),routes.mut and COLOR.green or COLOR.yellow,0x142233)
-  paint(xr,yy+1,cut('ИМП: '..equipmentLabel(devices.imp[1])..(routes.imp and ('  ME '..(routes.imp.me.addr:sub(1,6))) or ' МЭ НЕ ВЫБРАН'),rightW-3),routes.imp and COLOR.green or COLOR.yellow,0x142233)
+  paint(xr,yy+1,cut('ИМП: '..equipmentLabel(devices.imp[1])..(routes.imp and ('  ME '..(routes.imp.me.addr:sub(1,6))) or ' МЭ НЕ ВЫБРАН')..' | ГЕНЫ '..(CFG.trustSingleFilledTemplate and 'ВКЛ' or 'ВЫКЛ'),rightW-3),routes.imp and COLOR.green or COLOR.yellow,0x142233)
   local lab=getResource('labware')
   paint(xr,yy+2,cut('Посуда: МЭ '..(lab and qty(lab) or '?')..' | МУТ '..(supplyStatus['МУТ'] or '?')..' | ИМП '..(supplyStatus['ИМП'] or '?'),rightW-3),COLOR.gray,0x142233)
   local row=yy+4
@@ -1258,7 +1317,7 @@ local function drawHome()
   local report=alert
   if not paused and stockWarning~='' then report='МЭ: '..stockWarning end
   paint(3,H-5,cut('! '..report,W-6),COLOR.yellow,0x182C3F)
-  paint(3,H-4,cut(rolesLine()..' | Обновление МЭ: '..CFG.scanInterval..'с | Ошибки экспорта: '..exportFailureCount,W-6),COLOR.gray,0x182C3F)
+  paint(3,H-4,cut(rolesLine()..' | МЭ: '..CFG.scanInterval..'с | Ошибки выгрузки: '..exportFailureCount,W-6),COLOR.gray,0x182C3F)
   fill(1,H-2,W,3,0x102235)
   local x=3
   button(x,H-1,paused and 'СТАРТ' or 'ПАУЗА','pause',paused and COLOR.green or COLOR.yellow,0x203B49,14)
@@ -1284,137 +1343,264 @@ local function meIndex(addr)
   for i,m in ipairs(devices.me) do if m.addr==addr then return i end end
   return nil
 end
+local function deviceIndex(addr)
+  for i,v in ipairs(devices.peripherals) do if v.addr==addr then return i,v end end
+  return nil,nil
+end
+local function resolvedMEText(obj)
+  local rr=downRoute(obj)
+  if rr then
+    local idx=meIndex(rr.me.addr)
+    return 'МЭ '..tostring(idx or '?')..' / DOWN'
+  end
+  return 'МЭ НЕ НАЗНАЧЕН'
+end
 local function drawSettings()
   local W,H=width,height
   statusBar()
-  box(2,5,W-3,H-11,'НАСТРОЙКА ОБОРУДОВАНИЯ',COLOR.blue)
-  paint(4,7,'СЛЕВА роль блока, СПРАВА МЭ интерфейс, установленный прямо НАД ним.',COLOR.gray,0x142233)
-  paint(4,8,'DOWN = вниз. Для проверки выбери [ТЕСТ] (посуда; пасеки проверяются при подаче пчел).',COLOR.yellow,0x142233)
-  local yy=10
-  for i,m in ipairs(devices.me) do
-    if yy>=H-14 then break end
-    paint(4,yy,'МЭ '..i..' = '..m.addr:sub(1,8)..'  |  ставь такой индекс у блока ПОД этим МЭ',COLOR.green,0x142233)
-    yy=yy+1
-  end
-  yy=math.max(yy+1,13)
-  local visible=math.max(1,H-yy-9)
+  box(2,5,W-3,H-11,'НАСТРОЙКА   /   ОБОРУДОВАНИЕ',COLOR.blue)
+  paint(4,7,cut('ВЫБЕРИ БЛОК → НАЗНАЧЬ РОЛЬ → УКAЖИ МЭ-ИНТЕРФЕЙС ПРЯМО НАД НИМ',W-7),COLOR.fg,0x142233)
+  paint(4,8,cut('Один OC-адаптер может обслуживать несколько соседних машин. Каждому нужен свой МЭ для DOWN.',W-7),COLOR.gray,0x142233)
+  local first=11
+  local visible=math.max(2,H-20)
   local maxOffset=math.max(0,#devices.peripherals-visible)
   settingsOffset=math.min(maxOffset,math.max(0,settingsOffset))
+  fill(4,first-1,W-7,1,0x1B3045)
+  paint(5,first-1,'УСТРОЙСТВО',COLOR.blue,0x1B3045)
+  paint(28,first-1,'НАЗНАЧЕНИЕ',COLOR.blue,0x1B3045)
+  paint(51,first-1,'ПОДАЧА ПРЕДМЕТОВ',COLOR.blue,0x1B3045)
+  local n=0
   for j=1,visible do
     local i=j+settingsOffset
     local obj=devices.peripherals[i]
     if not obj then break end
-    local r=roleOf(obj)
-    local b=bindings[obj.addr] or {}
-    local mIndex=meIndex(b.me)
-    local routeTxt=(mIndex and ('МЭ '..mIndex) or (#devices.me==1 and not b.me and 'МЭ 1 АВТО' or 'МЭ НЕ ВЫБРАН'))
-    local y=yy+j-1
-    fill(3,y,W-5,1,(j%2==0) and 0x192A3B or 0x142233)
-    paint(4,y,string.format('%02d  %2d сл.',i,obj.size),COLOR.gray)
-    button(18,y,roleName(r),'role:'..obj.addr,COLOR.blue,0x243D50,18)
-    button(39,y,routeTxt,'me:'..obj.addr,(mIndex or #devices.me==1) and COLOR.green or COLOR.yellow,0x243D50,20)
-    button(61,y,'ТЕСТ','test:'..obj.addr,COLOR.green,0x243D50,7)
-    paint(70,y,cut(obj.addr:sub(1,8)..' '..obj.name,W-73),COLOR.gray)
+    n=n+1
+    local y=first+j-1
+    local bg=(j%2==0) and 0x192B3C or 0x172636
+    fill(4,y,W-7,1,bg)
+    paint(5,y,cut(string.format('%02d  %s  %d сл.',i,obj.addr:sub(1,8),obj.size),21),COLOR.fg,bg)
+    paint(28,y,cut(roleName(roleOf(obj)),19),roleOf(obj)~='OFF' and COLOR.green or COLOR.gray,bg)
+    if W>=94 then paint(51,y,cut(resolvedMEText(obj),math.max(5,W-77)),downRoute(obj) and COLOR.green or COLOR.yellow,bg) end
+    button(math.max(52,W-20),y,'ИЗМЕНИТЬ','edit:'..obj.addr,COLOR.blue,0x29475C,15)
+    buttons[#buttons+1]={x=4,y=y,w=math.max(1,math.min(W-28,69)),action='edit:'..obj.addr}
   end
+  if n==0 then paint(5,first,'Машины не найдены. Проверь OC-адаптер и кабели.',COLOR.yellow,0x142233) end
+  local sy=math.min(H-10,first+visible+2)
+  paint(5,sy,cut('Найдено: '..#devices.peripherals..' машин • '..#devices.me..' МЭ-интерфейсов',W-12),COLOR.gray,0x142233)
   if #devices.peripherals>visible then
-    button(5,H-7,'ВЫШЕ','up',COLOR.blue,0x243D50,12)
-    button(19,H-7,'НИЖЕ','down',COLOR.blue,0x243D50,12)
-    paint(35,H-7,'Всего: '..#devices.peripherals..' | Видимые: '..(settingsOffset+1)..'-'..math.min(#devices.peripherals,settingsOffset+visible),COLOR.gray)
+    button(5,H-8,'▲ ВЫШЕ','up',COLOR.blue,0x243D50,14)
+    button(21,H-8,'▼ НИЖЕ','down',COLOR.blue,0x243D50,14)
+    paint(39,H-8,'Показаны '..(settingsOffset+1)..'–'..math.min(#devices.peripherals,settingsOffset+visible),COLOR.gray,0x142233)
   end
   fill(2,H-5,W-3,2,0x182C3F)
-  paint(3,H-5,cut('МУТ=слот 4 посуда; ИМП/ПРОБА/КОПИР=слот 2. ПАСЕКА=15 слотов.',W-6),COLOR.yellow,0x182C3F)
-  paint(3,H-4,cut('ТЕСТ для пасеки показывает проверку DOWN; подтверждение только при подаче реальной пчелы.',W-6),COLOR.gray,0x182C3F)
+  paint(3,H-5,cut(deviceActionNote,W-7),COLOR.yellow,0x182C3F)
+  paint(3,H-4,cut('Фоновая работа: '..(paused and 'НА ПАУЗЕ' or 'АКТИВНА')..' | Мутация: '..stage..' | Пасек занято: '..workersCount(),W-7),COLOR.gray,0x182C3F)
   fill(1,H-2,W,3,0x102235)
-  button(3,H-1,'ГОТОВО','home',COLOR.green,0x203B49,13)
-  button(19,H-1,CFG.trustSingleFilledTemplate and 'ПРИВИВКА ГЕНОВ: ВКЛ' or 'ПРИВИВКА ГЕНОВ: ВЫКЛ','genes',CFG.trustSingleFilledTemplate and COLOR.green or COLOR.yellow,0x203B49,29)
-  button(51,H-1,'ОБНОВИТЬ','discover',COLOR.blue,0x203B49,17)
+  button(3,H-1,'← НАЗАД','home',COLOR.green,0x203B49,15)
+  button(21,H-1,'ОБНОВИТЬ УСТРОЙСТВА','discover',COLOR.blue,0x203B49,26)
+  button(49,H-1,'ГЕНЫ: '..(CFG.trustSingleFilledTemplate and 'ВКЛ' or 'ВЫКЛ'),'genes',CFG.trustSingleFilledTemplate and COLOR.green or COLOR.yellow,0x203B49,20)
+  if W>=95 then button(71,H-1,'ЖУРНАЛ','logs',COLOR.fg,0x203B49,14) end
+end
+local function drawDetail()
+  local W,H=width,height
+  local i,obj=deviceIndex(selectedDevice or '')
+  statusBar()
+  box(2,5,W-3,H-11,'ПАРАМЕТРЫ УСТРОЙСТВА',COLOR.blue)
+  if not obj then
+    paint(4,7,'Устройство отключено или его адрес изменился. Вернись в список.',COLOR.yellow,0x142233)
+    button(3,H-1,'← СПИСОК','settings',COLOR.green,0x203B49,17)
+    return
+  end
+  local bg=0x142233
+  paint(4,7,cut('БЛОК №'..i..'  |  '..obj.addr..'  |  '..obj.size..' слота(ов)',W-8),COLOR.fg,bg)
+  paint(4,8,cut('Название инвентаря: '..tostring(obj.name),W-8),COLOR.gray,bg)
+  paint(4,9,cut('Внутри: 1) '..title(stack(obj.p,1))..'  2) '..title(stack(obj.p,2)),W-8),COLOR.gray,bg)
+  paint(4,10,'1. НАЗНАЧЕНИЕ',COLOR.green,bg)
+  local rr=roleOf(obj)
+  local list=obj.size==4 and {{'MUT','МУТАТРОН'},{'IMP','ИМПРИНТЕР'},{'SAM','ПРОБООТБОР'},{'TRN','ТРАНСПОЗЕР'},{'OFF','ОТКЛЮЧИТЬ'}}
+    or obj.size==15 and {{'API','ПАСЕКА'},{'OFF','ОТКЛЮЧИТЬ'}} or {{'OFF','НЕ ИСПОЛЬЗОВАТЬ'}}
+  local firstY=12
+  local colX=5
+  local colW=math.min(23,math.max(17,math.floor((W-18)/4)))
+  for j,b in ipairs(list) do
+    local x=colX+(j-1)%3*(colW+2)
+    local y=firstY+math.floor((j-1)/3)*2
+    button(x,y,(rr==b[1] and '● ' or '  ')..b[2],'setrole:'..obj.addr..':'..b[1],rr==b[1] and COLOR.green or COLOR.blue,rr==b[1] and 0x2B4C42 or 0x203B49,colW)
+  end
+  local sub=firstY+math.ceil(#list/3)*2+1
+  paint(4,sub,'2. ВЫБЕРИ МЭ-ИНТЕРФЕЙС, КОТОРЫЙ СТОИТ НАД ЭТОЙ МАШИНОЙ',COLOR.green,bg)
+  paint(4,sub+1,'Передача предметов всегда строго DOWN. OC-адаптер здесь НЕ выбирается.',COLOR.gray,bg)
+  local visible=math.max(2,math.min(10,H-sub-11))
+  local maxOffset=math.max(0,#devices.me-visible)
+  meOffset=math.max(0,math.min(meOffset,maxOffset))
+  local by= sub+3
+  if #devices.me==0 then paint(5,by,'МЭ-интерфейсы не обнаружены!',COLOR.red,bg) end
+  for j=1,visible do
+    local me=devices.me[j+meOffset]
+    if not me then break end
+    local idx=j+meOffset
+    local chosen=(bindings[obj.addr] or {}).me==me.addr or (#devices.me==1 and not (bindings[obj.addr] or {}).me)
+    local bg2=(j%2==0 and 0x182C3F or 0x142B40)
+    fill(4,by+j-1,math.min(W-10,105),1,bg2)
+    paint(6,by+j-1,'МЭ '..idx..'  '..me.addr:sub(1,12)..(chosen and '   ← ВЫБРАН' or ''),chosen and COLOR.green or COLOR.gray,bg2)
+    button(math.min(W-21,53),by+j-1,'ВЫБРАТЬ','setme:'..obj.addr..':'..me.addr,COLOR.blue,0x29475C,14)
+  end
+  local cy=by+visible+1
+  if #devices.me>visible then
+    button(5,cy,'▲ ВЫШЕ','meup',COLOR.blue,0x243D50,13)
+    button(20,cy,'▼ НИЖЕ','medown',COLOR.blue,0x243D50,13)
+  end
+  local testY= H<36 and math.min(H-7,by+visible) or math.min(H-8,cy+2)
+  if testY>=by+2 then
+    button(5,testY,'ПРОВЕРИТЬ DOWN','test:'..obj.addr,COLOR.green,0x244D46,23)
+    paint(32,testY,cut('Сейчас: '..resolvedMEText(obj),W-35),COLOR.yellow,bg)
+  end
+  fill(2,H-5,W-3,2,0x182C3F)
+  paint(3,H-5,cut(deviceActionNote,W-7),COLOR.yellow,0x182C3F)
+  paint(3,H-4,cut('Один OC-адаптер может быть общим, если ОБЕ машины касаются его разных сторон.',W-7),COLOR.gray,0x182C3F)
+  fill(1,H-2,W,3,0x102235)
+  button(3,H-1,'← УСТРОЙСТВА','settings',COLOR.green,0x203B49,19)
+  button(25,H-1,'НА ГЛАВНУЮ','home',COLOR.blue,0x203B49,18)
+end
+local function drawLogs()
+  statusBar()
+  box(2,5,width-3,height-11,'ЖУРНАЛ  /  ПОСЛЕДНИЕ СОБЫТИЯ',COLOR.blue)
+  local lines=math.max(3,height-16)
+  local from=math.max(1,#recent-lines+1)
+  local y=7
+  for n=from,#recent do
+    paint(4,y,cut(recent[n],width-8),norm(recent[n]):find('error',1,true) and COLOR.yellow or COLOR.gray,0x142233)
+    y=y+1
+  end
+  fill(2,height-5,width-3,2,0x182C3F)
+  paint(3,height-5,cut('Лог на диске: '..LOG,width-6),COLOR.gray,0x182C3F)
+  paint(3,height-4,paused and 'АВТОМАТИКА НА ПАУЗЕ' or 'АВТОМАТИКА ПРОДОЛЖАЕТ РАБОТАТЬ',paused and COLOR.yellow or COLOR.green,0x182C3F)
+  fill(1,height-2,width,3,0x102235)
+  button(3,height-1,'← НАЗАД','settings',COLOR.green,0x203B49,15)
+  button(20,height-1,'ГЛАВНАЯ','home',COLOR.blue,0x203B49,15)
 end
 local function draw()
   buttons={}
+  guiRowsNow={}
+  guiBg=COLOR.bg
   fill(1,1,width,height,COLOR.bg)
-  if page=='settings' then drawSettings() else drawHome() end
+  if page=='settings' then drawSettings()
+  elseif page=='detail' then drawDetail()
+  elseif page=='logs' then drawLogs()
+  else drawHome() end
+  flushDraw()
+  guiRowsNow=nil
 end
 local quit=false
-local function changeRole(addr)
-  if not paused or stage~='idle' or next(apiJobs) then
-    notice('Изменять оборудование можно только при остановленных задачах.',true);return
-  end
-  local obj
-  for _,v in ipairs(devices.peripherals) do if v.addr==addr then obj=v;break end end
-  if not obj then return end
-  local old=roleOf(obj)
-  local r
-  if obj.size==4 then
-    if old=='OFF' then r=(#devices.mut>0 and 'IMP' or 'MUT')
-    elseif old=='MUT' then r='IMP'
-    elseif old=='IMP' then r='SAM'
-    elseif old=='SAM' then r='TRN'
-    else r='OFF' end
-  elseif obj.size==15 then
-    r=old=='API' and 'OFF' or 'API'
-  else notice('Только 4- и 15-слотовые устройства поддерживаются',false);return end
-  bindings[addr]=bindings[addr] or {}
-  if r=='MUT' or r=='IMP' then
-    for k,b in pairs(bindings) do if k~=addr and b.role==r then b.role='OFF' end end
-  end
-  bindings[addr].role=r
-  discover();rebuildRoutes();save()
-  notice('Роль '..addr:sub(1,8)..' = '..roleName(r))
+local function activeMachine(addr)
+  if not addr then return false end
+  if apiJobs[addr] then return true end
+  if (stage=='mutation' or stage=='post_queen') and devices.mut[1] and devices.mut[1].addr==addr then return true end
+  if (stage=='imprint' or stage=='post_queen') and devices.imp[1] and devices.imp[1].addr==addr then return true end
+  return false
 end
-local function changeME(addr)
-  if not paused or stage~='idle' or next(apiJobs) then
-    notice('Маршрут нельзя менять во время операций.',true);return
+local function changeRole(addr,newRole)
+  local _,obj=deviceIndex(addr)
+  if not obj then deviceActionNote='Блок отключился. Вернись в список.';return end
+  local previous=roleOf(obj)
+  if previous==newRole then
+    deviceActionNote='У этого устройства уже роль '..roleName(newRole)
+    return
   end
-  if #devices.me==0 then notice('МЭ-интерфейсы не обнаружены.',true);return end
-  bindings[addr]=bindings[addr] or {}
-  if not bindings[addr].role then
-    for _,v in ipairs(devices.peripherals) do
-      if v.addr==addr then bindings[addr].role=(v.size==15 and 'API' or 'OFF');break end
+  if activeMachine(addr) then
+    deviceActionNote='Этот блок сейчас занят! Дождись завершения его задачи.'
+    return
+  end
+  if obj.size==4 and newRole=='API' or obj.size==15 and newRole~='API' and newRole~='OFF' then
+    deviceActionNote='Роль не подходит к количеству слотов.';return
+  end
+  if newRole=='MUT' or newRole=='IMP' then
+    for _,other in ipairs(devices.peripherals) do
+      if other.addr~=addr and roleOf(other)==newRole and activeMachine(other.addr) then
+        deviceActionNote='Нельзя переназначить работающий '..roleName(newRole)..'.'
+        return
+      end
     end
   end
-  local i=meIndex(bindings[addr].me) or 0
-  i=i+1
-  if i>#devices.me then i=0 end
-  bindings[addr].me=i==0 and nil or devices.me[i].addr
-  rebuildRoutes();save()
-  notice('Привязка МЭ: '..(i>0 and tostring(i) or 'АВТО/НЕ ВЫБРАН'))
+  bindings[addr]=bindings[addr] or {}
+  bindings[addr].role=newRole
+  if newRole=='MUT' or newRole=='IMP' then
+    for k,b in pairs(bindings) do
+      if k~=addr and b.role==newRole then b.role='OFF' end
+    end
+  end
+  discover();rebuildRoutes();save()
+  supplyAt=0
+  deviceActionNote='Устройство '..addr:sub(1,8)..' назначено: '..roleName(newRole)..'. Теперь выбери его МЭ.'
+  log('Bind '..addr..' '..newRole)
+end
+local function changeME(addr,meAddr)
+  if activeMachine(addr) then
+    deviceActionNote='Этот блок занят: во время операции менять МЭ нельзя.'
+    return
+  end
+  local _,obj=deviceIndex(addr)
+  if not obj then deviceActionNote='Выбранный блок исчез из сети.';return end
+  local exists=false
+  for _,m in ipairs(devices.me) do if m.addr==meAddr then exists=true;break end end
+  if not exists then deviceActionNote='Этот МЭ-интерфейс не найден.';return end
+  for k,b in pairs(bindings) do
+    if k~=addr and b.me==meAddr and b.role and b.role~='OFF' then
+      deviceActionNote='МЭ уже назначен другому блоку ('..k:sub(1,8)..'). DOWN единственный.'
+      return
+    end
+  end
+  bindings[addr]=bindings[addr] or {}
+  if not bindings[addr].role then bindings[addr].role=(obj.size==15 and 'API' or 'OFF') end
+  bindings[addr].me=meAddr
+  rebuildRoutes();save();supplyAt=0
+  deviceActionNote='Маршрут сохранён: '..meAddr:sub(1,8)..' → DOWN → '..addr:sub(1,8)
+  log('ME route '..meAddr..' DOWN -> '..addr)
 end
 local function testMachine(addr)
-  if not paused or stage~='idle' or next(apiJobs) then
-    notice('Тест только на паузе без незавершённых операций.',true);return
-  end
-  local target
-  for _,obj in ipairs(devices.peripherals) do if obj.addr==addr then target=obj;break end end
-  if not target then notice('Блок исчез. ОБНОВИ оборудование.',false);return end
-  rebuildRoutes()
+  local _,target=deviceIndex(addr)
+  if not target then deviceActionNote='Блок исчез. Обнови список.';return end
   local rr=downRoute(target)
-  if not rr then notice('Не выбрано МЭ над блоком '..addr:sub(1,8),false);return end
+  if not rr then deviceActionNote='Выбери МЭ над этим блоком.';return end
   local ok,has=invoke(rr.me.p,'canExport','DOWN')
-  if not ok then notice('Не удаётся проверить DOWN: '..tostring(has),false);return end
-  if not has then notice('МЭ '..rr.me.addr:sub(1,8)..': НЕТ инвентаря снизу!',false);return end
+  if not ok then deviceActionNote='МЭ не отвечает на canExport: '..tostring(has);return end
+  if not has then deviceActionNote='ПРОВАЛ: У выбранного МЭ нет доступного инвентаря снизу.';return end
+  if activeMachine(addr) then
+    deviceActionNote='DOWN доступен. Передача посуды пока запрещена: блок занят.'
+    return
+  end
   local r=roleOf(target)
   if r=='API' then
-    notice('DOWN доступен, но нужная пасека подтверждается только при подаче пчелы.');return
+    deviceActionNote='DOWN видит инвентарь. Пасека подтвердит маршрут при загрузке пчёл.'
+    return
   end
   local slot=(r=='MUT') and 4 or ((r=='IMP' or r=='SAM' or r=='TRN') and 2 or nil)
-  if not slot then notice('Назначь роль блока прежде чем тестировать.',false);return end
+  if not slot then deviceActionNote='Сначала выбери назначение этого блока.';return end
+  -- Never arm a machine by accident: refuse a physical test with input bees.
+  local inputSlots=(r=='MUT' and {1,2}) or (r=='IMP' and {1,3}) or {1,3}
+  for _,i in ipairs(inputSlots) do
+    if stack(target.p,i) then
+      deviceActionNote='DOWN доступен. Физический тест не выполняется: занят входной слот '..i
+      return
+    end
+  end
   local before=stack(target.p,slot)
   if before and not norm(itemid(before)):find('labware',1,true) then
-    notice('В тестовом слоте '..slot..' уже другой предмет: '..title(before),false);return
+    deviceActionNote='Слот '..slot..' занят не посудой. Проверка отменена.';return
   end
   if qty(before)>=CFG.targetLabware then
-    notice('Посуды уже 64 в слоте '..slot..'. Для физической проверки освободи 1 место.');return
+    deviceActionNote='DOWN доступен, посуда уже заполнена (64/64).';return
   end
-  local res= getResource('labware')
-  if not res then notice('Нет посуды в МЭ для теста.',false);return end
-  local old=qty(before)
+  local res=getResource('labware')
+  if not res then deviceActionNote='В МЭ нет лабораторной посуды.';return end
+  local was=qty(before)
   local success,msg=exactMeExport(rr,res,1,slot)
   local after=stack(target.p,slot)
-  if success and qty(after)>old then
+  if success and qty(after)>was then
     lastPhysicalRoute[addr]=rr.me.addr
-    notice('ПРОВЕРЕНО: МЭ '..rr.me.addr:sub(1,8)..' -> '..roleName(r)..' '..addr:sub(1,8)..' (слот '..slot..')')
+    deviceActionNote='МАРШРУТ ПРОВЕРЕН: +1 посуда, слот '..slot..' ('..rr.me.addr:sub(1,8)..')'
   else
-    notice('НЕ ПРОВЕРЕНО: '..tostring(msg)..'. Проверь МЭ НАД ЭТИМ блоком.',false)
+    deviceActionNote='Не подтвердилось: '..tostring(msg)..'. Проверь физическое размещение.'
   end
 end
 local function refreshEverything(reloadComponents)
@@ -1454,36 +1640,49 @@ local function tap(key)
   if key=='pause' then
     if initializing then return end
     if paused then
-      if not routes.mut then notice('Назначь мутатрон и его МЭ в ОБОРУДОВАНИИ.',true);return end
+      if not routes.mut then notice('Назначь обычный мутатрон и его МЭ.',false);return end
       local conflict=collisionReport()
-      if conflict then notice(conflict,true);return end
-      if #graph==0 then notice('Нет дерева мутаций: подключи пасеку с getBeeBreedingData.',true);return end
+      if conflict then notice(conflict,false);return end
+      if #graph==0 then notice('Нет дерева мутаций. Нужна подключённая промышленная пасека.',false);return end
       paused=false;nextPlanAt=0;notice('АВТОМАТИКА ЗАПУЩЕНА')
-    else paused=true;notice('ПАУЗА: новые задачи не выдаются') end
+    else paused=true;notice('ПАУЗА: новые операции не запускаются') end
     save()
   elseif key=='settings' then
-    paused=true;page='settings';save()
+    -- Settings are a VIEW. Do not pause machines or network logic.
+    page='settings'
   elseif key=='home' then
-    page='home';discover();rebuildRoutes();save()
+    page='home'
+  elseif key=='logs' then
+    page='logs'
   elseif key=='scan' then
-    paused=true
-    local ok,err=pcall(refreshEverything,true)
-    initializing=false
-    if not ok then notice('Ошибка обновления: '..tostring(err),true) end
+    local ok,err=pcall(function() meInventory();scanApiaries() end)
+    if not ok then notice('Ошибка сканирования: '..tostring(err),false)
+    else notice('Обновлены МЭ и пасеки; автоматизация продолжает работу') end
   elseif key=='discover' then
-    paused=true;discover();rebuildRoutes();notice('Оборудование перечитано')
+    -- Re-resolve components but do not reset in-flight tasks.
+    discover();rebuildRoutes()
+    deviceActionNote='Компоненты обновлены. Привязки сохраняются по адресам.'
   elseif key=='genes' then
-    if not paused or stage~='idle' then notice('Поставь на паузу и закончи текущую задачу.',true);return end
     CFG.trustSingleFilledTemplate=not CFG.trustSingleFilledTemplate
     save()
     if CFG.trustSingleFilledTemplate then
-      notice('Гены включены! Проверь, что шаблон НЕ содержит ген ВИДА.')
-    else notice('Импринтер не будет обрабатывать маток.') end
-  elseif key:sub(1,5)=='test:' then testMachine(key:sub(6))
+      deviceActionNote='Прививка ВКЛ для следующих маток. Шаблон обязан быть БЕЗ ГЕНА ВИДА!'
+    else deviceActionNote='Прививка ВЫКЛ для следующих маток.' end
+  elseif key=='meup' then meOffset=math.max(0,meOffset-3)
+  elseif key=='medown' then meOffset=meOffset+3
   elseif key=='up' then settingsOffset=math.max(0,settingsOffset-4)
   elseif key=='down' then settingsOffset=settingsOffset+4
-  elseif key:sub(1,5)=='role:' then changeRole(key:sub(6))
-  elseif key:sub(1,3)=='me:' then changeME(key:sub(4))
+  elseif key:sub(1,5)=='edit:' then
+    selectedDevice=key:sub(6);meOffset=0
+    page='detail'
+    deviceActionNote='Назначь одну роль и интерфейс МЭ, стоящий сверху этого блока.'
+  elseif key:sub(1,8)=='setrole:' then
+    local v=key:sub(9);local addr,r=v:match('^([^:]+):(.+)$')
+    if addr then changeRole(addr,r) end
+  elseif key:sub(1,6)=='setme:' then
+    local v=key:sub(7);local addr,meAddr=v:match('^([^:]+):(.+)$')
+    if addr then changeME(addr,meAddr) end
+  elseif key:sub(1,5)=='test:' then testMachine(key:sub(6))
   elseif key=='exit' then quit=true end
 end
 local function startup()
@@ -1494,7 +1693,7 @@ local function startup()
   if stage~='idle' or next(apiJobs) then
     notice('Восстановлены незавершённые операции. Проверь машины до пуска.',true)
   end
-  log('BeeMaster 6.0 started')
+  log('BeeMaster 7.0 started')
 end
 startup()
 -- First show graphics, then query a large ME network.
@@ -1505,6 +1704,24 @@ if not okInit then initializing=false;notice('Начальная загрузк�
 local lastDraw,lastCycle,lastApiaryCheck=0,0,0
 while not quit do
   local now=computer.uptime()
+  -- Catch user input first for good menu responsiveness.
+  local ev,a,x,y=event.pull(0.12,'touch')
+  if ev=='touch' and x and y then
+    local pressed=nil
+    for _,b in ipairs(buttons) do
+      if y==b.y and x>=b.x and x<b.x+b.w then pressed=b.action;break end
+    end
+    if pressed then
+      local ok,err=pcall(tap,pressed)
+      if not ok then notice('Кнопка: '..tostring(err),false) end
+      local gd,er=pcall(draw)
+      if not gd then print('GUI: '..tostring(er));quit=true end
+      lastDraw=computer.uptime()
+      lastUIActivity=lastDraw
+    end
+  end
+  now=computer.uptime()
+  -- This engine does NOT test the current GUI page: it runs on every screen.
   if not initializing and now-lastCycle>=CFG.tick then
     lastCycle=now
     cycle()
@@ -1512,24 +1729,14 @@ while not quit do
   if not initializing and now-lastApiaryCheck>=CFG.apiaryScan then
     lastApiaryCheck=now
     if #devices.api>0 then
-      local ok=pcall(scanApiaries)
-      if not ok then log('Ошибка проверки пасек') end
+      local ok,err=pcall(scanApiaries)
+      if not ok then log('Ошибка проверки пасек: '..tostring(err)) end
     end
   end
-  if now-lastDraw>=1 then
+  if now-lastDraw>=drawInterval then
     lastDraw=now
     local ok,err=pcall(draw)
     if not ok then print('GUI: '..tostring(err));quit=true end
-  end
-  local _,_,x,y=event.pull(0.25,'touch')
-  if x and y then
-    for _,b in ipairs(buttons) do
-      if y==b.y and x>=b.x and x<b.x+b.w then
-        local ok,err=pcall(tap,b.action)
-        if not ok then notice('Кнопка: '..tostring(err),true) end
-        break
-      end
-    end
   end
 end
 save()
