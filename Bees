@@ -1,4 +1,4 @@
--- BeeMaster Factory 9.0 / Minecraft 1.7.10 / OpenOS 1.6.x / Lua 5.2
+-- BeeMaster Factory 10.0 / Minecraft 1.7.10 / OpenOS 1.6.x / Lua 5.2
 -- AE2 + OpenPeripheralIntegration + Forestry + Gendustry
 -- One ordinary Mutatron, optional Imprinter, 1+ Industrial Apiaries.
 -- Single adapter may expose multiple adjacent peripherals. Routes are explicit.
@@ -29,6 +29,9 @@ local CFG = {
   maxFailedPerRecipe = 25, maxStoneCrossAttempts = 12,
   perApiaryCooldown=40, maxFarmSeconds=4800,
   -- Stone princesses are NEVER consumed by the ordinary Mutatron.
+  -- Ordinary Forest / Meadows / Plains bees do NOT need a matching emulator.
+  -- Only recognized SPECIAL biome requirements block a destination apiary.
+  strictSpecialBiomes=true,
   protectStoneMutations=true,
   stonePrincessReserve=1, -- Never send the final Stone princess to a cross
 }
@@ -36,9 +39,9 @@ local COLOR = {bg=0x0E1722, fg=0xE9EDF0, blue=0x54DEDC,
   green=0x70E39B, yellow=0xFFE08C, red=0xFF7583, gray=0x99A8B9}
 local dirs = {'UP','DOWN','NORTH','SOUTH','WEST','EAST'}
 local opposite = {UP='DOWN',DOWN='UP',NORTH='SOUTH',SOUTH='NORTH',WEST='EAST',EAST='WEST'}
-local DATA='/home/beemaster_v9.dat'
-local OLD_DATA='/home/beemaster_v8.dat'
-local LOG='/home/beemaster_v9.log'
+local DATA='/home/beemaster_v10.dat'
+local OLD_DATA='/home/beemaster_v9.dat'
+local LOG='/home/beemaster_v10.log'
 local originalW,originalH=gpu.getResolution()
 local maxW,maxH=gpu.maxResolution()
 local width,height=maxW,maxH
@@ -86,6 +89,8 @@ local nextMutationPlanAt=0
 local exportFailureCount=0
 local stockWarning=''
 local graphInfo={possible=0,waiting=0,ready=0,example=''}
+CFG.biomeStatus='Ожидание выбора задач'
+CFG.lastBiomeAlert=''
 
 local function log(s)
   local line=string.format('[%.0f] %s',computer.uptime(),tostring(s))
@@ -112,6 +117,7 @@ local function load()
   local f=io.open(DATA,'r')
   local fromOld=false
   if not f then f=io.open(OLD_DATA,'r'); fromOld=(f~=nil) end
+  if not f then f=io.open('/home/beemaster_v8.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v7.dat','r'); fromOld=(f~=nil) end
   if not f then return end
   local s=f:read('*a');f:close()
@@ -130,7 +136,7 @@ local function load()
     apiJobs=x.apiJobs or {}
     apiPrep=x.apiPrep
     if fromOld then
-      log('Imported v8 settings and active jobs; start remains paused for inspection')
+      log('Imported previous settings and active jobs; start remains paused for inspection')
     end
   end
 end
@@ -380,39 +386,105 @@ local UPGRADES={
   [16]='Биом: Пустыня',[17]='Биом: Равнины',[18]='Биом: Джунгли',
   [19]='Генетический стабилизатор',[20]='Биом: Тайга',[21]='Биом: Океан',
   [22]='Очиститель'}
-local function allUpgrades(api)
+local BIOME={emulations={
+  [13]='hell', -- Nether
+  [16]='desert',
+  [18]='jungle',
+  [20]='winter', -- Taiga, not Forest
+  [21]='ocean'
+},title={hell='АД',desert='ПУСТЫНЯ',jungle='ДЖУНГЛИ',winter='ЗИМА / ТАЙГА',ocean='ОКЕАН'},overrides={} }
+-- Optional explicit overrides for modded bees without exposed genetic climate.
+-- Fill with exact individual.ident if your modpack has custom temperature rules.
+-- Example: ['extrabees.species.example']='desert'
+
+function BIOME.allUpgrades(api)
   local ret={}
+  local emulations={}
   for i=3,6 do
     local x=stack(api.p,i)
-    if x then ret[#ret+1]=(UPGRADES[tonumber(x.damage or x.dmg)] or title(x))..' x'..math.max(1,qty(x)) end
+    if x then
+      local dmg=tonumber(x.damage or x.dmg)
+      ret[#ret+1]=(UPGRADES[dmg] or title(x))..' x'..math.max(1,qty(x))
+      if dmg and BIOME.emulations[dmg] then emulations[BIOME.emulations[dmg]]=true end
+    end
   end
-  return ret
+  return ret,emulations
 end
 local function scanApiaries()
   missed={}
   for i,api in ipairs(devices.api) do
-    local x=allUpgrades(api)
+    local x,emulations=BIOME.allUpgrades(api)
     api.upgrades=x
+    api.emulations=emulations
     api.queen=stack(api.p,1)
     api.drone=stack(api.p,2)
-    local joined=norm(table.concat(x,' '))
-    api.biomes={}
-    for _,term in ipairs({'nether','hell','desert','jungle','ocean','forest','swamp','taiga',
-      'end','snow','tundra','пустын','адск','джунгл','океан','болот','тайг','снеж','лес'}) do
-      if joined:find(term,1,true) then api.biomes[#api.biomes+1]=term end
-    end
-    if #x==0 then missed[#missed+1]='Пасека '..i..': улучшения отсутствуют' end
+    if #x==0 then missed[#missed+1]='Пасека '..i..': нет улучшений' end
   end
   for _,m in ipairs(graph) do
     if type(m.conditions)=='table' and next(m.conditions) then
-      -- Special requirements are read but not guessed as a guaranteed biome mapping.
-      local s=serialization.serialize(m.conditions)
-      if s and #s>0 then
-        missed[#missed+1]='Особое условие: '..m.result..' '..s:sub(1,45)
+      local info=serialization.serialize(m.conditions)
+      if info and #info>0 then
+        missed[#missed+1]='Условие мутации: '..m.result..' '..info:sub(1,45)
         if #missed>=25 then break end
       end
     end
   end
+end
+
+-- Biome assignment is based on the SPECIES, not the NBT hash or the
+-- template's flower/night genes. When genome is analyzed the temperature and
+-- humidity from Forestry are used. Otherwise use conservative species names.
+-- All ordinary bees have no restriction; plains/forest emulators are ignored.
+function BIOME.special(uid)
+  if type(uid)~='string' or uid=='' then return nil end
+  if BIOME.overrides[uid] then return BIOME.overrides[uid] end
+  local info=catalog[uid]
+  local name=norm((info and info.name or '')..' '..uid)
+  local function contains(words)
+    for _,word in ipairs(words) do
+      if name:find(word,1,true) then return true end
+    end
+    return false
+  end
+  -- Named species trump broad climate heuristics.
+  if contains({'infernal','demonic','fiendish','sinister','nether','hell','адск','демон','пекельн'}) then return 'hell' end
+  if contains({'desert','modest','arid','пустын','засушл'}) then return 'desert' end
+  if contains({'tropical','jungle','rainforest','тропическ','джунгл'}) then return 'jungle' end
+  if contains({'wintry','winter','icy','frozen','glacial','snow','ледян','снеж','зимн','тайг'}) then return 'winter' end
+  if contains({'ocean','aquatic','marine','океан','морск'}) then return 'ocean' end
+  if info then
+    for _,entry in ipairs(info.entries or {}) do
+      local ind=entry.detail and entry.detail.individual
+      local sp=ind and ind.active and ind.active.species
+      if type(sp)=='table' then
+        local temp=norm(sp.temperature):upper()
+        local hum=norm(sp.humidity):upper()
+        if temp:find('HELLISH',1,true) then return 'hell' end
+        if temp:find('ICY',1,true) or temp:find('COLD',1,true) then return 'winter' end
+        if temp:find('HOT',1,true) and hum:find('ARID',1,true) then return 'desert' end
+        if temp:find('WARM',1,true) and hum:find('DAMP',1,true) then return 'jungle' end
+      end
+    end
+  end
+  return nil
+end
+
+-- Stone princess + target drone task: require the TARGET's special biome too.
+-- That is deliberately stricter than the mother's current genome.
+function BIOME.needed(task)
+  local needed=BIOME.special(task.uid)
+  if needed then return needed end
+  if task.source and task.source~=task.uid then
+    return BIOME.special(task.source)
+  end
+  return nil
+end
+function BIOME.ok(task,api)
+  if not CFG.strictSpecialBiomes then return true end
+  local wanted=BIOME.needed(task)
+  if not wanted then return true end
+  if api.emulations and api.emulations[wanted] then return true end
+  return false,'Нужна эмуляция: '..(BIOME.title[wanted] or wanted)..' | пчела '..((catalog[task.uid] or {}).name or task.uid)
 end
 local function hasVariant(kind)
   local list=devices[kind] or {}
@@ -953,6 +1025,27 @@ local function busyApiary(api)
   for n=7,15 do if stack(api.p,n) then return true end end
   return false
 end
+function BIOME.choose(task,forced)
+  if forced then
+    if not routes['api-'..forced.addr] then return nil,nil,'Нет МЭ для выбранной пасеки' end
+    local ok,why=BIOME.ok(task,forced)
+    if not ok then return nil,nil,why end
+    return forced,routes['api-'..forced.addr]
+  end
+  local free=0
+  for _,candidate in ipairs(devices.api) do
+    if not busyApiary(candidate) and routes['api-'..candidate.addr] then
+      free=free+1
+      local ok=BIOME.ok(task,candidate)
+      if ok then return candidate,routes['api-'..candidate.addr] end
+    end
+  end
+  local wanted=BIOME.needed(task)
+  if wanted and free>0 then
+    return nil,nil,'НЕТ ПАСЕКИ С ЭМУЛЯЦИЕЙ '..(BIOME.title[wanted] or wanted)..': '..((catalog[task.uid] or {}).name or task.uid)
+  end
+  return nil,nil,'Нет свободной пасеки с назначенным МЭ'
+end
 local function liveApiary(addr)
   for _,api in ipairs(devices.api) do if api.addr==addr then return api end end
 end
@@ -967,20 +1060,16 @@ local function loadToApiary(task,forcedApi,strict)
   if not CFG.useApiary then return false,'Пасеки отключены' end
   local first=task.queen or task.p
   if not first then return false,'Не найдена принцесса или матка' end
-  local api,route
-  if forcedApi then
-    api=forcedApi;route=routes['api-'..api.addr]
-  else
-    for _,candidate in ipairs(devices.api) do
-      if not busyApiary(candidate) then
-        local r=routes['api-'..candidate.addr]
-        if r then api,route=candidate,r;break end
-      end
-    end
-  end
+  local api,route,issue=BIOME.choose(task,forcedApi)
   if not api then
-    apiaryReason='Нет свободной пасеки с назначенным МЭ (ОБОРУДОВАНИЕ → ПАСЕКА → МЭ)'
+    apiaryReason=issue or 'Нет подходящей пасеки'
+    CFG.biomeStatus=apiaryReason
     return false,apiaryReason
+  end
+  local permitted,whyBiome=BIOME.ok(task,api)
+  if not permitted then
+    apiaryReason=whyBiome;CFG.biomeStatus=whyBiome
+    return false,whyBiome
   end
   -- Verify the pair exists in THIS interface, not just in another ME view.
   local firstLive,missing=liveFingerprint(route,{fingerprint=first.fp},1,strict)
@@ -1151,6 +1240,12 @@ local function processApiaryImprint(now)
       p=(prep.firstKind=='P') and {fp=prep.firstFp} or nil,
       queen=(prep.firstKind=='Q') and {fp=prep.firstFp} or nil,
       d=prep.secondFp and {fp=prep.secondFp} or nil}
+    local allowed,blocker=BIOME.ok(t,api)
+    if not allowed then
+      apiaryReason=blocker
+      CFG.biomeStatus=blocker
+      return -- do not pause, don't export bee or lose prepared parents
+    end
     local ok,why=loadToApiary(t,api,true)
     if ok then
       apiPrep=nil
@@ -1343,33 +1438,47 @@ local function scheduleApiaries()
     if n>=free then break end
     if not inProgressTarget(task.uid) then
       local ok,why
-      if imprintEnabled() then
-        local candidate
-        for _,a in ipairs(devices.api) do
-          if not busyApiary(a) and routes['api-'..a.addr] then candidate=a;break end
-        end
-        if not candidate then
-          ok=false;why='Пасеке не назначен МЭ над ней'
-        elseif not routes.imp then
-          ok=false;why='Импринтер назначен, но для него не выбран МЭ'
-        elseif not CFG.trustSingleFilledTemplate then
-          ok=false;why='Включи ГЕНЫ в настройках, иначе запуск пасек заблокирован (без обхода импринтера)'
+      -- Check biome BEFORE touching any bee, including before Imprinter.
+      local candidate,route,blocked=BIOME.choose(task)
+      if not candidate then
+        if blocked and blocked:find('ЭМУЛЯЦ',1,true) then
+          CFG.biomeStatus=blocked
+          if CFG.lastBiomeAlert~=blocked then
+            log('Biome: '..blocked)
+            CFG.lastBiomeAlert=blocked
+          end
+          -- Another species might run in a normal apiary; try next task.
         else
-          ok,why=queueApiaryImprint(task,candidate)
+          apiaryReason=blocked or 'Нет свободной пасеки с МЭ'
+          nextApiaryPlanAt=t+CFG.perApiaryCooldown
+          break
         end
       else
-        ok,why=loadToApiary(task)
-      end
-      if ok then n=n+1
-      else
-        apiaryReason=tostring(why)
-        log('Apiary setup: '..tostring(why))
-        nextApiaryPlanAt=t+45
-        pendingApiaryRefresh=true
-        break
+        if imprintEnabled() then
+          if not routes.imp then
+            ok=false;why='Импринтер назначен, но для него не выбран МЭ'
+          elseif not CFG.trustSingleFilledTemplate then
+            ok=false;why='Включи ГЕНЫ в настройках, иначе запуск пасек заблокирован (без обхода импринтера)'
+          else
+            ok,why=queueApiaryImprint(task,candidate)
+          end
+        else
+          ok,why=loadToApiary(task,candidate)
+        end
+        if ok then n=n+1
+        else
+          apiaryReason=tostring(why)
+          log('Apiary setup: '..tostring(why))
+          nextApiaryPlanAt=t+45
+          pendingApiaryRefresh=true
+          break
+        end
       end
       if apiPrep then break end -- One imprinted bee at a time; other active apiaries keep working.
     end
+  end
+  if n==0 and CFG.biomeStatus:find('ЭМУЛЯЦ',1,true) and not apiPrep then
+    apiaryReason=CFG.biomeStatus
   end
 end
 
@@ -1532,7 +1641,10 @@ local function drawHome()
   local deficit=(graphInfo.example or '')
   if deficit~='' then paint(mx,my+4,cut('Ближайшая цель: '..deficit,leftW-4),COLOR.yellow,0x142233)
   elseif #missed>0 then paint(mx,my+4,cut('Особые условия: '..#missed,leftW-4),COLOR.yellow,0x142233) end
-  local r=my+5
+  if CFG.biomeStatus:find('ЭМУЛЯЦ',1,true) and my+5<=sectionY+sectionH-2 then
+    paint(mx,my+5,cut('БИОМ: '..CFG.biomeStatus,leftW-4),COLOR.yellow,0x142233)
+  end
+  local r=my+(CFG.biomeStatus:find('ЭМУЛЯЦ',1,true) and 6 or 5)
   if apiPrep and r<=sectionY+sectionH-2 then
     local phaseNames={imprint_start='ПОДГОТОВКА',imprint_wait='ПРИВИВКА',apiary_load='ЗАГРУЗКА'}
     paint(mx,r,cut('> ИМПРИНТЕР: '..apiaryTaskSummary(apiPrep)..' | '..(phaseNames[apiPrep.phase] or '?')..' '..apiPrep.part..'/2',leftW-4),COLOR.blue,0x142233)
@@ -1959,7 +2071,7 @@ local function startup()
   if stage~='idle' or next(apiJobs) or apiPrep then
     notice('Восстановлены незавершённые операции. Проверь машины до пуска.',true)
   end
-  log('BeeMaster 9.0 started')
+  log('BeeMaster 10.0 started')
 end
 startup()
 -- First show graphics, then query a large ME network.
