@@ -28,9 +28,9 @@ local COLOR = {bg=0x0E1722, fg=0xE9EDF0, blue=0x54DEDC,
   green=0x70E39B, yellow=0xFFE08C, red=0xFF7583, gray=0x99A8B9}
 local dirs = {'UP','DOWN','NORTH','SOUTH','WEST','EAST'}
 local opposite = {UP='DOWN',DOWN='UP',NORTH='SOUTH',SOUTH='NORTH',WEST='EAST',EAST='WEST'}
-local DATA='/home/beemaster_v13.dat'
-local OLD_DATA='/home/beemaster_v12.dat'
-local LOG='/home/beemaster_v13.log'
+local DATA='/home/beemaster_v14.dat'
+local OLD_DATA='/home/beemaster_v13.dat'
+local LOG='/home/beemaster_v14.log'
 local originalW,originalH=gpu.getResolution()
 local maxW,maxH=gpu.maxResolution()
 local width,height=maxW,maxH
@@ -68,6 +68,7 @@ local page='home'
 local recent={}
 local apiJobs={}
 local apiPrep=nil
+CFG.lastDeliveryReason=''
 local apiStats={completed=0,failed=0,drones=0,princesses=0}
 local created={}
 local lastApiResult=0
@@ -151,7 +152,10 @@ end
 local function stack(p,slot)
   local ok,v=invoke(p,'getStackInSlot',slot,false)
   if not ok then return nil end
-  if type(v)=='table' and next(v) then return v end
+  if type(v)=='table' and next(v) and
+     (v.size==nil or (tonumber(v.size) or 0)>0) and
+     (v.qty==nil or (tonumber(v.qty) or 0)>0) and
+     v.id~='invalid' and v.name~='invalid' then return v end
   return nil
 end
 local function qty(v)
@@ -1125,19 +1129,34 @@ local function chooseApiaryTask()
   end)
   return choices
 end
-local function busyApiary(api)
-  if apiPrep and apiPrep.apiAddr==api.addr then return true end
+function BIOME.outputUsed(api)
+  local count=0
+  for n=7,15 do if stack(api.p,n) then count=count+1 end end
+  return count
+end
+local function busyApiary(api,ignoreOwnReservation)
   for _,w in pairs(apiJobs) do if w.apiAddr==api.addr then return true end end
   if stack(api.p,1) or stack(api.p,2) then return true end
-  for n=7,15 do if stack(api.p,n) then return true end end
+  if BIOME.outputUsed(api)>=9 then return true end
+  if apiPrep and apiPrep.apiAddr==api.addr and not ignoreOwnReservation then return true end
   return false
+end
+function BIOME.ownReservation(task,api)
+  return apiPrep and apiPrep.apiAddr==api.addr and
+    apiPrep.phase=='apiary_load' and apiPrep.uid==task.uid and
+    apiPrep.kind==task.kind
 end
 function BIOME.choose(task,forced)
   if forced then
     if not routes['api-'..forced.addr] then return nil,nil,'Нет МЭ для выбранной пасеки' end
     local ok,why=BIOME.ok(task,forced)
     if not ok then return nil,nil,why end
-    if busyApiary(forced) then return nil,nil,'Пасека с нужным климатом уже занята' end
+    local own=BIOME.ownReservation(task,forced)
+    if busyApiary(forced,own) then
+      if BIOME.outputUsed(forced)>=9 then return nil,nil,'Выход пасеки заполнен (9/9), нужен импорт в МЭ' end
+      if stack(forced.p,1) or stack(forced.p,2) then return nil,nil,'Во входных слотах пасеки уже есть пчёлы' end
+      return nil,nil,'Пасека занята другим заданием'
+    end
     return forced,routes['api-'..forced.addr]
   end
   local best,bestScore,matched,busyMatch,anyFree,anyMapped=nil,-9999,false,false,false,false
@@ -1342,6 +1361,7 @@ local function processApiaryImprint(now)
   local api=liveApiary(prep.apiAddr)
   if not api then notice('Пропала пасека для подготовленных пчёл',true);return end
   if prep.phase=='apiary_load' then
+    prep.deliveryStarted=prep.deliveryStarted or now
     local t={uid=prep.uid,kind=prep.kind,source=prep.source,key=prep.key,
       p=(prep.firstKind=='P') and {fp=prep.firstFp} or nil,
       queen=(prep.firstKind=='Q') and {fp=prep.firstFp} or nil,
@@ -1355,12 +1375,22 @@ local function processApiaryImprint(now)
     local ok,why=loadToApiary(t,api,true)
     if ok then
       apiPrep=nil
+      CFG.lastDeliveryReason=''
       pendingApiaryRefresh=true
       apiaryReason='После прививки пчёлы отправлены в пасеку'
       save()
     else
-      apiaryReason='Привитые пчёлы не доставлены: '..tostring(why)
-      notice(apiaryReason,true);save()
+      apiaryReason='Доставка после импринтера: '..tostring(why)
+      if apiaryReason~=CFG.lastDeliveryReason then
+        log(apiaryReason)
+        CFG.lastDeliveryReason=apiaryReason
+      end
+      if stack(api.p,1) or stack(api.p,2) then
+        notice('Входные слоты пасеки частично заполнены: проверь перед повторной подачей',true)
+      elseif now-prep.deliveryStarted>CFG.timeout then
+        notice('Пчёлы не доставлены за '..CFG.timeout..'с: '..tostring(why),true)
+      end
+      save()
     end
     return
   end
@@ -1522,7 +1552,7 @@ local function scheduleApiaries()
   if not CFG.useApiary or #devices.api==0 or paused then return end
   local t=computer.uptime()
   if apiPrep then
-    CFG.schedulerSummary='Импринтер готовит родителей; остальные пасеки работают'
+    CFG.schedulerSummary='Импринтер готовит пчёл для пасеки; другие задания в очереди'
     return
   end
   if t<nextApiaryPlanAt then return end
@@ -1737,7 +1767,7 @@ local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'13.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  paint(16,1,'14.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
   local st=initializing and 'СКАНИРОВАНИЕ' or (paused and 'ПАУЗА' or 'РАБОТА')
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
@@ -1841,13 +1871,17 @@ local function drawHome()
     local name=(api.upgrades and table.concat(api.upgrades,', ') or '')
     local bee=stack(api.p,1)
     local running=w~=nil
+    local reserved=apiPrep and apiPrep.apiAddr==api.addr
+    local outputCount=BIOME.outputUsed(api)
     local state=running and ((w.kind=='farm' and 'ТРУТНИ' or w.kind=='stone' and 'ПРИНЦЕССА' or 'ПОТОМСТВО')..': '..(w.targetLabel or w.uid))
       or bee and ('ЗАНЯТА: '..title(bee))
-      or busyApiary(api) and 'ВЫХОД ПАСЕКИ ЗАНЯТ'
+      or reserved and ('ОЖИДАЕТ ИМПРИНТЕР: '..apiaryTaskSummary(apiPrep))
+      or outputCount>=9 and 'ВЫХОД ПОЛОН (9/9): нужен импорт в МЭ'
       or 'СВОБОДНА — ЖДЁТ ЗАДАЧУ'
-    paint(rx,pos,cut(string.format('%d. ',i)..state,rightW-4),running and COLOR.green or (bee and COLOR.yellow or COLOR.fg),0x142233)
+    local stateColor=running and COLOR.green or (bee or outputCount>=9) and COLOR.yellow or reserved and COLOR.blue or COLOR.fg
+    paint(rx,pos,cut(string.format('%d. ',i)..state,rightW-4),stateColor,0x142233)
     pos=pos+1
-    paint(rx,pos,cut('   '..(name~='' and name or 'Без улучшений'),rightW-4),COLOR.gray,0x142233)
+    paint(rx,pos,cut('   '..(name~='' and name or 'Без улучшений')..(outputCount>0 and ' | выход '..outputCount..'/9' or ''),rightW-4),COLOR.gray,0x142233)
     pos=pos+2
   end
   fill(2,H-5,W-3,2,0x182C3F)
@@ -2229,7 +2263,7 @@ local function startup()
   if stage~='idle' or next(apiJobs) or apiPrep then
     notice('Восстановлены незавершённые операции. Проверь машины до пуска.',true)
   end
-  log('BeeMaster 13.0 started')
+  log('BeeMaster 14.0 started')
 end
 startup()
 local okDraw,whyDraw=pcall(draw)
