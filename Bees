@@ -67,7 +67,7 @@ local selectedMEAddr=nil
 scannerAddress=nil
 scannerBoot=nil
 scannerVersion=0
-scannerStatus='Ожидание ME Scanner'
+scannerStatus='Поиск ME Scanner: HELLO на 4481'
 scannerLastHello=0
 scannerLastMessage=0
 scannerTransfer=nil
@@ -80,6 +80,11 @@ scannerRequestAt=0
 scannerRemoteME=''
 scannerRemoteErrors=0
 scannerDisconnectedSince=0
+scannerMetaLogged=false
+scannerPagesReceived=0
+scannerNoReplyNotice=false
+scannerNoPageNotice=false
+scannerSendErrors=0
 local nextScanRecovery=0
 scanEnabled=false
 scanConfirmUntil=0
@@ -474,26 +479,43 @@ end
 -- Modem request/response. Scanner answers with <=5.5KB per packet.
 function sendToScanner(action,a,b)
   if not scannerModem then return false end
-  local ok
+  local ok,result
   if scannerAddress then
-    if a==nil then ok=pcall(scannerModem.send,scannerAddress,SCAN_PORT,SCAN_PROTOCOL,action)
-    elseif b==nil then ok=pcall(scannerModem.send,scannerAddress,SCAN_PORT,SCAN_PROTOCOL,action,a)
-    else ok=pcall(scannerModem.send,scannerAddress,SCAN_PORT,SCAN_PROTOCOL,action,a,b) end
+    if a==nil then ok,result=pcall(scannerModem.send,scannerAddress,SCAN_PORT,SCAN_PROTOCOL,action)
+    elseif b==nil then ok,result=pcall(scannerModem.send,scannerAddress,SCAN_PORT,SCAN_PROTOCOL,action,a)
+    else ok,result=pcall(scannerModem.send,scannerAddress,SCAN_PORT,SCAN_PROTOCOL,action,a,b) end
   else
-    if a==nil then ok=pcall(scannerModem.broadcast,SCAN_PORT,SCAN_PROTOCOL,action)
-    elseif b==nil then ok=pcall(scannerModem.broadcast,SCAN_PORT,SCAN_PROTOCOL,action,a)
-    else ok=pcall(scannerModem.broadcast,SCAN_PORT,SCAN_PROTOCOL,action,a,b) end
+    if a==nil then ok,result=pcall(scannerModem.broadcast,SCAN_PORT,SCAN_PROTOCOL,action)
+    elseif b==nil then ok,result=pcall(scannerModem.broadcast,SCAN_PORT,SCAN_PROTOCOL,action,a)
+    else ok,result=pcall(scannerModem.broadcast,SCAN_PORT,SCAN_PROTOCOL,action,a,b) end
   end
-  return ok
+  if not ok or result==false then
+    scannerSendErrors=scannerSendErrors+1
+    if scannerSendErrors==1 then
+      scannerStatus='Ошибка отправки на порт 4481: '..tostring(result)
+      log(scannerStatus)
+    end
+    return false
+  end
+  return true
 end
 function connectScanner()
   local modem=component.modem
   if not modem then
-    scannerStatus='НЕТ СЕТЕВОЙ КАРТЫ: установи модем на BeeMaster'
+    scannerStatus='НЕТ СЕТЕВОЙ КАРТЫ на основном компьютере!'
+    log(scannerStatus)
     return false
   end
   scannerModem=modem
-  modem.open(MASTER_PORT)
+  local ok,result=pcall(modem.open,MASTER_PORT)
+  if not ok or result==false then
+    scannerStatus='Не удалось открыть порт 4482: '..tostring(result)
+    log(scannerStatus)
+    scannerModem=nil
+    return false
+  end
+  scannerStatus='Поиск ME Scanner: отправляю HELLO на 4481'
+  log('Модем BeeMaster слушает 4482, ищет сканер на 4481')
   sendToScanner('HELLO')
   scannerLastHello=computer.uptime()
   return true
@@ -507,6 +529,11 @@ function scannerPacket(localAddress,remoteAddress,port,distance,tag,action,a,b,c
     local ok,meta=pcall(serialization.unserialize,a)
     if not ok or type(meta)~='table' or type(meta.version)~='number' then return end
     if type(meta.boot)~='string' or (meta.count or 0)>4000 then return end
+    if not scannerMetaLogged then
+      scannerMetaLogged=true
+      log('ME Scanner обнаружен '..remoteAddress:sub(1,12)..' / скан #'..tostring(meta.version)..' / позиций '..tostring(meta.count))
+    end
+    scannerNoReplyNotice=false
     scannerAddress=remoteAddress
     scannerLastMessage=computer.uptime()
     scannerStatus=(meta.error and meta.error~='') and ('Сканер: '..tostring(meta.error):sub(1,150)) or 'ME Scanner онлайн'
@@ -543,10 +570,15 @@ function scannerPacket(localAddress,remoteAddress,port,distance,tag,action,a,b,c
         type(r[1])~='string' or type(r[2])~='number' then return end
     end
     for _,r in ipairs(pack) do transfer.rows[#transfer.rows+1]=r end
+    scannerPagesReceived=scannerPagesReceived+1
+    if scannerPagesReceived==1 then
+      log('ME Scanner: получена первая страница каталога, сеть работает')
+    end
     transfer.nextIndex=start+#pack
     transfer.lastRequest=0
     scannerLastMessage=computer.uptime()
     if transfer.nextIndex>transfer.total then
+      log('ME Scanner: каталог #'..transfer.version..' скачан ('..#transfer.rows..' позиций)')
       scannerRows=transfer.rows
       scannerPendingVersion=transfer.version
       scannerTransfer=nil
@@ -557,6 +589,7 @@ end
 function pollScanner(now)
   if not scannerModem then return end
   if scannerAddress and scannerLastMessage>0 and now-scannerLastMessage>35 then
+    scannerMetaLogged=false
     scannerAddress=nil
     scannerBoot=nil
     scannerTransfer=nil
@@ -569,6 +602,10 @@ function pollScanner(now)
   end
   local tr=scannerTransfer
   if tr then
+    if not scannerNoPageNotice and tr.lastRequest>0 and now-tr.lastRequest>=10 and scannerPagesReceived==0 then
+      scannerNoPageNotice=true
+      log('Сканер отвечает, но нет страниц каталога: проверь журнал сканера и число позиций')
+    end
     if tr.total==0 then
       scannerRows={};scannerPendingVersion=tr.version;scannerTransfer=nil
     elseif tr.lastRequest==0 or now-tr.lastRequest>=2 then
@@ -2281,7 +2318,7 @@ local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'22.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  paint(16,1,'22.1  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
   local st=initializing and 'СКАНИРОВАНИЕ' or (not scanEnabled and 'SAFE MODE' or (paused and 'ПАУЗА' or 'РАБОТА'))
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
@@ -2404,9 +2441,10 @@ local function drawHome()
   end
   fill(2,H-5,W-3,2,0x182C3F)
   local report=paused and alert or (stockWarning~='' and stockWarning or apiaryReason)
+  if lastME==0 then report=scannerStatus end
   if report=='' then report=alert end
   paint(3,H-5,cut('СТАТУС: '..report,W-6),COLOR.yellow,0x182C3F)
-  paint(3,H-4,cut(rolesLine()..'  |  МЭ: '..(lastME>0 and (math.floor(computer.uptime()-lastME)..'с назад') or 'нет скана')..'  |  Scanner: '..(scannerLastMessage>0 and (math.floor(computer.uptime()-scannerLastMessage)..'с') or 'нет'),W-6),COLOR.gray,0x182C3F)
+  paint(3,H-4,cut(rolesLine()..'  |  МЭ: '..(lastME>0 and (math.floor(computer.uptime()-lastME)..'с назад') or 'нет скана')..'  |  Scanner: '..(scannerLastMessage>0 and (math.floor(computer.uptime()-scannerLastMessage)..'с / '..tostring(scannerVersion)) or 'нет связи'),W-6),COLOR.gray,0x182C3F)
   fill(1,H-2,W,3,0x102235)
   local bx=3
   button(bx,H-1,paused and 'СТАРТ' or 'ПАУЗА','pause',paused and COLOR.green or COLOR.yellow,0x203B49,14)
@@ -2976,7 +3014,7 @@ local function startup()
     log(alert)
   end
   connectScanner()
-  log('BeeMaster 22.0 / REMOTE ME 10s / OC 1.6.1')
+  log('BeeMaster 22.1 / REMOTE ME 10s / OC 1.6.1')
 end
 restoreJournal()
 startup()
@@ -2996,13 +3034,21 @@ while not quit do
     local ok,why=pcall(meInventory,true)
     if not ok then log('Ошибка получения каталога: '..tostring(why));scannerRows=nil end
   end
-  if scannerLastMessage>0 and now-scannerLastMessage>35 then
+  if not scannerModem then
+    stockWarning='НЕТ OC МОДЕМА на BeeMaster: каталог МЭ не может прийти'
+  elseif scannerLastMessage==0 and now>15 then
+    stockWarning='НЕТ ОТВЕТА от сканера на 4481! Проверь OC сеть (не AE2 кабель)'
+    if not scannerNoReplyNotice then
+      scannerNoReplyNotice=true
+      log(stockWarning)
+    end
+  elseif scannerLastMessage>0 and now-scannerLastMessage>35 then
     stockWarning='Нет ответа от ME Scanner больше 35 с; сохранён предыдущий каталог'
   end
   ev,a,x,y,d,p,action,v1,v2,v3=event.pull(0.12)
   if ev=='modem_message' then
     local fine,why=pcall(scannerPacket,a,x,y,d,p,action,v1,v2,v3)
-    if not fine then log('Сетевой пакет: '..tostring(why)) end
+    if not fine then scannerStatus='Ошибка сетевого пакета: '..tostring(why);log(scannerStatus) end
   end
   if ev=='touch' and x and y then
     local pressed=nil
