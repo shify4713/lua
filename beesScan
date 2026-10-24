@@ -1,4 +1,4 @@
--- BeeMaster 22.0 ME Scanner -- Lua 5.2 / OpenOS 1.6.1
+-- BeeMaster 22.1 ME Scanner -- Lua 5.2 / OpenOS 1.6.1
 -- Run on the SECOND OC computer (ME interface + modem + maximum RAM).
 local component=require('component')
 local computer=require('computer')
@@ -43,6 +43,13 @@ local lastError='Ожидание первого скана'
 local lastScanAt=0
 local errorCount=0
 local lastPrinted=''
+local clientAddress=nil
+local lastClientAt=0
+local helloCount=0
+local pageCount=0
+local netNoClientNotice=false
+local sendFailures=0
+
 
 local function info(message)
   message=tostring(message):gsub('[\r\n]+',' '):sub(1,180)
@@ -61,11 +68,18 @@ local function info(message)
   if f then f:write(table.concat(rows,'\n'),'\n');f:close() end
 end
 local function send(addr,kind,a,b,c)
-  if not addr then return end
-  if c~=nil then pcall(modem.send,addr,PORT_MASTER,PROTO,kind,a,b,c)
-  elseif b~=nil then pcall(modem.send,addr,PORT_MASTER,PROTO,kind,a,b)
-  elseif a~=nil then pcall(modem.send,addr,PORT_MASTER,PROTO,kind,a)
-  else pcall(modem.send,addr,PORT_MASTER,PROTO,kind) end
+  if not addr then return false end
+  local ok,delivered
+  if c~=nil then ok,delivered=pcall(modem.send,addr,PORT_MASTER,PROTO,kind,a,b,c)
+  elseif b~=nil then ok,delivered=pcall(modem.send,addr,PORT_MASTER,PROTO,kind,a,b)
+  elseif a~=nil then ok,delivered=pcall(modem.send,addr,PORT_MASTER,PROTO,kind,a)
+  else ok,delivered=pcall(modem.send,addr,PORT_MASTER,PROTO,kind) end
+  if not ok or delivered==false then
+    sendFailures=sendFailures+1
+    if sendFailures<=2 then info('Не удалось отправить '..kind..': '..tostring(delivered)) end
+    return false
+  end
+  return true
 end
 local function roleId(id)
   local s=tostring(id or ''):lower()
@@ -159,13 +173,29 @@ end
 local function meta()
   return {boot=boot,version=version,count=current and #current.rows or 0,
     age=lastScanAt>0 and math.floor(computer.uptime()-lastScanAt) or -1,
-    error=lastError,me=chosen,errors=errorCount,interval=SCAN_EVERY}
+    error=lastError,me=chosen,errors=errorCount,interval=SCAN_EVERY,hello=helloCount,pages=pageCount}
+end
+local function announce()
+  local ok,delivered=pcall(modem.broadcast,PORT_MASTER,PROTO,'META',ser.serialize(meta()))
+  if not ok and sendFailures<2 then
+    sendFailures=sendFailures+1
+    info('Ошибка modem.broadcast: '..tostring(delivered))
+  end
 end
 local function handleMessage(localAddr,remote,port,distance,tag,action,x,y)
   if port~=PORT_SCAN or tag~=PROTO or type(remote)~='string' then return end
   if action=='HELLO' then
+    helloCount=helloCount+1
+    lastClientAt=computer.uptime()
+    if remote~=clientAddress then
+      clientAddress=remote
+      info('СВЯЗЬ ЕСТЬ: запрос от BeeMaster '..remote:sub(1,12)..' / порт '..PORT_MASTER)
+    end
     send(remote,'META',ser.serialize(meta()))
   elseif action=='PAGE' then
+    pageCount=pageCount+1
+    lastClientAt=computer.uptime()
+    if pageCount==1 or pageCount%30==0 then info('Отправляю страницы каталога: запросов '..pageCount) end
     local want=tonumber(x)
     local start=tonumber(y)
     local snap=want and snapshots[want]
@@ -191,7 +221,7 @@ local function handleMessage(localAddr,remote,port,distance,tag,action,x,y)
   end
 end
 
-info('ME Scanner 22.0 / OpenOS 1.6.1 / Интерфейс '..chosen:sub(1,8))
+info('ME Scanner 22.1 / OpenOS 1.6.1 / Интерфейс '..chosen:sub(1,8))
 info('Модем: порт '..PORT_SCAN..' | Каждые 10 с; BeeMaster получает малые пакеты')
 while true do
   local now=computer.uptime()
@@ -200,11 +230,16 @@ while true do
     local ok,rows,err=pcall(makeSnapshot)
     if ok and rows then
       publish(rows)
+      announce()
     else
       lastError=tostring(ok and err or rows)
       errorCount=errorCount+1
       info('Ошибка МЭ, сохранён прошлый каталог: '..lastError)
     end
+  end
+  if not clientAddress and now>30 and not netNoClientNotice then
+    netNoClientNotice=true
+    info('НЕТ ЗАПРОСОВ BeeMaster! Проверь OC кабель/радиомодем, AE2 кабель не передаёт OC пакеты.')
   end
   local e,a,b,c,d,p,action,x,y=event.pull(0.12)
   if e=='modem_message' then
