@@ -7,7 +7,7 @@ local serialization = require('serialization')
 local gpu = assert(component.gpu, 'GPU missing')
 
 local CFG = {
-  tick = 3, scanInterval = 240, busyScan = 45, apiaryScan = 25,
+  tick = 3, scanInterval = 360, busyScan = 75, apiaryScan = 25,
   timeout = 600, importTimeout = 120, nurseryTimeout = 3600,
   targetLabware = 64, minPrincessReserve = 1,
   minDroneReserve = 4, requireKnownMutation = true,
@@ -19,7 +19,8 @@ local CFG = {
   allowLastDrone = false,
   maxFailedPerRecipe = 25, maxStoneCrossAttempts = 12,
   perApiaryCooldown=15, maxFarmSeconds=4800,
-  gcInterval=30, memoryWarningKB=110, maxLogBytes=48*1024,
+  gcInterval=30, memoryWarningKB=135, maxLogBytes=48*1024,
+  minFullScanGap=90, minScanFreeKB=1050, maxNewDetailsPerScan=50,
   strictSpecialBiomes=true,
   allowUnknownClimate=false,
   protectStoneMutations=true,
@@ -29,9 +30,9 @@ local COLOR = {bg=0x0E1722, fg=0xE9EDF0, blue=0x54DEDC,
   green=0x70E39B, yellow=0xFFE08C, red=0xFF7583, gray=0x99A8B9}
 local dirs = {'UP','DOWN','NORTH','SOUTH','WEST','EAST'}
 local opposite = {UP='DOWN',DOWN='UP',NORTH='SOUTH',SOUTH='NORTH',WEST='EAST',EAST='WEST'}
-local DATA='/home/beemaster_v17.dat'
-local OLD_DATA='/home/beemaster_v16.dat'
-local LOG='/home/beemaster_v17.log'
+local DATA='/home/beemaster_v18.dat'
+local OLD_DATA='/home/beemaster_v17.dat'
+local LOG='/home/beemaster_v18.log'
 local originalW,originalH=gpu.getResolution()
 local maxW,maxH=gpu.maxResolution()
 local width,height=maxW,maxH
@@ -55,6 +56,7 @@ local paused=true
 local mode,alert='Ожидание','Первый запуск: проверь подключение и нажми СТАРТ'
 local news,failures,known,stage,job,missed,lastScan = {},{}, {}, 'idle', nil, {}, 0
 local detailCache, targetSpecies, lastME, lastApiary = {},{},0,0
+CFG.maxMEErrorAt=0
 local pendingRefresh=false
 local nextPlanAt=0
 local template=nil
@@ -127,7 +129,7 @@ local function log(s)
       if now-stamp>300 then CFG.logRecentKeys[key]=nil
       else count=count+1 end
     end
-    if count>250 then CFG.logRecentKeys={[s]=now} end
+    if count>110 then CFG.logRecentKeys={[s]=now} end
   end
   local line=string.format('[%.0f] %s',now,s)
   recent[#recent+1]=line
@@ -162,6 +164,7 @@ local function load()
   local f=io.open(DATA,'r')
   local fromOld=false
   if not f then f=io.open(OLD_DATA,'r'); fromOld=(f~=nil) end
+  if not f then f=io.open('/home/beemaster_v16.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v15.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v14.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v13.dat','r'); fromOld=(f~=nil) end
@@ -299,10 +302,15 @@ local function primaryME()
 end
 local function getList(me)
   me=assert(me or primaryME(),'ME not found')
-  releaseMemory(true)
+  local free=type(computer.freeMemory)=='function' and computer.freeMemory() or nil
+  if free and free<CFG.minScanFreeKB*1024 then
+    error('МЭ НЕ СКАНИРОВАЛАСЬ: свободно '..math.floor(free/1024)..
+      ' КБ RAM. Для большой МЭ нужны дополнительные планки памяти / отдельная МЭ подсеть пчёл')
+  end
   local ok,a=invoke(me,'getAvailableItems','NONE')
-  if not ok or type(a)~='table' then ok,a=invoke(me,'getAvailableItems') end
-  assert(ok and type(a)=='table','Нужен getAvailableItems: '..tostring(a))
+  if not ok or type(a)~='table' then
+    error('getAvailableItems: '..tostring(a))
+  end
   return a
 end
 function compactDetail(a)
@@ -331,67 +339,79 @@ end
 local function fingerprintKey(fp)
   return tostring(fp.id)..'/'..tostring(fp.dmg)..'/'..tostring(fp.nbt_hash or '-')
 end
-local function meInventory()
-  releaseMemory(true)
+local function meInventory(force)
+  local now=computer.uptime()
+  if not force and lastME>0 and now-lastME<CFG.minFullScanGap then
+    return false
+  end
   local entries=getList()
-  available={}
-  catalog={}
-  local resourceItems={}
-  local seenDetails={}
+  local beeRows={}
+  local resources={}
   local templates={}
-  local newlyRead=0
-  local processed=0
   for _,v in pairs(entries) do
     if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0 then
       local fp=v.fingerprint
       local id=norm(fp.id)
       if id:find('gendustry:',1,true) and
          (id:find('labware',1,true) or id:find('genesampleblank',1,true)
-           or id:find('genetemplate',1,true)) then
-        resourceItems[#resourceItems+1]={fingerprint=fp,size=qty(v)}
+            or id:find('genetemplate',1,true)) then
+        resources[#resources+1]={fingerprint={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash},size=qty(v)}
       end
-      local r=role({id=fp.id})
-      if r then
-        local key=fingerprintKey(fp)
-        local detail=detailCache[key]
-        if not detail then
-          detail=lookDetail(fp)
-          if detail then newlyRead=newlyRead+1;detailCache[key]=detail end
-        end
-        if detail then seenDetails[key]=true end
-        processed=processed+1
-        if processed%16==0 then releaseMemory(true) end
-        local ind=detail and detail.individual
-        if type(ind)=='table' then
-          local sp=ind.ident or (ind.active and ind.active.species and ind.active.species.name)
-          if sp and sp~='' then
-            local x=catalog[sp] or {p=0,d=0,q=0,entries={},name=ind.displayName or title(detail)}
-            x.entries[#x.entries+1]={role=r,count=qty(v),fp=fp,detail=detail}
-            if r=='P' then x.p=x.p+qty(v)
-            elseif r=='D' then x.d=x.d+qty(v)
-            else x.q=x.q+qty(v) end
-            catalog[sp]=x
-            if (r=='P' or r=='Q') then known[sp]=true end
-            if type(ind.active)=='table' and type(ind.active.species)=='table' then
-              nameToUid[norm(ind.active.species.name)]=sp
-            end
-          end
-        end
+      local kind=role({id=fp.id})
+      if kind then
+        beeRows[#beeRows+1]={kind=kind,count=qty(v),fp={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash}}
       elseif id:find('genetemplate',1,true) and fp.nbt_hash then
-        templates[#templates+1]={fp=fp,entry=v}
+        templates[#templates+1]={fp={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash}}
       end
     end
   end
-  template=(#templates==1) and templates[1] or nil
-  available=resourceItems
   entries=nil
-  for key in pairs(detailCache) do
-    if not seenDetails[key] then detailCache[key]=nil end
+  local newCatalog={}
+  local newlyRead=0
+  local seen={}
+  for _,v in ipairs(beeRows) do
+    local key=fingerprintKey(v.fp)
+    seen[key]=true
+    local detail=detailCache[key]
+    if not detail and newlyRead<CFG.maxNewDetailsPerScan then
+      detail=lookDetail(v.fp)
+      if detail then
+        newlyRead=newlyRead+1
+        detailCache[key]=detail
+      end
+    end
+    local ind=detail and detail.individual
+    if type(ind)=='table' then
+      local species=ind.ident or (ind.active and ind.active.species and ind.active.species.name)
+      if species and species~='' then
+        local x=newCatalog[species]
+        if not x then
+          x={p=0,d=0,q=0,entries={},name=ind.displayName or species}
+          newCatalog[species]=x
+        end
+        x.entries[#x.entries+1]={role=v.kind,count=v.count,fp=v.fp,detail=detail}
+        if v.kind=='P' then x.p=x.p+v.count
+        elseif v.kind=='D' then x.d=x.d+v.count
+        else x.q=x.q+v.count end
+        if v.kind=='P' or v.kind=='Q' then known[species]=true end
+        if type(ind.active)=='table' and type(ind.active.species)=='table' then
+          nameToUid[norm(ind.active.species.name)]=species
+        end
+      end
+    end
   end
+  for key in pairs(detailCache) do
+    if not seen[key] then detailCache[key]=nil end
+  end
+  catalog=newCatalog
+  available=resources
+  template=(#templates==1) and templates[1] or nil
   lastME=computer.uptime()
-  local n=0;for _ in pairs(catalog) do n=n+1 end
-  if newlyRead>0 then log('МЭ: видов '..n..', шаблонов '..#templates..', новых геномов '..newlyRead) end
-  releaseMemory(true)
+  if newlyRead>0 then
+    local n=0;for _ in pairs(catalog) do n=n+1 end
+    log('МЭ: видов '..n..', новые NBT '..newlyRead..', уникальных пчёл '..#beeRows)
+  end
+  return true
 end
 local function queenSnapshot()
   local out={}
@@ -722,50 +742,45 @@ end
 local function liveFingerprint(route,request,n,strict)
   if not route or not route.me then return nil,'Не выбран МЭ-интерфейс' end
   local fp=request and request.fingerprint
-  if type(fp)~='table' or not fp.id then return nil,'Некорректный отпечаток предмета' end
-  local ok,items=pcall(getList,route.me.p)
-  if not ok then return nil,'МЭ интерфейс '..route.me.addr:sub(1,8)..' не отвечает: '..tostring(items) end
-  local required=math.max(1,tonumber(n) or 1)
+  if type(fp)~='table' or not fp.id then return nil,'Некорректный NBT-отпечаток' end
+  local need=math.max(1,tonumber(n) or 1)
   local key=fingerprintKey(fp)
-  local count=0
-  for _,item in pairs(items) do
-    if type(item)=='table' and type(item.fingerprint)=='table'
-       and fingerprintKey(item.fingerprint)==key then
-      count=qty(item)
-      if count>=required then return item end
+  local function pick(entry,kind)
+    if entry and entry.fp and entry.role==kind and entry.count>=need then
+      return {fingerprint=entry.fp,size=entry.count}
     end
+    return nil
   end
-  if strict then return nil,'Обработанная в импринтере пчела больше не найдена по точному NBT' end
-  local wantedKind=role({id=fp.id})
-  local wantedSpecies=beeSpeciesFor(fp)
-  if wantedKind and wantedSpecies then
-    for _,item in pairs(items) do
-      if type(item)=='table' and type(item.fingerprint)=='table' and qty(item)>=required
-         and role({id=item.fingerprint.id})==wantedKind then
-        local sp=beeSpeciesFor(item.fingerprint,route.me)
-        if sp==wantedSpecies then
-          log('Fresh fingerprint found for '..wantedKind..' '..sp)
-          return item
+  local r=role({id=fp.id})
+  if r then
+    local species=beeSpeciesFor(fp)
+    if species and catalog[species] then
+      for _,entry in ipairs(catalog[species].entries) do
+        if fingerprintKey(entry.fp)==key then
+          return pick(entry,r) or nil,'Недостаточно предметов в кэше МЭ'
+        end
+      end
+      if not strict then
+        for _,entry in ipairs(catalog[species].entries) do
+          local v=pick(entry,r)
+          if v then return v end
         end
       end
     end
+    return nil,'Нет пчелы нужного вида в последнем каталоге. Обнови МЭ через кнопку.'
   end
-  return nil,string.format('Пчела/предмет отсутствует в МЭ %s (доступно %d вместо %d). '..
-    'Возможно, предмет уже забрали, NBT изменился или интерфейсы подключены к РАЗНЫМ МЭ-сетям.',
-    route.me.addr:sub(1,8),count,required)
-end
-local function physicalSpeciesCount(route,uid,beeRole)
-  if not uid then return 0 end
-  local ok,items=pcall(getList,route.me.p)
-  if not ok then return 0 end
-  local total=0
-  for _,v in pairs(items) do
-    if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0
-       and role({id=v.fingerprint.id})==beeRole then
-      if beeSpeciesFor(v.fingerprint,route.me)==uid then total=total+qty(v) end
+  for _,entry in ipairs(available) do
+    if fingerprintKey(entry.fingerprint)==key then
+      if qty(entry)>=need then return entry end
+      return nil,'Недостаточно расходника в МЭ'
     end
   end
-  return total
+  return nil,'Нет предмета в последнем каталоге МЭ'
+end
+local function physicalSpeciesCount(route,uid,beeRole)
+  local spec=catalog[uid]
+  if not spec then return 0 end
+  return beeRole=='P' and spec.p or (beeRole=='D' and spec.d or spec.q)
 end
 local function debitInventory(fp,n)
   local key=fingerprintKey(fp)
@@ -886,9 +901,13 @@ local function input(machine,route,fp,slot,mayConsume)
 end
 local function meCount(fp)
   if not fp then return 0 end
-  local t=getList();local key=fingerprintKey(fp)
-  for _,e in pairs(t) do
-    if e.fingerprint and fingerprintKey(e.fingerprint)==key then return qty(e) end
+  local key=fingerprintKey(fp)
+  local uid=beeSpeciesFor(fp)
+  local spec=uid and catalog[uid]
+  if spec then
+    for _,entry in ipairs(spec.entries) do
+      if fingerprintKey(entry.fp)==key then return entry.count end
+    end
   end
   return 0
 end
@@ -1063,7 +1082,10 @@ local function processMutation(now)
     notice('Мутатрон выдал не матку: '..title(output),true);return
   end
   if now-lastME>=CFG.busyScan or pendingRefresh then
-    pendingRefresh=false;meInventory();observeNewQueen()
+    pendingRefresh=false
+    local okScan,errScan=pcall(meInventory)
+    if not okScan then stockWarning=tostring(errScan);return end
+    observeNewQueen()
   end
   if stage=='mutation' and now-job.started>CFG.timeout then
     notice('Мутация слишком долгая. Проверь мутаген, питание и шину импорта.',true)
@@ -1099,7 +1121,9 @@ local function processImprint(now)
       notice('Импринтер выдал отходы/не матку; возможна гибель пчелы!',true);return
     end
     if now-lastME>=CFG.busyScan or pendingRefresh then
-      pendingRefresh=false;meInventory()
+      pendingRefresh=false
+      local okScan,errScan=pcall(meInventory)
+      if not okScan then stockWarning=tostring(errScan);return end
       local matches={}
       for _,m in ipairs(newQueens(job.baseline or {})) do
         if m.uid==job.result then matches[#matches+1]=m end
@@ -1365,45 +1389,41 @@ local function queueApiaryImprint(task,api)
   return true
 end
 local function stockSnapshotFor(route,kind,species)
-  local items=getList(route.me.p)
   local counts={}
-  for _,v in pairs(items) do
-    if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0
-       and role({id=v.fingerprint.id})==kind
-       and beeSpeciesFor(v.fingerprint,route.me)==species then
-      counts[fingerprintKey(v.fingerprint)]=qty(v)
+  local spec=catalog[species]
+  if spec then
+    for _,v in ipairs(spec.entries) do
+      if v.role==kind then counts[fingerprintKey(v.fp)]=v.count end
     end
   end
   return counts
 end
 local function findImprintedReturn(prep,route)
-  local ref=prep.currentFp
   local expected=prep.currentSpecies
   local wanted=prep.currentKind
+  local ref=prep.currentFp
   local before=prep.baseline or {}
-  local ok,items=pcall(getList,route.me.p)
-  if not ok then return nil,'МЭ импринтера недоступна: '..tostring(items) end
-  local candidates={}
+  local spec=catalog[expected]
+  if not spec then return nil,nil end
+  local candidate=nil
+  local matches=0
   local exact=nil
-  for _,v in pairs(items) do
-    if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0
-       and role({id=v.fingerprint.id})==wanted then
-      local k=fingerprintKey(v.fingerprint)
+  for _,v in ipairs(spec.entries) do
+    if v.role==wanted then
+      local k=fingerprintKey(v.fp)
       if k==fingerprintKey(ref) then exact=v end
-      if qty(v)>(before[k] or 0) then
-        local sp=beeSpeciesFor(v.fingerprint,route.me)
-        if sp==expected then
-          candidates[#candidates+1]=v
-        end
+      if v.count>(before[k] or 0) then
+        matches=matches+1
+        candidate=v
       end
     end
   end
-  if #candidates>1 then
-    return nil,'Несколько новых пчёл этого вида в МЭ: нельзя безопасно определить результат'
+  if matches>1 then
+    return nil,'В МЭ несколько новых пчёл вида '..expected..'; ручная проверка для безопасной прививки'
   end
-  if #candidates==1 then return candidates[1].fingerprint end
-  if exact and qty(exact)>=(before[fingerprintKey(ref)] or 0) then
-    return exact.fingerprint
+  if candidate then return candidate.fp end
+  if exact and exact.count>=(before[fingerprintKey(ref)] or 0) then
+    return exact.fp
   end
   return nil,nil
 end
@@ -1547,6 +1567,7 @@ local function processApiaryImprint(now)
     end
     if now-(prep.lastChecked or 0)<CFG.busyScan then return end
     prep.lastChecked=now
+    pendingApiaryRefresh=true
     local fp,why=findImprintedReturn(prep,route)
     if why then notice(why,true);return end
     if fp then
@@ -1596,7 +1617,11 @@ local function observeApiaryJobs(now)
   if requestME or (awaitingImport and now-lastME>=CFG.busyScan) or
      (due and workersCount()>0) then
     local ok,err=pcall(meInventory)
-    if not ok then notice('Не могу проверить потомство в МЭ: '..tostring(err),true);return end
+    if not ok then
+      stockWarning=tostring(err)
+      if now-CFG.maxMEErrorAt>90 then log('Пропущено чтение МЭ: '..stockWarning);CFG.maxMEErrorAt=now end
+      return
+    end
   end
   for addr,w in pairs(apiJobs) do
     local d=speciesAmount(w.uid,'d')
@@ -1754,7 +1779,8 @@ local function cycle()
     notice('Не хватает подключённого оборудования.',true);return
   end
   local ok,err=pcall(function()
-    if pendingApiaryRefresh or now-lastME>=CFG.scanInterval then
+    if (pendingApiaryRefresh or now-lastME>=CFG.scanInterval) and
+       now-lastME>=CFG.minFullScanGap then
       pendingApiaryRefresh=false
       meInventory()
       nextPlanAt=0
@@ -1857,7 +1883,7 @@ local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'17.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  paint(16,1,'18.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
   local st=initializing and 'СКАНИРОВАНИЕ' or (paused and 'ПАУЗА' or 'РАБОТА')
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
@@ -2268,7 +2294,7 @@ end
 local function refreshEverything(reloadComponents)
   initializing=true;initStatus='Чтение МЭ и генетики'
   if reloadComponents then discover() end
-  if primaryME() then meInventory() else error('МЭ-интерфейс не найден') end
+  if primaryME() then meInventory(true) else error('МЭ-интерфейс не найден') end
   graphScan();scanApiaries();acquireRoute()
   initializing=false
   notice('Инвентаризация завершена. Проверь оборудование.')
@@ -2316,7 +2342,7 @@ local function tap(key)
   elseif key=='logs' then
     page='logs'
   elseif key=='scan' then
-    local ok,err=pcall(function() meInventory();scanApiaries() end)
+    local ok,err=pcall(function() meInventory(true);scanApiaries() end)
     if not ok then notice('Ошибка сканирования: '..tostring(err),false)
     else notice('Обновлены МЭ и пасеки; автоматизация продолжает работу') end
   elseif key=='discover' then
@@ -2353,7 +2379,7 @@ local function startup()
   if stage~='idle' or next(apiJobs) or apiPrep then
     notice('Восстановлены незавершённые операции. Проверь машины до пуска.',true)
   end
-  log('BeeMaster 17.0 started')
+  log('BeeMaster 18.0 RAM Safe started')
 end
 startup()
 local okDraw,whyDraw=pcall(draw)
