@@ -19,7 +19,7 @@ local CFG = {
   allowLastDrone = false,
   maxFailedPerRecipe = 25, maxStoneCrossAttempts = 12,
   perApiaryCooldown=15, maxFarmSeconds=4800,
-  gcInterval=30, memoryWarningKB=180,
+  gcInterval=30, memoryWarningKB=110, maxLogBytes=48*1024,
   strictSpecialBiomes=true,
   allowUnknownClimate=false,
   protectStoneMutations=true,
@@ -29,9 +29,9 @@ local COLOR = {bg=0x0E1722, fg=0xE9EDF0, blue=0x54DEDC,
   green=0x70E39B, yellow=0xFFE08C, red=0xFF7583, gray=0x99A8B9}
 local dirs = {'UP','DOWN','NORTH','SOUTH','WEST','EAST'}
 local opposite = {UP='DOWN',DOWN='UP',NORTH='SOUTH',SOUTH='NORTH',WEST='EAST',EAST='WEST'}
-local DATA='/home/beemaster_v15.dat'
-local OLD_DATA='/home/beemaster_v14.dat'
-local LOG='/home/beemaster_v15.log'
+local DATA='/home/beemaster_v17.dat'
+local OLD_DATA='/home/beemaster_v16.dat'
+local LOG='/home/beemaster_v17.log'
 local originalW,originalH=gpu.getResolution()
 local maxW,maxH=gpu.maxResolution()
 local width,height=maxW,maxH
@@ -92,22 +92,24 @@ CFG.lastBiomeAlert=''
 function releaseMemory(force)
   local now=computer.uptime()
   if force or now-CFG.lastGC>=CFG.gcInterval then
-    collectgarbage('collect')
     CFG.lastGC=now
-  else
-    collectgarbage('step', 120)
   end
+  local free,total
   if type(computer.freeMemory)=='function' then
-    local free=computer.freeMemory()
-    local total=computer.totalMemory()
-    CFG.memStatus=string.format('RAM %.0f/%.0f KB', free/1024,total/1024)
-    if free < CFG.memoryWarningKB*1024 then
-      collectgarbage('collect')
-      CFG.lastGC=now
-      free=computer.freeMemory()
-      CFG.memStatus=string.format('RAM %.0f/%.0f KB',free/1024,total/1024)
+    local ok,value=pcall(computer.freeMemory)
+    if ok and type(value)=='number' then free=value end
+  end
+  if type(computer.totalMemory)=='function' then
+    local ok,value=pcall(computer.totalMemory)
+    if ok and type(value)=='number' then total=value end
+  end
+  if free then
+    CFG.memStatus=string.format('RAM %.0f/%.0f KB',free/1024,(total or 0)/1024)
+    if free<CFG.memoryWarningKB*1024 then
       return false
     end
+  else
+    CFG.memStatus='RAM: недоступно'
   end
   return true
 end
@@ -115,17 +117,31 @@ end
 local function log(s)
   s=tostring(s)
   local now=computer.uptime()
-  if CFG.logRecentKeys[s] and now-CFG.logRecentKeys[s]<240 then return end
+  local last=CFG.logRecentKeys[s]
+  if last and now-last<240 then return end
   CFG.logRecentKeys[s]=now
-  if #recent>=40 then
-    for key,last in pairs(CFG.logRecentKeys) do
-      if now-last>300 then CFG.logRecentKeys[key]=nil end
+  if now-(CFG.lastLogCleanup or -120)>=120 then
+    CFG.lastLogCleanup=now
+    local count=0
+    for key,stamp in pairs(CFG.logRecentKeys) do
+      if now-stamp>300 then CFG.logRecentKeys[key]=nil
+      else count=count+1 end
     end
+    if count>250 then CFG.logRecentKeys={[s]=now} end
   end
   local line=string.format('[%.0f] %s',now,s)
   recent[#recent+1]=line
-  while #recent>70 do table.remove(recent,1) end
-  local f=io.open(LOG,'a'); if f then f:write(line,'\n');f:close() end
+  while #recent>35 do table.remove(recent,1) end
+  local f=io.open(LOG,'a')
+  if f then
+    local size=f:seek('end')
+    if type(size)=='number' and size+#line+2>CFG.maxLogBytes then
+      f:close()
+      f=io.open(LOG,'w')
+      if f then f:write('[',math.floor(now),'] Журнал очищен: предел 48 KB\n') end
+    end
+    if f then f:write(line,'\n');f:close() end
+  end
 end
 local function notice(s,bad)
   alert=tostring(s)
@@ -141,12 +157,15 @@ local function save()
       allowLastDrone=CFG.allowLastDrone,apiStats=apiStats,bindings=bindings,apiJobs=apiJobs,apiPrep=apiPrep}))
     f:close()
   end
-  collectgarbage('step',150)
 end
 local function load()
   local f=io.open(DATA,'r')
   local fromOld=false
   if not f then f=io.open(OLD_DATA,'r'); fromOld=(f~=nil) end
+  if not f then f=io.open('/home/beemaster_v15.dat','r'); fromOld=(f~=nil) end
+  if not f then f=io.open('/home/beemaster_v14.dat','r'); fromOld=(f~=nil) end
+  if not f then f=io.open('/home/beemaster_v13.dat','r'); fromOld=(f~=nil) end
+  if not f then f=io.open('/home/beemaster_v12.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v11.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v10.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v9.dat','r'); fromOld=(f~=nil) end
@@ -1838,7 +1857,7 @@ local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'15.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  paint(16,1,'17.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
   local st=initializing and 'СКАНИРОВАНИЕ' or (paused and 'ПАУЗА' or 'РАБОТА')
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
@@ -2334,7 +2353,7 @@ local function startup()
   if stage~='idle' or next(apiJobs) or apiPrep then
     notice('Восстановлены незавершённые операции. Проверь машины до пуска.',true)
   end
-  log('BeeMaster 15.0 started')
+  log('BeeMaster 17.0 started')
 end
 startup()
 local okDraw,whyDraw=pcall(draw)
