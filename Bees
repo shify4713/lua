@@ -20,9 +20,9 @@ local CFG = {
   maxFailedPerRecipe = 25, maxStoneCrossAttempts = 12,
   perApiaryCooldown=15, maxFarmSeconds=4800,
   stuckDeliverySeconds=240, retryParentDelay=150, meRetryDelay=120,
-  imprintPollInterval=30, imprintAmbiguityTimeout=120,
+  imprintPollInterval=12, imprintAmbiguityTimeout=120,
   logLines=20,
-  minFullScanGap=120, detailBatch=2, maxSnapshotKeys=500,
+  minFullScanGap=180, detailBatch=2, maxSnapshotKeys=500,
   strictSpecialBiomes=true,
   allowUnknownClimate=false,
   protectStoneMutations=true,
@@ -35,6 +35,7 @@ local opposite = {UP='DOWN',DOWN='UP',NORTH='SOUTH',SOUTH='NORTH',WEST='EAST',EA
 local DATA='/home/beemaster_v20.dat'
 local OLD_DATA='/home/beemaster_v19.dat'
 local LOG='/home/beemaster_v20.log'
+SCAN_LOCK='/home/beemaster_scan_in_progress.flag'
 local originalW,originalH=gpu.getResolution()
 local maxW,maxH=gpu.maxResolution()
 local width,height=maxW,maxH
@@ -60,6 +61,9 @@ local failures,known,stage,job = {}, {}, 'idle', nil
 local detailCache, targetSpecies, lastME, lastApiary = {},{},0,0
 local selectedMEAddr=nil
 local nextScanRecovery=0
+scanEnabled=false
+scanConfirmUntil=0
+previousScanCrash=false
 detailPending, detailPos={},1
 manualApiary, selectedClimateUid, climateOffset={},nil,0
 resumeWanted=false
@@ -71,6 +75,7 @@ local template=nil
 local supplyAt=0
 local supplyStatus={}
 local imprintOutputStatus='Ожидание результата'
+local memoryScanFailures=0
 local apiaryReason='Проверка пасек не выполнялась'
 local lastPhysicalRoute={}
 local pushImprinterOutput
@@ -328,69 +333,63 @@ end
 
 local function readME(obj)
   if not obj or not obj.p then return nil,'Нет прокси МЭ' end
+  -- Флажок на диске указывает, что последний запрос оборвал всю VM:
+  -- при повторном старте запускаем только интерфейс (не повторяем запрос).
+  local flag=io.open(SCAN_LOCK,'w')
+  if flag then
+    flag:write('ME '..tostring(obj.addr or '?')..' / full list')
+    flag:close()
+  end
   local ok,items,why=invoke(obj.p,'getAvailableItems','NONE')
+  -- Если управление вернулось в Lua, удаляем аварийную отметку.
+  os.remove(SCAN_LOCK)
   if not ok then return nil,tostring(items) end
   if type(items)~='table' then
+    local detail=tostring(items)..' '..tostring(why or '')
+    if detail:lower():find('memory',1,true) then
+      memoryScanFailures=memoryScanFailures+1
+      CFG.nextMEAttemptAt=computer.uptime()+900
+      stockWarning='МЭ слишком большая для полного ответа, повтор через 15 минут; импринтер продолжает по NBT'
+    end
     return nil,'getAvailableItems вернул '..tostring(items)..
       (why and (' ('..tostring(why)..')') or '')
   end
   return items,nil
 end
 
+-- Без перебора всех МЭ за один цикл: ответ каждого содержит ВЕСЬ склад.
+-- Если один интерфейс вернул nil, следующий проверяем только при ручном
+-- повторе, чтобы не забить память восемью большими ответами подряд.
+catalogProbeCursor=1
 local function getList(me)
-  -- Явный маршрут (импринтер/пасека): не переключаться на чужую МЭ-сеть.
   if me then
     local obj={p=me,addr=tostring(me.address or '?')}
     local items,why=readME(obj)
     if not items then error('МЭ '..obj.addr:sub(1,8)..': '..tostring(why),2) end
     return items
   end
-  local checked={}
-  local candidates={}
-  local function add(obj)
-    if obj and obj.addr and not checked[obj.addr] then
-      checked[obj.addr]=true
-      candidates[#candidates+1]=obj
-    end
-  end
+  if #devices.me==0 then error('МЭ-интерфейсы не найдены',2) end
+  local obj
   if selectedMEAddr then
-    for _,obj in ipairs(devices.me) do
-      if obj.addr==selectedMEAddr then add(obj);break end
+    for _,m in ipairs(devices.me) do
+      if m.addr==selectedMEAddr then obj=m;break end
     end
   end
-  if routes.mut then add(routes.mut.me) end
-  for _,obj in ipairs(devices.me) do add(obj) end
-  if #candidates==0 then error('МЭ-интерфейсы не найдены',2) end
-  local errors={}
-  local emptyObj=nil
-  for _,obj in ipairs(candidates) do
-    local items,why=readME(obj)
-    if items and not next(items) and #candidates>1 then
-      emptyObj=emptyObj or obj
-      items=nil
-      why='МЭ ответила пустым списком'
-    end
-    if items then
-      if selectedMEAddr~=obj.addr then
-        selectedMEAddr=obj.addr
-        log('МЭ каталог: выбран '..obj.addr:sub(1,8)..' (ответ получен)')
-      end
-      return items
-    end
-    if tostring(why):lower():find('memory',1,true) or
-       tostring(why):lower():find('памят',1,true) then
-      error('МЭ '..obj.addr:sub(1,8)..': '..tostring(why)..'; прекратил перебор МЭ для защиты RAM',2)
-    end
-    if #errors<3 then errors[#errors+1]=obj.addr:sub(1,8)..': '..tostring(why) end
+  if not obj and catalogProbeCursor==1 and routes.mut and routes.mut.me then
+    obj=routes.mut.me
   end
-  if emptyObj then
-    if selectedMEAddr~=emptyObj.addr then
-      selectedMEAddr=emptyObj.addr
-      log('МЭ каталог: все доступные списки пусты, выбран '..emptyObj.addr:sub(1,8))
+  if not obj then obj=devices.me[math.min(#devices.me,catalogProbeCursor)] end
+  local items,why=readME(obj)
+  if not items then
+    selectedMEAddr=nil
+    for i,m in ipairs(devices.me) do
+      if m.addr==obj.addr then catalogProbeCursor=i%#devices.me+1;break end
     end
-    return {}
+    error('МЭ '..obj.addr:sub(1,8)..': '..tostring(why)..
+      '; следующий интерфейс будет проверен при следующем ручном ОБНОВИТЬ',2)
   end
-  error('Ни один МЭ не ответил ('..#candidates..' шт.): '..table.concat(errors,'; ')..'. Проверить питание/каналы AE2.',2)
+  selectedMEAddr=obj.addr
+  return items
 end
 function compactDetail(a)
   if type(a)~='table' then return nil end
@@ -463,6 +462,9 @@ function processDetailQueue()
 end
 local function meInventory(force)
   local now=computer.uptime()
+  if not force and now<(CFG.nextMEAttemptAt or 0) then
+    return false
+  end
   if not force and lastME>0 and now-lastME<CFG.minFullScanGap then
     return false
   end
@@ -509,6 +511,8 @@ local function meInventory(force)
   available=resources
   template=(templateCount==1) and chosenTemplate or nil
   lastME=computer.uptime()
+  memoryScanFailures=0
+  CFG.nextMEAttemptAt=0
   if #newPending>0 then
     log('МЭ: список получен, новые NBT в очереди: '..#newPending)
   end
@@ -929,6 +933,38 @@ local function exactMeExport(route,entry,n,slot,strict)
   stockWarning=''
   return true,r,current.fingerprint
 end
+-- Прямая выгрузка по отпечатку пчелы, реально полученной из импринтера.
+-- Не выбираем случайный экземпляр из каталога и не считываем весь склад.
+local function verifiedImprintExport(route,fp,kind,species,target,slot)
+  if type(fp)~='table' or not fp.id or fp.nbt_hash==nil or roleId(fp.id)~=kind then
+    return false,'Нет подтверждённого NBT-отпечатка пчелы'
+  end
+  if stack(target.p,slot) then return false,'Целевой слот уже занят' end
+  local good,allowed=invoke(route.me.p,'canExport','DOWN')
+  if good and not allowed then return false,'МЭ не может выгружать вниз' end
+  local ok,res=invoke(route.me.p,'exportItem',fp,'DOWN',1,slot)
+  if not ok then return false,'Ошибка точного экспорта: '..tostring(res) end
+  local amount=type(res)=='table' and tonumber(res.size or res.qty)
+  if not res or (amount and amount<1) then
+    return false,'Привитая пчела пока не импортирована в МЭ или не принята пасекой'
+  end
+  local arrived=stack(target.p,slot)
+  if not arrived then return false,'Экспорт выполнен, но пасека пуста: проверь адрес МЭ / DOWN' end
+  if role(arrived)~=kind then
+    return false,'Несовпадение типа после передачи; проверь пасеку вручную'
+  end
+  local uid=(arrived.individual or {}).ident
+  if uid and species and uid~=species then
+    return false,'В пасеке оказался другой вид; проверь маршруты вручную'
+  end
+  local actual=IMPRINT.outputFingerprint(arrived)
+  if actual and fingerprintKey(actual)~=fingerprintKey(fp) then
+    return false,'После передачи NBT не совпал; проверь пасеку вручную'
+  end
+  debitInventory(fp,1)
+  lastPhysicalRoute[target.addr]=route.me.addr
+  return true,nil
+end
 local function acquireRoute()
   rebuildRoutes()
   if not routes.mut then log('МУТ: выбери МЭ-интерфейс в настройках') end
@@ -1174,10 +1210,16 @@ local function processMutation(now)
   if output and role(output)~='Q' then
     notice('Мутатрон выдал не матку: '..title(output),true);return
   end
-  if now-lastME>=CFG.busyScan or pendingRefresh then
+  if (now-lastME>=CFG.busyScan or pendingRefresh) and
+     now>=(CFG.nextMEAttemptAt or 0) and
+     not (apiPrep and apiPrep.phase=='imprint_wait') then
     pendingRefresh=false
     local okScan,errScan=pcall(meInventory)
-    if not okScan then stockWarning=tostring(errScan);return end
+    if not okScan then
+      stockWarning=tostring(errScan)
+      CFG.nextMEAttemptAt=math.max(CFG.nextMEAttemptAt or 0,now+CFG.meRetryDelay)
+      return
+    end
     observeNewQueen()
   end
   if stage=='mutation' and now-job.started>CFG.timeout then
@@ -1220,12 +1262,11 @@ local function processImprint(now)
     if out then
       job.outputSeen=true
       job.outputFp=IMPRINT.outputFingerprint(out) or job.outputFp
+      job.outputDetails=compactDetail(out) or job.outputDetails
       job.outputTraits=IMPRINT.outputGeneSignature(out) or job.outputTraits
-      local snapOk,snap=pcall(IMPRINT.stockSnapshotFor,routes.imp,'Q',job.result)
-      if snapOk then job.returnBaseline=snap
-      else log('Матка: нет МЭ-снимка перед возвратом: '..tostring(snap)) end
+      local moved=pushImprinterOutput(imp,'Q',job.result)
+      if moved then job.outputMoved=true end
       save()
-      pushImprinterOutput(imp,'Q',job.result)
       out=stack(imp.p,4)
     end
     if stack(imp.p,3) or out then
@@ -1243,14 +1284,17 @@ local function processImprint(now)
       local fp,why=findImprintedReturn({currentSpecies=job.result,
         currentKind='Q',currentFp=job.queenFP,baseline=job.baseline,
         returnBaseline=job.returnBaseline,outputFp=job.outputFp,
-        outputTraits=job.outputTraits,outputSeen=job.outputSeen},routes.imp)
+        outputTraits=job.outputTraits,outputSeen=job.outputSeen,
+        outputMoved=job.outputMoved},routes.imp)
       if fp then
         job.queenFP=fp
+        if job.outputDetails and (job.outputDetails.individual or {}).ident==job.result then
+          addBeeToCatalog('Q',1,fp,job.outputDetails)
+        end
         job.step='post_queen';stage='post_queen'
-        pendingApiaryRefresh=true
-        local scanned,scanErr=pcall(meInventory,true)
-        if not scanned then stockWarning='МЭ после прививки: '..tostring(scanErr) end
-        log('Imprinted queen returned from ME: '..(job.resultTitle or job.result))
+        -- Не запрашиваем полный ME сразу после прививки.
+        -- Привитая матка известна по точному отпечатку выхода.
+        log('Импринтер: матка выгружена по NBT; ожидание штатного скана '..(job.resultTitle or job.result))
         save()
         return
       end
@@ -1430,7 +1474,12 @@ local function loadToApiary(task,forcedApi,strict)
     apiaryReason=whyBiome;CFG.biomeStatus=whyBiome
     return false,whyBiome
   end
-  local firstLive,missing=liveFingerprint(route,{fingerprint=first.fp},1,strict)
+  local firstLive,missing
+  if task.verifiedFirst then
+    firstLive={fingerprint=first.fp,size=1}
+  else
+    firstLive,missing=liveFingerprint(route,{fingerprint=first.fp},1,strict)
+  end
   if not firstLive then
     apiaryReason='В МЭ над пасекой не найден родитель: '..tostring(missing)
     stockWarning=apiaryReason
@@ -1438,14 +1487,24 @@ local function loadToApiary(task,forcedApi,strict)
   end
   local droneLive=nil
   if task.d then
-    droneLive,missing=liveFingerprint(route,{fingerprint=task.d.fp},1,strict)
+    if task.verifiedSecond then
+      droneLive={fingerprint=task.d.fp,size=1}
+    else
+      droneLive,missing=liveFingerprint(route,{fingerprint=task.d.fp},1,strict)
+    end
     if not droneLive then
       apiaryReason='Не найден трутень в МЭ над пасекой: '..tostring(missing)
       stockWarning=apiaryReason
       return false,apiaryReason
     end
   end
-  local ok,why=exactMeExport(route,firstLive,1,1,strict)
+  local ok,why
+  if task.verifiedFirst then
+    ok,why=verifiedImprintExport(route,firstLive.fingerprint,
+      task.firstKind or roleId(firstLive.fingerprint.id),task.firstSpecies,api,1)
+  else
+    ok,why=exactMeExport(route,firstLive,1,1,strict)
+  end
   if not ok then
     apiaryReason='Пасека '..api.addr:sub(1,8)..': '..tostring(why)
     return false,apiaryReason
@@ -1465,7 +1524,12 @@ local function loadToApiary(task,forcedApi,strict)
   apiJobs[api.addr]=w
   save()
   if task.d then
-    local sent,msg=exactMeExport(route,droneLive,1,2,strict)
+    local sent,msg
+    if task.verifiedSecond then
+      sent,msg=verifiedImprintExport(route,droneLive.fingerprint,'D',task.secondSpecies,api,2)
+    else
+      sent,msg=exactMeExport(route,droneLive,1,2,strict)
+    end
     if not sent then
       apiJobs[api.addr]=nil
       apiaryReason='Пасека получила только принцессу; трутень не доставлен: '..tostring(msg)
@@ -1507,25 +1571,16 @@ local function queueApiaryImprint(task,api)
   save()
   return true
 end
+-- Снимок ТОЛЬКО из уже известного каталога. Полный ME-запрос
+-- из импринтера запрещён: он вызывает not enough memory на больших AE2.
 IMPRINT.stockSnapshotFor = function(route,kind,species,extraFp)
   local counts={}
-  local allowed={}
   local spec=catalog[species]
   if spec then
     for _,v in ipairs(spec.entries) do
-      if v.role==kind then allowed[fingerprintKey(v.fp)]=true end
+      if v.role==kind then counts[fingerprintKey(v.fp)]=v.count end
     end
   end
-  if extraFp then allowed[fingerprintKey(extraFp)]=true end
-  local items=getList(route.me.p)
-  for _,v in pairs(items) do
-    if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0 and
-       roleId(v.fingerprint.id)==kind then
-      local key=fingerprintKey(v.fingerprint)
-      if allowed[key] then counts[key]=qty(v) end
-    end
-  end
-  items=nil
   return counts
 end
 -- Identify the very bee returned by the Imprinter, not any same-species bee
@@ -1582,60 +1637,22 @@ function IMPRINT.genesCompatible(expected,actual)
   end
   return matches>=3
 end
+-- Реальный NBT отпечаток берём из выхода импринтера ДО импорта.
+-- Подтверждением служит успешный pushItem (один предмет), а не
+-- скан ВСЕГО AE2. exportItem позднее отдельно проверит наличие в МЭ.
 findImprintedReturn = function(prep,route)
   if not route or not route.me then return nil,'Не задан МЭ-интерфейс импринтера' end
-  local expected,wanted,ref=prep.currentSpecies,prep.currentKind,prep.currentFp
-  if not ref or not expected or not wanted then
-    return nil,'Нет данных о пчеле для проверки результата'
-  end
-  local before=prep.returnBaseline or prep.baseline or {}
-  local wantedKey=prep.outputFp and fingerprintKey(prep.outputFp) or nil
-  local refKey=fingerprintKey(ref)
-  local ok,items=pcall(getList,route.me.p)
-  if not ok then return nil,'Ошибка чтения МЭ импринтера: '..tostring(items) end
-  local candidates={}
-  local original=nil
-  local exact=nil
-  for _,v in pairs(items) do
-    if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0 and
-       roleId(v.fingerprint.id)==wanted then
-      local fp=v.fingerprint
-      local key=fingerprintKey(fp)
-      local count=qty(v)
-      if count>(before[key] or 0) then
-        local small={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash}
-        if key==wantedKey then exact=small
-        elseif #candidates<18 then candidates[#candidates+1]=small end
-      end
-      if not prep.returnBaseline and key==refKey and count>=(before[key] or 0) then
-        original={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash}
-      end
+  local fp=prep.outputFp
+  if fp and fp.nbt_hash~=nil and prep.outputMoved then
+    if roleId(fp.id)~=prep.currentKind then
+      return nil,'Отпечаток результата имеет неверный тип пчелы'
     end
+    return {id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash},nil
   end
-  items=nil
-  if exact and beeSpeciesFor(exact,route.me)==expected then return exact end
-  -- Максимум 18 кандидатов, только после освобождения полного снимка МЭ.
-  local matching={}
-  for _,fp in ipairs(candidates) do
-    if beeSpeciesFor(fp,route.me)==expected then matching[#matching+1]=fp end
+  if fp and fp.nbt_hash~=nil then
+    return nil,'Результат найден, но импорт не подтверждён через pushItem; проверь шину импорта'
   end
-  if #matching==1 then return matching[1] end
-  if #matching>1 then
-    local geneMatches={}
-    if prep.outputTraits and #matching<=12 then
-      for _,fp in ipairs(matching) do
-        local okDetail,detail=invoke(route.me.p,'getItemDetail',fp,false)
-        if okDetail and type(detail)=='table' and
-           IMPRINT.genesCompatible(prep.outputTraits,IMPRINT.outputGeneSignature(detail)) then
-          geneMatches[#geneMatches+1]=fp
-        end
-      end
-    end
-    if #geneMatches==1 then return geneMatches[1] end
-    return nil,'НЕОДНОЗНАЧНО: '..#matching..' новых пчёл '..expected..' в МЭ'
-  end
-  if original and prep.outputSeen and not prep.returnBaseline then return original end
-  return nil,nil
+  return nil,'У выходной пчелы нет nbt_hash. Нужен getStackInSlot с NBT либо ручная проверка; полный МЭ не запрашиваю'
 end
 pushImprinterOutput = function(imp, expectedRole, expectedSpecies)
   local out=stack(imp.p,4)
@@ -1678,7 +1695,11 @@ local function processApiaryImprint(now)
     local t={uid=prep.uid,kind=prep.kind,source=prep.source,key=prep.key,
       p=(prep.firstKind=='P') and {fp=prep.firstFp} or nil,
       queen=(prep.firstKind=='Q') and {fp=prep.firstFp} or nil,
-      d=prep.secondFp and {fp=prep.secondFp} or nil}
+      d=prep.secondFp and {fp=prep.secondFp} or nil,
+      verifiedFirst=prep.firstVerified==true,
+      verifiedSecond=prep.secondVerified==true,
+      firstKind=prep.firstKind,firstSpecies=prep.firstSpecies,
+      secondSpecies=prep.secondSpecies}
     local allowed,blocker=BIOME.ok(t,api)
     if not allowed then
       apiaryReason=blocker
@@ -1775,14 +1796,12 @@ local function processApiaryImprint(now)
       prep.outputSeen=true
       prep.outputFp=IMPRINT.outputFingerprint(out) or prep.outputFp
       prep.outputTraits=IMPRINT.outputGeneSignature(out) or prep.outputTraits
-      local snapOk,snap=pcall(IMPRINT.stockSnapshotFor,route,prep.currentKind,prep.currentSpecies,prep.outputFp or prep.currentFp)
-      if snapOk then
-        prep.returnBaseline=snap
-      else
-        log('Импринтер: не удалось снять МЭ перед выгрузкой: '..tostring(snap))
+      local moved=pushImprinterOutput(imp,prep.currentKind,prep.currentSpecies)
+      if moved then
+        prep.outputMoved=true
+        log('Импринтер: выгрузка принята, проверю точный NBT при доставке')
       end
       save()
-      pushImprinterOutput(imp,prep.currentKind,prep.currentSpecies)
       out=stack(imp.p,4)
     end
     local inp=stack(imp.p,3)
@@ -1822,13 +1841,20 @@ local function processApiaryImprint(now)
     if fp then
       if prep.part==1 then
         prep.firstFp=fp
+        prep.firstVerified=prep.outputMoved==true
+        prep.firstSpecies=prep.currentSpecies
         prep.part=2
-      else prep.secondFp=fp;prep.part=3 end
+      else
+        prep.secondFp=fp
+        prep.secondVerified=prep.outputMoved==true
+        prep.secondSpecies=prep.currentSpecies
+        prep.part=3
+      end
       if prep.part==2 and prep.secondFp then
         prep.phase='imprint_start'
       else prep.phase='apiary_load' end
       prep.baseline=nil;prep.returnBaseline=nil
-      prep.outputFp=nil;prep.outputTraits=nil;prep.outputSeen=nil
+      prep.outputFp=nil;prep.outputTraits=nil;prep.outputSeen=nil;prep.outputMoved=nil
       prep.ambiguitySince=nil;prep.currentFp=nil
       prep.currentKind=nil;prep.currentSpecies=nil
       apiaryReason=prep.phase=='imprint_start' and 'Первая пчела привита, готовлю трутня' or 'Пчёлы привиты, отправляю в пасеку'
@@ -1838,6 +1864,10 @@ local function processApiaryImprint(now)
       -- Запланированное обновление выполнится с учётом minFullScanGap.
       save()
     elseif now-prep.started>CFG.stuckDeliverySeconds then
+      if prep.outputSeen and not prep.outputFp then
+        apiaryReason='Пчела выгружена, но OpenPeripheral не дал NBT. Безопасная остановка очереди; проверь мод/шину импорта.'
+        return
+      end
       local impNow=devices.imp[1]
       if impNow and (stack(impNow.p,3) or stack(impNow.p,4)) then
         apiaryReason='Ожидаю выгрузку пчелы из импринтера'
@@ -1905,11 +1935,14 @@ local function observeApiaryJobs(now)
       end
     end
   end
-  if requestME or (awaitingImport and now-lastME>=CFG.busyScan) or
-     (due and workersCount()>0) then
+  if (requestME or (awaitingImport and now-lastME>=CFG.busyScan) or
+     (due and workersCount()>0)) and
+     now >= (CFG.nextMEAttemptAt or 0) and
+     not (apiPrep and apiPrep.phase=='imprint_wait') then
     local ok,err=pcall(meInventory)
     if not ok then
       stockWarning=tostring(err)
+      CFG.nextMEAttemptAt=math.max(CFG.nextMEAttemptAt or 0, now+CFG.meRetryDelay)
       if now-CFG.maxMEErrorAt>90 then log('Пропущено чтение МЭ: '..stockWarning);CFG.maxMEErrorAt=now end
       return
     end
@@ -2068,17 +2101,19 @@ local function cycle()
   end
   local ok,err=pcall(function()
     if now>=CFG.nextMEAttemptAt and
+       not (apiPrep and apiPrep.phase=='imprint_wait') and
+       not (stage=='imprint' and job and job.step=='imprint_wait') and
        (pendingApiaryRefresh or now-lastME>=CFG.scanInterval) and
        now-lastME>=CFG.minFullScanGap then
       pendingApiaryRefresh=false
       local good,err=pcall(meInventory)
-      if good then
+      if good and err~=false then
         CFG.nextMEAttemptAt=0
         nextPlanAt=0
         stockWarning=''
       else
         stockWarning='МЭ: '..tostring(err)
-        CFG.nextMEAttemptAt=now+CFG.meRetryDelay
+        CFG.nextMEAttemptAt=math.max(CFG.nextMEAttemptAt or 0,now+CFG.meRetryDelay)
         if now-CFG.lastStalledWarning>90 then
           CFG.lastStalledWarning=now
           log('Сканирование МЭ отложено: '..tostring(err))
@@ -2183,11 +2218,11 @@ local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'20.8  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
-  local st=initializing and 'СКАНИРОВАНИЕ' or (paused and 'ПАУЗА' or 'РАБОТА')
+  paint(16,1,'21.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  local st=initializing and 'СКАНИРОВАНИЕ' or (not scanEnabled and 'SAFE MODE' or (paused and 'ПАУЗА' or 'РАБОТА'))
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
-  local what=(initializing and initStatus or mode)
+  local what=(initializing and initStatus or (not scanEnabled and 'Безопасный запуск: ОБНОВИТЬ дважды для МЭ' or mode))
   if page~='home' then what=what..'   •  Открыто меню: автоматика продолжает работу' end
   paint(3,2,cut(what,width-6),COLOR.fg,0x142739)
   fill(1,3,width,1,0x1C364A)
@@ -2811,18 +2846,29 @@ local function tap(key)
   elseif key=='logs' then
     page='logs'
   elseif key=='scan' then
+    local now=computer.uptime()
+    if not scanEnabled and now>scanConfirmUntil then
+      scanConfirmUntil=now+30
+      alert='ВНИМАНИЕ: весь склад МЭ может уронить компьютер! Нажми ОБНОВИТЬ ещё раз в течение 30 с.'
+      log('Ручное подтверждение полного сканирования МЭ запрошено')
+      return
+    end
+    scanConfirmUntil=0
     local ok,err=pcall(function()
       if lastME==0 then refreshEverything(false)
       else meInventory(true);scanApiaries() end
     end)
     if not ok then
       initializing=false
+      scanEnabled=false
       stockWarning='Ошибка МЭ: '..tostring(err)
-      nextScanRecovery=computer.uptime()+60
-      notice(stockWarning,false)
+      nextScanRecovery=math.huge
+      notice(stockWarning..'. Автоскан отключён; повтор только вручную.',false)
     else
+      scanEnabled=true
+      previousScanCrash=false
       stockWarning=''
-      notice('Обновлены МЭ и пасеки; автоматизация продолжает работу')
+      notice('МЭ просканирована; можно запускать автоматику кнопкой СТАРТ')
     end
   elseif key=='discover' then
     discover();rebuildRoutes()
@@ -2862,6 +2908,13 @@ local function startup()
     local held=stack(imp.p,3) or stack(imp.p,4)
     if held and role(held)==apiPrep.currentKind then
       lastPhysicalRoute[imp.addr]=routes.imp.me.addr
+    elseif not held and apiPrep.outputSeen and apiPrep.outputFp and
+           apiPrep.outputFp.nbt_hash~=nil and not apiPrep.outputMoved and
+           lastPhysicalRoute[imp.addr]==routes.imp.me.addr then
+      -- Состояние унаследовано от 20.8/20.9: физический выход пуст.
+      -- Разрешаем попытку точного экспорта (его неуспех безопасен).
+      apiPrep.outputMoved=true
+      log('Восстановлен NBT результата импринтера, без полного чтения МЭ')
     end
   end
   if apiPrep then
@@ -2882,42 +2935,34 @@ local function startup()
     alert='Незавершённые задания восстановлены. Проверяю фактические слоты перед работой.'
     log(alert)
   end
-  log('BeeMaster 20.8 / ME NIL FIX / OC 1.6.1')
+  log('BeeMaster 21.0 / SAFE ME / OC 1.6.1')
 end
 restoreJournal()
 startup()
 local okDraw,whyDraw=pcall(draw)
 if not okDraw then print('Ошибка экрана: '..tostring(whyDraw)) end
-local okInit,errInit=pcall(refreshEverything,false)
-if not okInit then
-  initializing=false
-  stockWarning='Начальная загрузка: '..tostring(errInit)
-  notice(stockWarning..'. Повтор через 60 секунд или нажми ОБНОВИТЬ.',true)
-  nextScanRecovery=computer.uptime()+60
+-- SAFE BOOT: ни одного полного запроса к МЭ на старте. Если он ранее
+-- обрушил ОС, этот файл останется и покажет предупреждение.
+local prev=io.open(SCAN_LOCK,'r')
+if prev then previousScanCrash=true;prev:close() end
+initializing=false
+scanEnabled=false
+nextScanRecovery=math.huge
+if previousScanCrash then
+  alert='БЕЗОПАСНЫЙ ЗАПУСК: прошлый полный запрос МЭ оборвал программу/ОС.'
+  log('SAFE BOOT: найден флаг незавершённого сканирования МЭ. Автоскан отключён.')
+else
+  alert='БЕЗОПАСНЫЙ ЗАПУСК: полный МЭ не сканируется до ручного подтверждения.'
+  log('SAFE BOOT: интерфейс готов. ОБНОВИТЬ дважды = разрешить полный МЭ-скан.')
 end
--- После аварийного перезапуска: возобновляем работу ТОЛЬКО если она
--- была запущена, МЭ сканировалась, назначения устройств однозначны.
-if okInit and _G.BEEMASTER_WATCHDOG==true and resumeWanted then
-  local checkOK,reason=pcall(collisionReport)
-  local conflict=checkOK and reason or tostring(reason)
-  if not conflict and #graph>0 and routes.mut and primaryME() and #devices.mut==1 then
-    paused=false
-    nextPlanAt=0
-    nextApiaryPlanAt=0
-    log('WATCHDOG: проверки пройдены, автоматизация возобновлена')
-    alert='После перезапуска: МЭ и оборудование проверены, работа возобновлена'
-  else
-    paused=true
-    alert='После сбоя оставлена ПАУЗА: '..tostring(conflict or 'нет готового мутатрона/рецептов')
-    log(alert)
-  end
-end
+-- Возобновление работы допускается лишь после ручного успешного МЭ-скана.
+-- Watchdog не имеет права автоматически повторять операцию, вызвавшую BSOD.
 local lastDraw,lastCycle,lastApiaryCheck,lastDetailStep=0,0,0,0
 while not quit do
   local now=computer.uptime()
   -- При nil от всех интерфейсов сохраняем задания и пробуем снова.
   -- На паузе не запускаем обработку пасек до первого успешного сканирования.
-  if lastME==0 and now>=nextScanRecovery and not initializing then
+  if scanEnabled and lastME==0 and now>=nextScanRecovery and not initializing then
     nextScanRecovery=now+60
     local ok,why=pcall(refreshEverything,false)
     if not ok then
