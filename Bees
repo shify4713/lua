@@ -58,6 +58,8 @@ local paused=true
 local mode,alert='Ожидание','Первый запуск: проверь подключение и нажми СТАРТ'
 local failures,known,stage,job = {}, {}, 'idle', nil
 local detailCache, targetSpecies, lastME, lastApiary = {},{},0,0
+local selectedMEAddr=nil
+local nextScanRecovery=0
 detailPending, detailPos={},1
 manualApiary, selectedClimateUid, climateOffset={},nil,0
 resumeWanted=false
@@ -309,17 +311,86 @@ local function rebuildRoutes()
   end
   for _,api in ipairs(devices.api) do routes['api-'..api.addr]=downRoute(api) end
 end
+-- Для каталога пчёл используем только МЭ, у которой доступен список.
+-- Выбранный адрес остаётся тем же для getItemDetail: отпечатки разных
+-- МЭ-сетей нельзя бездумно смешивать.
 local function primaryME()
+  if selectedMEAddr then
+    for _,v in ipairs(devices.me) do
+      if v.addr==selectedMEAddr then return v.p end
+    end
+    selectedMEAddr=nil
+  end
+  local r=routes.mut
+  if r and r.me then return r.me.p end
   return devices.me[1] and devices.me[1].p
 end
-local function getList(me)
-  me=assert(me or primaryME(),'ME not found')
-  -- МЭ опрашивается без искусственного порога свободной RAM.
-  local ok,a=invoke(me,'getAvailableItems','NONE')
-  if not ok or type(a)~='table' then
-    error('getAvailableItems: '..tostring(a))
+
+local function readME(obj)
+  if not obj or not obj.p then return nil,'Нет прокси МЭ' end
+  local ok,items,why=invoke(obj.p,'getAvailableItems','NONE')
+  if not ok then return nil,tostring(items) end
+  if type(items)~='table' then
+    return nil,'getAvailableItems вернул '..tostring(items)..
+      (why and (' ('..tostring(why)..')') or '')
   end
-  return a
+  return items,nil
+end
+
+local function getList(me)
+  -- Явный маршрут (импринтер/пасека): не переключаться на чужую МЭ-сеть.
+  if me then
+    local obj={p=me,addr=tostring(me.address or '?')}
+    local items,why=readME(obj)
+    if not items then error('МЭ '..obj.addr:sub(1,8)..': '..tostring(why),2) end
+    return items
+  end
+  local checked={}
+  local candidates={}
+  local function add(obj)
+    if obj and obj.addr and not checked[obj.addr] then
+      checked[obj.addr]=true
+      candidates[#candidates+1]=obj
+    end
+  end
+  if selectedMEAddr then
+    for _,obj in ipairs(devices.me) do
+      if obj.addr==selectedMEAddr then add(obj);break end
+    end
+  end
+  if routes.mut then add(routes.mut.me) end
+  for _,obj in ipairs(devices.me) do add(obj) end
+  if #candidates==0 then error('МЭ-интерфейсы не найдены',2) end
+  local errors={}
+  local emptyObj=nil
+  for _,obj in ipairs(candidates) do
+    local items,why=readME(obj)
+    if items and not next(items) and #candidates>1 then
+      emptyObj=emptyObj or obj
+      items=nil
+      why='МЭ ответила пустым списком'
+    end
+    if items then
+      if selectedMEAddr~=obj.addr then
+        selectedMEAddr=obj.addr
+        log('МЭ каталог: выбран '..obj.addr:sub(1,8)..' (ответ получен)')
+      end
+      return items
+    end
+    if tostring(why):lower():find('memory',1,true) or
+       tostring(why):lower():find('памят',1,true) then
+      error('МЭ '..obj.addr:sub(1,8)..': '..tostring(why)..'; прекратил перебор МЭ для защиты RAM',2)
+    end
+    if #errors<3 then errors[#errors+1]=obj.addr:sub(1,8)..': '..tostring(why) end
+  end
+  if emptyObj then
+    if selectedMEAddr~=emptyObj.addr then
+      selectedMEAddr=emptyObj.addr
+      log('МЭ каталог: все доступные списки пусты, выбран '..emptyObj.addr:sub(1,8))
+    end
+    return {}
+  end
+  error('Ни один МЭ не ответил ('..#candidates..' шт.): '..table.concat(errors,'; ')..'. Проверить питание/каналы AE2.',2)
 end
 function compactDetail(a)
   if type(a)~='table' then return nil end
@@ -2112,7 +2183,7 @@ local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'20.7  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  paint(16,1,'20.8  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
   local st=initializing and 'СКАНИРОВАНИЕ' or (paused and 'ПАУЗА' or 'РАБОТА')
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
@@ -2647,11 +2718,17 @@ local function testMachine(addr)
 end
 local function refreshEverything(reloadComponents)
   initializing=true;initStatus='Чтение МЭ и генетики'
-  if reloadComponents then discover() end
-  if primaryME() then meInventory(true) else error('МЭ-интерфейс не найден') end
-  graphScan();scanApiaries();acquireRoute()
+  local success,failure=pcall(function()
+    if reloadComponents then discover();rebuildRoutes() end
+    if #devices.me==0 then error('МЭ-интерфейсы не найдены') end
+    meInventory(true)
+    graphScan();scanApiaries();acquireRoute()
+  end)
   initializing=false
+  if not success then error(tostring(failure),0) end
+  stockWarning=''
   notice('Инвентаризация завершена. Проверь оборудование.')
+  return true
 end
 local function collisionReport()
   rebuildRoutes()
@@ -2682,6 +2759,7 @@ local function tap(key)
   if key=='pause' then
     if initializing then return end
     if paused then
+      if lastME==0 then notice('МЭ ещё не просканирована, нажми ОБНОВИТЬ или подожди повтор',false);return end
       if not routes.mut then notice('Назначь обычный мутатрон и его МЭ.',false);return end
       local conflict=collisionReport()
       if conflict then notice(conflict,false);return end
@@ -2733,9 +2811,19 @@ local function tap(key)
   elseif key=='logs' then
     page='logs'
   elseif key=='scan' then
-    local ok,err=pcall(function() meInventory(true);scanApiaries() end)
-    if not ok then notice('Ошибка сканирования: '..tostring(err),false)
-    else notice('Обновлены МЭ и пасеки; автоматизация продолжает работу') end
+    local ok,err=pcall(function()
+      if lastME==0 then refreshEverything(false)
+      else meInventory(true);scanApiaries() end
+    end)
+    if not ok then
+      initializing=false
+      stockWarning='Ошибка МЭ: '..tostring(err)
+      nextScanRecovery=computer.uptime()+60
+      notice(stockWarning,false)
+    else
+      stockWarning=''
+      notice('Обновлены МЭ и пасеки; автоматизация продолжает работу')
+    end
   elseif key=='discover' then
     discover();rebuildRoutes()
     deviceActionNote='Компоненты обновлены. Привязки сохраняются по адресам.'
@@ -2794,14 +2882,19 @@ local function startup()
     alert='Незавершённые задания восстановлены. Проверяю фактические слоты перед работой.'
     log(alert)
   end
-  log('BeeMaster 20.7 climate / incremental ME / watchdog support')
+  log('BeeMaster 20.8 / ME NIL FIX / OC 1.6.1')
 end
 restoreJournal()
 startup()
 local okDraw,whyDraw=pcall(draw)
 if not okDraw then print('Ошибка экрана: '..tostring(whyDraw)) end
 local okInit,errInit=pcall(refreshEverything,false)
-if not okInit then initializing=false;notice('Начальная загрузка: '..tostring(errInit),true) end
+if not okInit then
+  initializing=false
+  stockWarning='Начальная загрузка: '..tostring(errInit)
+  notice(stockWarning..'. Повтор через 60 секунд или нажми ОБНОВИТЬ.',true)
+  nextScanRecovery=computer.uptime()+60
+end
 -- После аварийного перезапуска: возобновляем работу ТОЛЬКО если она
 -- была запущена, МЭ сканировалась, назначения устройств однозначны.
 if okInit and _G.BEEMASTER_WATCHDOG==true and resumeWanted then
@@ -2822,6 +2915,20 @@ end
 local lastDraw,lastCycle,lastApiaryCheck,lastDetailStep=0,0,0,0
 while not quit do
   local now=computer.uptime()
+  -- При nil от всех интерфейсов сохраняем задания и пробуем снова.
+  -- На паузе не запускаем обработку пасек до первого успешного сканирования.
+  if lastME==0 and now>=nextScanRecovery and not initializing then
+    nextScanRecovery=now+60
+    local ok,why=pcall(refreshEverything,false)
+    if not ok then
+      initializing=false
+      stockWarning='МЭ ещё недоступна: '..tostring(why)
+      log(stockWarning)
+    else
+      stockWarning=''
+      log('Автоматическое восстановление сканирования МЭ')
+    end
+  end
   local ev,a,x,y=event.pull(0.12,'touch')
   if ev=='touch' and x and y then
     local pressed=nil
