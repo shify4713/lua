@@ -20,6 +20,7 @@ local CFG = {
   maxFailedPerRecipe = 25, maxStoneCrossAttempts = 12,
   perApiaryCooldown=15, maxFarmSeconds=4800,
   stuckDeliverySeconds=240, retryParentDelay=150, meRetryDelay=120,
+  imprintPollInterval=25,
   gcInterval=30, memoryWarningKB=135, maxLogBytes=48*1024,
   minFullScanGap=90, minScanFreeKB=1050, maxNewDetailsPerScan=50,
   strictSpecialBiomes=true,
@@ -66,6 +67,8 @@ local supplyStatus={}
 local imprintOutputStatus='Ожидание результата'
 local apiaryReason='Проверка пасек не выполнялась'
 local lastPhysicalRoute={}
+local pushImprinterOutput
+local findImprintedReturn
 local deviceActionNote='Выбери устройство, затем роль и свой МЭ-интерфейс над ним.'
 local recentlyScanned=''
 local page='home'
@@ -160,7 +163,8 @@ local function save()
     f:write(serialization.serialize({failures=failures,known=known,created=created,stage=stage,job=job,
       trustSingleFilledTemplate=CFG.trustSingleFilledTemplate,
       allowLastPrincess=CFG.allowLastPrincess,
-      allowLastDrone=CFG.allowLastDrone,apiStats=apiStats,bindings=bindings,apiJobs=apiJobs,apiPrep=apiPrep}))
+      allowLastDrone=CFG.allowLastDrone,apiStats=apiStats,bindings=bindings,apiJobs=apiJobs,apiPrep=apiPrep,
+      lastPhysicalRoute=lastPhysicalRoute}))
     f:close()
   end
 end
@@ -196,6 +200,7 @@ local function load()
     bindings=x.bindings or {}
     apiJobs=x.apiJobs or {}
     apiPrep=x.apiPrep
+    lastPhysicalRoute=x.lastPhysicalRoute or lastPhysicalRoute
     if fromOld then
       log('Imported previous settings and active jobs; start remains paused for inspection')
     end
@@ -1119,37 +1124,48 @@ local function processImprint(now)
     job.imprintPrevCount=meCount(bee.fp)
     job.baseline=queenSnapshot()
     input(imp,routes.imp,bee.fp,3,true)
+    lastPhysicalRoute[imp.addr]=routes.imp.me.addr
+    job.lastReturnCheck=0
     job.step='imprint_wait';job.started=now
     save()
   elseif job.step=='imprint_wait' then
     local out=stack(imp.p,4)
     if out and role(out)~='Q' then
-      notice('Импринтер выдал отходы/не матку; возможна гибель пчелы!',true);return
+      notice('Импринтер выдал отходы/не матку; проверь выход вручную.',true)
+      return
     end
-    if now-lastME>=CFG.busyScan or pendingRefresh then
-      pendingRefresh=false
-      local okScan,errScan=pcall(meInventory)
-      if not okScan then stockWarning=tostring(errScan);return end
-      local matches={}
-      for _,m in ipairs(newQueens(job.baseline or {})) do
-        if m.uid==job.result then matches[#matches+1]=m end
-      end
-      if #matches==0 and job.queenFP and
-          meCount(job.queenFP)>=(job.imprintPrevCount or math.huge) then
-        local x=chooseQueen(job.result)
-        if x and fingerprintKey(x.fp)==fingerprintKey(job.queenFP) then
-          matches[1]={uid=job.result,entry=x,name=job.resultTitle}
+    if out then
+      pushImprinterOutput(imp,'Q',job.result)
+      out=stack(imp.p,4)
+    end
+    if stack(imp.p,3) or out then
+      if now-job.started>CFG.timeout then
+        apiaryReason='Матка ещё в импринтере: '..imprintOutputStatus
+        if now-(job.lastWarning or 0)>120 then
+          job.lastWarning=now
+          log(apiaryReason)
         end
       end
-      if #matches==1 then
-        job.queenFP=matches[1].entry.fp
+      return
+    end
+    if now-(job.lastReturnCheck or 0)>=CFG.imprintPollInterval then
+      job.lastReturnCheck=now
+      local fp,why=findImprintedReturn({currentSpecies=job.result,
+        currentKind='Q',currentFp=job.queenFP,baseline=job.baseline},routes.imp)
+      if fp then
+        job.queenFP=fp
         job.step='post_queen';stage='post_queen'
-        log('Imprinted queen returned: '..matches[1].name)
+        pendingApiaryRefresh=true
+        local scanned,scanErr=pcall(meInventory,true)
+        if not scanned then stockWarning='МЭ после прививки: '..tostring(scanErr) end
+        log('Imprinted queen returned from ME: '..(job.resultTitle or job.result))
         save()
-      elseif #matches>1 then notice('Несколько маток после импринтера: проверь вручную.',true) end
+        return
+      end
+      apiaryReason=why or 'Матка выгружена: ожидаю появления в сети МЭ'
     end
     if stage=='imprint' and now-job.started>CFG.timeout then
-      notice('Импринтер не завершил работу: посуда/энергия/импорт.',true)
+      notice('Матка не найдена в сети МЭ после импринтера. Проверь шину импорта.',true)
     end
   end
 end
@@ -1393,6 +1409,7 @@ local function queueApiaryImprint(task,api)
     key=task.key,firstFp=first.fp,secondFp=task.d and task.d.fp or nil,
     firstKind=role({id=first.fp.id}),secondKind=task.d and 'D' or nil,
     phase='imprint_start',part=1,started=computer.uptime()}
+  imprintOutputStatus='Проверка слотов и подача первого родителя'
   apiaryReason='Импринтер: подготовка родителей для '..apiaryTaskSummary(apiPrep)
   log('Queued imprint before apiary: '..apiaryTaskSummary(apiPrep))
   save()
@@ -1400,44 +1417,56 @@ local function queueApiaryImprint(task,api)
 end
 local function stockSnapshotFor(route,kind,species)
   local counts={}
-  local spec=catalog[species]
-  if spec then
-    for _,v in ipairs(spec.entries) do
-      if v.role==kind then counts[fingerprintKey(v.fp)]=v.count end
+  local items=getList(route.me.p)
+  for _,v in pairs(items) do
+    if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0 and
+       role({id=v.fingerprint.id})==kind then
+      counts[fingerprintKey(v.fingerprint)]=qty(v)
     end
   end
   return counts
 end
-local function findImprintedReturn(prep,route)
+findImprintedReturn = function(prep,route)
+  if not route or not route.me then return nil,'Не задан МЭ-интерфейс импринтера' end
   local expected=prep.currentSpecies
   local wanted=prep.currentKind
   local ref=prep.currentFp
+  if not ref or not expected or not wanted then return nil,'Нет данных о пчеле для проверки результата' end
   local before=prep.baseline or {}
-  local spec=catalog[expected]
-  if not spec then return nil,nil end
+  local refKey=fingerprintKey(ref)
+  local ok,items=pcall(getList,route.me.p)
+  if not ok then return nil,'Ошибка чтения МЭ импринтера: '..tostring(items) end
   local candidate=nil
   local matches=0
   local exact=nil
-  for _,v in ipairs(spec.entries) do
-    if v.role==wanted then
-      local k=fingerprintKey(v.fp)
-      if k==fingerprintKey(ref) then exact=v end
-      if v.count>(before[k] or 0) then
-        matches=matches+1
-        candidate=v
+  for _,v in pairs(items) do
+    if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0 and
+       role({id=v.fingerprint.id})==wanted then
+      local fp=v.fingerprint
+      local k=fingerprintKey(fp)
+      local old=before[k] or 0
+      local count=qty(v)
+      if count>old or (k==refKey and count>=old) then
+        local species=beeSpeciesFor(fp,route.me)
+        if species==expected then
+          if count>old then
+            matches=matches+1
+            candidate=fp
+          end
+          if k==refKey and count>=old then exact=fp end
+        end
       end
     end
   end
+  items=nil
   if matches>1 then
-    return nil,'В МЭ несколько новых пчёл вида '..expected..'; ручная проверка для безопасной прививки'
+    return nil,'В МЭ появилось несколько пчёл вида '..expected..'; нужно различить результат'
   end
-  if candidate then return candidate.fp end
-  if exact and exact.count>=(before[fingerprintKey(ref)] or 0) then
-    return exact.fp
-  end
+  if matches==1 then return candidate end
+  if exact then return exact end
   return nil,nil
 end
-local function pushImprinterOutput(imp, expectedRole, expectedSpecies)
+pushImprinterOutput = function(imp, expectedRole, expectedSpecies)
   local out=stack(imp.p,4)
   if not out then return false end
   if role(out)~=expectedRole then
@@ -1460,7 +1489,7 @@ local function pushImprinterOutput(imp, expectedRole, expectedSpecies)
   end
   local ok,moved=invoke(imp.p,'pushItem',CFG.imprintOutputSide,4,1)
   if ok and tonumber(moved) and tonumber(moved)>0 then
-    imprintOutputStatus='Импринтер: выдано '..tostring(moved)..' -> МЭ сверху'
+    imprintOutputStatus='Выход передан к МЭ сверху; проверяю импорт ('..tostring(moved)..')'
     log(imprintOutputStatus)
     return true
   end
@@ -1586,9 +1615,9 @@ local function processApiaryImprint(now)
       end
       return
     end
-    if now-(prep.lastChecked or 0)<CFG.busyScan then return end
+    if now-(prep.lastChecked or 0)<CFG.imprintPollInterval then return end
     prep.lastChecked=now
-    pendingApiaryRefresh=true
+    imprintOutputStatus='Выход свободен, поиск привитой пчелы в сети МЭ'
     local fp,why=findImprintedReturn(prep,route)
     if why then
       apiaryReason='Ожидание возврата после прививки: '..tostring(why)
@@ -1608,17 +1637,22 @@ local function processApiaryImprint(now)
       apiaryReason=prep.phase=='imprint_start' and 'Первая пчела привита, готовлю трутня' or 'Пчёлы привиты, отправляю в пасеку'
       log('Imprint returned; next phase '..prep.phase)
       pendingApiaryRefresh=true
+      local scanned,scanErr=pcall(meInventory,true)
+      if not scanned then
+        stockWarning='МЭ после прививки: '..tostring(scanErr)
+        log(stockWarning)
+      end
       save()
-    elseif now-prep.started>CFG.timeout then
+    elseif now-prep.started>CFG.stuckDeliverySeconds then
       local impNow=devices.imp[1]
       if impNow and (stack(impNow.p,3) or stack(impNow.p,4)) then
         apiaryReason='Ожидаю выгрузку пчелы из импринтера'
       else
         pendingApiaryRefresh=true
-        if now-prep.started>CFG.timeout+CFG.stuckDeliverySeconds then
+        if now-prep.started>CFG.stuckDeliverySeconds+CFG.imprintPollInterval then
           releaseStaleApiPrep('После импринтера нет подтверждённого возврата пчелы в МЭ; проверь импорт')
         else
-          apiaryReason='После прививки ожидаю обновление каталога МЭ'
+          apiaryReason='Импринтер пуст, но пчелы пока нет в сети МЭ: проверь шину импорта'
         end
       end
     end
@@ -1725,9 +1759,9 @@ local function scheduleApiaries()
   if apiPrep then
     local api=liveApiary(apiPrep.apiAddr)
     local age=t-(apiPrep.deliveryStarted or apiPrep.started or t)
-    CFG.schedulerSummary='Один импринтер: готовит '..apiaryTaskSummary(apiPrep)..
-      ' для пасеки '..(api and api.addr:sub(1,8) or '?')..
-      (age>80 and (' ('..math.floor(age)..'с)') or '')
+    CFG.schedulerSummary='Импринтер ('..(apiPrep.part or 1)..'/2): '..apiaryTaskSummary(apiPrep)..
+      ' -> пасека '..(api and api.addr:sub(1,8) or '?')..
+      ' ('..math.floor(age)..'с)'
     return
   end
   if t<nextApiaryPlanAt then return end
@@ -1962,7 +1996,7 @@ local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'20.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  paint(16,1,'20.1  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
   local st=initializing and 'СКАНИРОВАНИЕ' or (paused and 'ПАУЗА' or 'РАБОТА')
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
@@ -2060,6 +2094,9 @@ local function drawHome()
   paint(rx,ry+1,cut('ИМПРИНТЕР: '..(routes.imp and (CFG.trustSingleFilledTemplate and 'гены включены' or 'шаблон не подтверждён') or 'отсутствует'),rightW-4),routes.imp and COLOR.blue or COLOR.gray,0x142233)
   local lab=getResource('labware')
   paint(rx,ry+2,cut('ПОСУДА: МЭ '..(lab and qty(lab) or 0)..'  МУТ '..(supplyStatus['МУТ'] or '?')..'  ИМП '..(supplyStatus['ИМП'] or '?'),rightW-4),COLOR.gray,0x142233)
+  if apiPrep or stage=='imprint' then
+    paint(rx,ry+3,cut('ИМПРИНТЕР: '..imprintOutputStatus,rightW-4),COLOR.yellow,0x142233)
+  end
   local pos=ry+4
   for i,api in ipairs(devices.api) do
     if pos+1>contentBottom then break end
@@ -2081,8 +2118,8 @@ local function drawHome()
     pos=pos+2
   end
   fill(2,H-5,W-3,2,0x182C3F)
-  local report=not paused and stockWarning~='' and stockWarning or alert
-  if report=='' then report=apiaryReason end
+  local report=paused and alert or (stockWarning~='' and stockWarning or apiaryReason)
+  if report=='' then report=alert end
   paint(3,H-5,cut('СТАТУС: '..report,W-6),COLOR.yellow,0x182C3F)
   paint(3,H-4,cut(rolesLine()..'  |  '..CFG.memStatus..'  |  Восстановлено: '..CFG.recoveries,W-6),COLOR.gray,0x182C3F)
   fill(1,H-2,W,3,0x102235)
@@ -2516,6 +2553,13 @@ local function startup()
   if not ok then notice('Поиск компонентов: '..tostring(err),true) end
   acquireRoute()
   local now=computer.uptime()
+  if apiPrep and apiPrep.phase=='imprint_wait' and routes.imp and devices.imp[1] then
+    local imp=devices.imp[1]
+    local held=stack(imp.p,3) or stack(imp.p,4)
+    if held and role(held)==apiPrep.currentKind then
+      lastPhysicalRoute[imp.addr]=routes.imp.me.addr
+    end
+  end
   if apiPrep then
     apiPrep.started=now
     apiPrep.deliveryStarted=nil
@@ -2533,7 +2577,7 @@ local function startup()
     alert='Незавершённые задания восстановлены. Проверяю фактические слоты перед работой.'
     log(alert)
   end
-  log('BeeMaster 20.0 Recovery started')
+  log('BeeMaster 20.1 IMPRINT FIX started')
 end
 startup()
 local okDraw,whyDraw=pcall(draw)
