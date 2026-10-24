@@ -7,7 +7,7 @@ local serialization = require('serialization')
 local gpu = assert(component.gpu, 'GPU missing')
 
 local CFG = {
-  tick = 3, scanInterval = 360, busyScan = 75, apiaryScan = 25,
+  tick = 3, scanInterval = 390, busyScan = 105, apiaryScan = 25,
   timeout = 600, importTimeout = 120, nurseryTimeout = 3600,
   targetLabware = 64, minPrincessReserve = 1,
   minDroneReserve = 4, requireKnownMutation = true,
@@ -20,9 +20,9 @@ local CFG = {
   maxFailedPerRecipe = 25, maxStoneCrossAttempts = 12,
   perApiaryCooldown=15, maxFarmSeconds=4800,
   stuckDeliverySeconds=240, retryParentDelay=150, meRetryDelay=120,
-  imprintPollInterval=9, imprintAmbiguityTimeout=75,
+  imprintPollInterval=30, imprintAmbiguityTimeout=120,
   logLines=20,
-  minFullScanGap=90, maxNewDetailsPerScan=50,
+  minFullScanGap=120, detailBatch=2, maxSnapshotKeys=500,
   strictSpecialBiomes=true,
   allowUnknownClimate=false,
   protectStoneMutations=true,
@@ -58,6 +58,10 @@ local paused=true
 local mode,alert='Ожидание','Первый запуск: проверь подключение и нажми СТАРТ'
 local failures,known,stage,job = {}, {}, 'idle', nil
 local detailCache, targetSpecies, lastME, lastApiary = {},{},0,0
+detailPending, detailPos={},1
+manualApiary, selectedClimateUid, climateOffset={},nil,0
+resumeWanted=false
+fatalError=nil
 CFG.maxMEErrorAt=0
 local pendingRefresh=false
 local nextPlanAt=0
@@ -155,7 +159,8 @@ local function save()
       trustSingleFilledTemplate=CFG.trustSingleFilledTemplate,
       allowLastPrincess=CFG.allowLastPrincess,
       allowLastDrone=CFG.allowLastDrone,apiStats=apiStats,bindings=bindings,apiJobs=apiJobs,apiPrep=apiPrep,
-      lastPhysicalRoute=lastPhysicalRoute}))
+      lastPhysicalRoute=lastPhysicalRoute,manualApiary=manualApiary,
+      resumeWanted=not paused}))
     f:close()
   end
 end
@@ -192,6 +197,8 @@ local function load()
     apiJobs=x.apiJobs or {}
     apiPrep=x.apiPrep
     lastPhysicalRoute=x.lastPhysicalRoute or lastPhysicalRoute
+    manualApiary=type(x.manualApiary)=='table' and x.manualApiary or {}
+    resumeWanted=x.resumeWanted==true
     if fromOld then
       log('Imported previous settings and active jobs; start remains paused for inspection')
     end
@@ -340,77 +347,99 @@ end
 local function fingerprintKey(fp)
   return tostring(fp.id)..'/'..tostring(fp.dmg)..'/'..tostring(fp.nbt_hash or '-')
 end
+-- Каталог обновляется быстро; NBT-детали считываются маленькими партиями
+-- ПОСЛЕ освобождения большого ответа getAvailableItems("NONE").
+function addBeeToCatalog(kind,count,fp,detail)
+  local ind=detail and detail.individual
+  if type(ind)~='table' then return end
+  local species=ind.ident or (ind.active and ind.active.species and ind.active.species.name)
+  if not species or species=='' then return end
+  local spec=catalog[species]
+  if not spec then
+    spec={p=0,d=0,q=0,entries={},name=ind.displayName or species}
+    catalog[species]=spec
+  end
+  spec.entries[#spec.entries+1]={role=kind,count=count,fp=fp,detail=detail}
+  if kind=='P' then spec.p=spec.p+count
+  elseif kind=='D' then spec.d=spec.d+count
+  else spec.q=spec.q+count end
+  if kind=='P' or kind=='Q' then known[species]=true end
+  if type(ind.active)=='table' and type(ind.active.species)=='table' then
+    nameToUid[norm(ind.active.species.name)]=species
+  end
+end
+function processDetailQueue()
+  if detailPos>#detailPending then return end
+  local remaining=CFG.detailBatch
+  while detailPos<=#detailPending and remaining>0 do
+    local row=detailPending[detailPos]
+    detailPending[detailPos]=false -- не удерживаем уже обработанные NBT
+    detailPos=detailPos+1
+    local key=fingerprintKey(row.fp)
+    local d=detailCache[key]
+    if not d then
+      d=lookDetail(row.fp)
+      if d then detailCache[key]=d end
+    end
+    if d then addBeeToCatalog(row.kind,row.count,row.fp,d) end
+    remaining=remaining-1
+  end
+  if detailPos>#detailPending then
+    detailPending={};detailPos=1
+    nextApiaryPlanAt=0
+    nextMutationPlanAt=0
+  end
+end
 local function meInventory(force)
   local now=computer.uptime()
   if not force and lastME>0 and now-lastME<CFG.minFullScanGap then
     return false
   end
   local entries=getList()
-  local beeRows={}
-  local resources={}
-  local templates={}
+  local rows,resources={},{}
+  local chosenTemplate=nil
+  local templateCount=0
+  -- Обход без getItemDetail: пока большой список МЭ жив, не вызываем
+  -- тяжёлые методы периферии и не сериализуем результаты.
   for _,v in pairs(entries) do
     if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0 then
       local fp=v.fingerprint
       local id=tostring(fp.id or ''):lower()
-      if id:find('gendustry:',1,true) and
-         (id:find('labware',1,true) or id:find('genesampleblank',1,true)
-            or id:find('genetemplate',1,true)) then
-        resources[#resources+1]={fingerprint={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash},size=qty(v)}
-      end
       local kind=roleId(fp.id)
       if kind then
-        beeRows[#beeRows+1]={kind=kind,count=qty(v),fp={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash}}
-      elseif id:find('genetemplate',1,true) and fp.nbt_hash then
-        templates[#templates+1]={fp={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash}}
+        rows[#rows+1]={kind=kind,count=qty(v),fp={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash}}
+      elseif id:find('gendustry:',1,true) and
+         (id:find('labware',1,true) or id:find('genesampleblank',1,true) or id:find('genetemplate',1,true)) then
+        local small={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash}
+        resources[#resources+1]={fingerprint=small,size=qty(v)}
+        if id:find('genetemplate',1,true) and fp.nbt_hash then
+          templateCount=templateCount+1
+          chosenTemplate={fp=small}
+        end
       end
     end
   end
   entries=nil
-  local newCatalog={}
-  local newlyRead=0
+  catalog={}
+  local newPending={}
   local seen={}
-  for _,v in ipairs(beeRows) do
-    local key=fingerprintKey(v.fp)
+  for _,row in ipairs(rows) do
+    local key=fingerprintKey(row.fp)
     seen[key]=true
     local detail=detailCache[key]
-    if not detail and newlyRead<CFG.maxNewDetailsPerScan then
-      detail=lookDetail(v.fp)
-      if detail then
-        newlyRead=newlyRead+1
-        detailCache[key]=detail
-      end
-    end
-    local ind=detail and detail.individual
-    if type(ind)=='table' then
-      local species=ind.ident or (ind.active and ind.active.species and ind.active.species.name)
-      if species and species~='' then
-        local x=newCatalog[species]
-        if not x then
-          x={p=0,d=0,q=0,entries={},name=ind.displayName or species}
-          newCatalog[species]=x
-        end
-        x.entries[#x.entries+1]={role=v.kind,count=v.count,fp=v.fp,detail=detail}
-        if v.kind=='P' then x.p=x.p+v.count
-        elseif v.kind=='D' then x.d=x.d+v.count
-        else x.q=x.q+v.count end
-        if v.kind=='P' or v.kind=='Q' then known[species]=true end
-        if type(ind.active)=='table' and type(ind.active.species)=='table' then
-          nameToUid[norm(ind.active.species.name)]=species
-        end
-      end
-    end
+    if detail then addBeeToCatalog(row.kind,row.count,row.fp,detail)
+    else newPending[#newPending+1]=row end
   end
   for key in pairs(detailCache) do
     if not seen[key] then detailCache[key]=nil end
   end
-  catalog=newCatalog
+  detailPending=newPending;detailPos=1
+  rows=nil;seen=nil
   available=resources
-  template=(#templates==1) and templates[1] or nil
+  template=(templateCount==1) and chosenTemplate or nil
   lastME=computer.uptime()
-  if newlyRead>0 then
-    local n=0;for _ in pairs(catalog) do n=n+1 end
-    log('МЭ: видов '..n..', новые NBT '..newlyRead..', уникальных пчёл '..#beeRows)
+  if #newPending>0 then
+    log('МЭ: список получен, новые NBT в очереди: '..#newPending)
   end
   return true
 end
@@ -664,7 +693,13 @@ function BIOME.ok(task,api)
   if not CFG.strictSpecialBiomes then return true end
   local temp,hum,source,bee=phenotypeClimate(task)
   if not temp or not hum then
-    return false,'НЕИЗВЕСТЕН КЛИМАТ: '..bee..' ('..tostring(source)..')'
+    local selected=manualApiary[BIOME.needed(task)]
+    if selected==api.addr then
+      local atm,ahm,why=actualClimate(api)
+      if not atm then return false,'Пасека не готова: '..tostring(why) end
+      return true -- явный выбор пользователя, НЕ автоматическое предположение о климате
+    end
+    return false,'НЕИЗВЕСТЕН КЛИМАТ: '..bee..' ('..tostring(source)..'). Назначь через КЛИМАТ.'
   end
   local atm,ahm,id=actualClimate(api)
   if not atm then return false,'Нельзя определить климат пасеки: '..tostring(id) end
@@ -1401,13 +1436,22 @@ local function queueApiaryImprint(task,api)
   save()
   return true
 end
-IMPRINT.stockSnapshotFor = function(route,kind,species)
+IMPRINT.stockSnapshotFor = function(route,kind,species,extraFp)
   local counts={}
+  local allowed={}
+  local spec=catalog[species]
+  if spec then
+    for _,v in ipairs(spec.entries) do
+      if v.role==kind then allowed[fingerprintKey(v.fp)]=true end
+    end
+  end
+  if extraFp then allowed[fingerprintKey(extraFp)]=true end
   local items=getList(route.me.p)
   for _,v in pairs(items) do
     if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0 and
        roleId(v.fingerprint.id)==kind then
-      counts[fingerprintKey(v.fingerprint)]=qty(v)
+      local key=fingerprintKey(v.fingerprint)
+      if allowed[key] then counts[key]=qty(v) end
     end
   end
   items=nil
@@ -1473,59 +1517,52 @@ findImprintedReturn = function(prep,route)
   if not ref or not expected or not wanted then
     return nil,'Нет данных о пчеле для проверки результата'
   end
-  -- returnBaseline is captured while the completed bee is STILL IN slot 4.
-  -- Therefore a later +1 is an actual return rather than a random historical delta.
   local before=prep.returnBaseline or prep.baseline or {}
-  local refKey=fingerprintKey(ref)
   local wantedKey=prep.outputFp and fingerprintKey(prep.outputFp) or nil
+  local refKey=fingerprintKey(ref)
   local ok,items=pcall(getList,route.me.p)
   if not ok then return nil,'Ошибка чтения МЭ импринтера: '..tostring(items) end
   local candidates={}
   local original=nil
-  local uniqueHash=nil
+  local exact=nil
   for _,v in pairs(items) do
     if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0 and
        roleId(v.fingerprint.id)==wanted then
       local fp=v.fingerprint
       local key=fingerprintKey(fp)
       local count=qty(v)
-      local delta=count-(before[key] or 0)
-      if delta>0 then
-        local species=beeSpeciesFor(fp,route.me)
-        if species==expected then
-          candidates[#candidates+1]=fp
-          if key==wantedKey then uniqueHash=fp end
-        end
+      if count>(before[key] or 0) then
+        local small={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash}
+        if key==wantedKey then exact=small
+        elseif #candidates<18 then candidates[#candidates+1]=small end
       end
       if not prep.returnBaseline and key==refKey and count>=(before[key] or 0) then
-        original=fp
+        original={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash}
       end
     end
   end
   items=nil
-  -- Output fingerprint from the actual machine is a stronger proof than species.
-  if uniqueHash then return uniqueHash end
-  if #candidates==1 then return candidates[1] end
-  if #candidates>1 then
-    -- Some OpenPeripheral versions expose bee genes but not NBT hashes.
-    -- Only use genes when they identify exactly ONE result.
-    local matching={}
-    if prep.outputTraits and #candidates<=12 then
-      for _,fp in ipairs(candidates) do
+  if exact and beeSpeciesFor(exact,route.me)==expected then return exact end
+  -- Максимум 18 кандидатов, только после освобождения полного снимка МЭ.
+  local matching={}
+  for _,fp in ipairs(candidates) do
+    if beeSpeciesFor(fp,route.me)==expected then matching[#matching+1]=fp end
+  end
+  if #matching==1 then return matching[1] end
+  if #matching>1 then
+    local geneMatches={}
+    if prep.outputTraits and #matching<=12 then
+      for _,fp in ipairs(matching) do
         local okDetail,detail=invoke(route.me.p,'getItemDetail',fp,false)
         if okDetail and type(detail)=='table' and
            IMPRINT.genesCompatible(prep.outputTraits,IMPRINT.outputGeneSignature(detail)) then
-          matching[#matching+1]=fp
+          geneMatches[#geneMatches+1]=fp
         end
-        detail=nil
       end
     end
-    if #matching==1 then return matching[1] end
-    return nil,'НЕОДНОЗНАЧНО: '..#candidates..' новых пчёл '..expected..
-      ', импринтер и другие машины импортируют одновременно'
+    if #geneMatches==1 then return geneMatches[1] end
+    return nil,'НЕОДНОЗНАЧНО: '..#matching..' новых пчёл '..expected..' в МЭ'
   end
-  -- Old in-progress jobs did not capture the output. Retain the old fallback
-  -- only when there is no competing NEW fingerprint; never steal arbitrary bees.
   if original and prep.outputSeen and not prep.returnBaseline then return original end
   return nil,nil
 end
@@ -1645,7 +1682,7 @@ local function processApiaryImprint(now)
     if not species or kind~=role({id=beeFp.id}) then
       apiaryReason='Неверный генетический тип кандидата для импринтера';return
     end
-    local okay,base=pcall(IMPRINT.stockSnapshotFor,route,kind,species)
+    local okay,base=pcall(IMPRINT.stockSnapshotFor,route,kind,species,live.fingerprint)
     if not okay then apiaryReason='Не удалось прочитать запас МЭ перед прививкой: '..tostring(base);return end
     prep.baseline=base;prep.currentFp=live.fingerprint
     prep.currentKind=kind;prep.currentSpecies=species
@@ -1667,7 +1704,7 @@ local function processApiaryImprint(now)
       prep.outputSeen=true
       prep.outputFp=IMPRINT.outputFingerprint(out) or prep.outputFp
       prep.outputTraits=IMPRINT.outputGeneSignature(out) or prep.outputTraits
-      local snapOk,snap=pcall(IMPRINT.stockSnapshotFor,route,prep.currentKind,prep.currentSpecies)
+      local snapOk,snap=pcall(IMPRINT.stockSnapshotFor,route,prep.currentKind,prep.currentSpecies,prep.outputFp or prep.currentFp)
       if snapOk then
         prep.returnBaseline=snap
       else
@@ -1726,11 +1763,8 @@ local function processApiaryImprint(now)
       apiaryReason=prep.phase=='imprint_start' and 'Первая пчела привита, готовлю трутня' or 'Пчёлы привиты, отправляю в пасеку'
       log('Imprint returned; next phase '..prep.phase)
       pendingApiaryRefresh=true
-      local scanned,scanErr=pcall(meInventory,true)
-      if not scanned then
-        stockWarning='МЭ после прививки: '..tostring(scanErr)
-        log(stockWarning)
-      end
+      -- Не делаем ещё один огромный запрос МЭ сразу после каждой прививки.
+      -- Запланированное обновление выполнится с учётом minFullScanGap.
       save()
     elseif now-prep.started>CFG.stuckDeliverySeconds then
       local impNow=devices.imp[1]
@@ -2078,7 +2112,7 @@ local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'20.5  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  paint(16,1,'20.7  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
   local st=initializing and 'СКАНИРОВАНИЕ' or (paused and 'ПАУЗА' or 'РАБОТА')
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
@@ -2211,6 +2245,8 @@ local function drawHome()
   button(bx,H-1,'ОБОРУДОВАНИЕ','settings',COLOR.blue,0x203B49,19)
   bx=bx+21
   button(bx,H-1,'ОБНОВИТЬ','scan',COLOR.fg,0x203B49,15)
+  bx=bx+17
+  button(bx,H-1,'КЛИМАТ','climate',COLOR.yellow,0x203B49,15)
   bx=bx+17
   button(bx,H-1,'ЖУРНАЛ','logs',COLOR.fg,0x203B49,13)
   bx=bx+15
@@ -2385,6 +2421,72 @@ local function drawDetail()
   button(3,H-1,'← УСТРОЙСТВА','settings',COLOR.green,0x203B49,19)
   button(25,H-1,'НА ГЛАВНУЮ','home',COLOR.blue,0x203B49,18)
 end
+function climateCandidates()
+  local all={}
+  for uid,sp in pairs(catalog) do
+    local t,h=BIOME.climate(uid)
+    if not t or not h then
+      all[#all+1]={uid=uid,name=sp.name or uid,hasParents=(sp.p>0 or sp.q>0)}
+    end
+  end
+  table.sort(all,function(a,b)return tostring(a.name)<tostring(b.name) end)
+  return all
+end
+function drawClimate()
+  local W,H=width,height
+  statusBar()
+  box(2,5,W-3,H-11,'РУЧНОЙ КЛИМАТ / НАЗНАЧЕНИЕ ПАСЕК',COLOR.blue)
+  paint(4,7,cut('Для неизвестных видов: выбери пчелу и пасеку, подходящую по твоему опыту.',W-8),COLOR.fg,0x142233)
+  paint(4,8,cut('ВНИМАНИЕ: программа НЕ проверяет, выживет ли пчела в выбранном биоме!',W-8),COLOR.yellow,0x142233)
+  local entries=climateCandidates()
+  local listStart=11
+  local maxRows=math.max(3,math.min(15,H-25))
+  climateOffset=math.min(math.max(0,#entries-maxRows),math.max(0,climateOffset))
+  paint(4,10,'НЕИЗВЕСТНЫЕ ВИДЫ ('..#entries..'):',COLOR.green,0x142233)
+  for i=1,maxRows do
+    local data=entries[i+climateOffset]
+    if not data then break end
+    local y=listStart+i-1
+    local chosen=data.uid==selectedClimateUid
+    local assigned=manualApiary[data.uid]
+    local index=nil
+    for n,api in ipairs(devices.api) do if api.addr==assigned then index=n;break end end
+    local marker=assigned and (' -> ПАСЕКА '..(index or '?')) or ' -> НЕ НАЗНАЧЕН'
+    local name=cut(data.name,math.max(12,W-48))
+    local line=(chosen and '> ' or '  ')..name..marker
+    paint(5,y,cut(line,W-29),chosen and COLOR.green or COLOR.fg,0x142233)
+    button(W-21,y,chosen and 'ВЫБРАН' or 'ВЫБРАТЬ','climsel:'..data.uid,
+      chosen and COLOR.green or COLOR.blue,0x203B49,16)
+  end
+  local scrollY=listStart+maxRows+1
+  if #entries>maxRows then
+    button(5,scrollY,'▲ ВЫШЕ','climup',COLOR.blue,0x203B49,14)
+    button(22,scrollY,'▼ НИЖЕ','climdown',COLOR.blue,0x203B49,14)
+  end
+  local by=math.max(scrollY+2,H-13)
+  local selected=selectedClimateUid and catalog[selectedClimateUid]
+  if selected then
+    paint(4,by,cut('Вид: '..(selected.name or selectedClimateUid)..' | ВЫБЕРИ КУДА ОТПРАВЛЯТЬ:',W-8),COLOR.yellow,0x142233)
+    for i,api in ipairs(devices.api) do
+      local row=math.floor((i-1)/3)
+      local col=(i-1)%3
+      local bw=math.min(24,math.floor((W-13)/3))
+      local x=5+col*(bw+2)
+      local name=(manualApiary[selectedClimateUid]==api.addr and '● ' or '')..'ПАСЕКА '..i
+      button(x,by+2+row*2,name,'climapi:'..i,
+        manualApiary[selectedClimateUid]==api.addr and COLOR.green or COLOR.blue,0x203B49,bw)
+    end
+    button(5,by+7,'СНЯТЬ ПРАВИЛО','climclear',COLOR.yellow,0x203B49,22)
+  else
+    paint(4,by,'Выбери вид из списка, чтобы назначить ему одну из пасек.',COLOR.gray,0x142233)
+  end
+  fill(2,H-5,W-3,2,0x182C3F)
+  paint(3,H-5,cut(CFG.biomeStatus or '',W-6),COLOR.yellow,0x182C3F)
+  paint(3,H-4,cut('Ручной выбор действует только для неизвестного климата. Задания с NBT не обходятся.',W-6),COLOR.gray,0x182C3F)
+  fill(1,H-2,W,3,0x102235)
+  button(3,H-1,'ГЛАВНАЯ','home',COLOR.green,0x203B49,16)
+  button(22,H-1,'ОБНОВИТЬ МЭ','scan',COLOR.blue,0x203B49,20)
+end
 local function drawLogs()
   statusBar()
   box(2,5,width-3,height-11,'ЖУРНАЛ  /  ПОСЛЕДНИЕ СОБЫТИЯ',COLOR.blue)
@@ -2410,6 +2512,7 @@ local function draw()
   if page=='settings' then drawSettings()
   elseif page=='detail' then drawDetail()
   elseif page=='logs' then drawLogs()
+  elseif page=='climate' then drawClimate()
   else drawHome() end
   flushDraw()
   guiRowsNow=nil
@@ -2592,6 +2695,37 @@ local function tap(key)
         notice('Нельзя сбросить: импринтер ещё содержит пчелу. Освободи его выход.',false)
       end
     end
+  elseif key=='climate' then
+    page='climate'
+  elseif key=='climup' then
+    climateOffset=math.max(0,climateOffset-5)
+  elseif key=='climdown' then
+    climateOffset=climateOffset+5
+  elseif key:sub(1,8)=='climsel:' then
+    selectedClimateUid=key:sub(9)
+  elseif key:sub(1,8)=='climapi:' then
+    local idx=tonumber(key:sub(9))
+    local api=idx and devices.api[idx]
+    if selectedClimateUid and catalog[selectedClimateUid] and api then
+      local t,h=BIOME.climate(selectedClimateUid)
+      if t and h then
+        notice('Климат этого вида уже известен: ручной маршрут не нужен.',false)
+      else
+        manualApiary[selectedClimateUid]=api.addr
+        CFG.biomeStatus='Ручной маршрут: '..(catalog[selectedClimateUid].name or selectedClimateUid)..' -> пасека '..idx
+        nextApiaryPlanAt=0
+        CFG.taskCooldown[selectedClimateUid]=nil
+        save()
+        log(CFG.biomeStatus)
+      end
+    end
+  elseif key=='climclear' then
+    if selectedClimateUid then
+      manualApiary[selectedClimateUid]=nil
+      CFG.biomeStatus='Ручное назначение удалено: '..selectedClimateUid
+      nextApiaryPlanAt=0
+      save()
+    end
   elseif key=='settings' then
     page='settings'
   elseif key=='home' then
@@ -2627,7 +2761,7 @@ local function tap(key)
     if addr then changeME(addr,meAddr) end
   elseif key:sub(1,8)=='clearme:' then clearME(key:sub(9))
   elseif key:sub(1,5)=='test:' then testMachine(key:sub(6))
-  elseif key=='exit' then quit=true end
+  elseif key=='exit' then paused=true;quit=true end
 end
 local function startup()
   load();paused=true
@@ -2660,7 +2794,7 @@ local function startup()
     alert='Незавершённые задания восстановлены. Проверяю фактические слоты перед работой.'
     log(alert)
   end
-  log('BeeMaster 20.5 OpenOS 1.6.1 Lua 5.2 + ME SCAN + LOG20 started')
+  log('BeeMaster 20.7 climate / incremental ME / watchdog support')
 end
 restoreJournal()
 startup()
@@ -2668,7 +2802,24 @@ local okDraw,whyDraw=pcall(draw)
 if not okDraw then print('Ошибка экрана: '..tostring(whyDraw)) end
 local okInit,errInit=pcall(refreshEverything,false)
 if not okInit then initializing=false;notice('Начальная загрузка: '..tostring(errInit),true) end
-local lastDraw,lastCycle,lastApiaryCheck=0,0,0
+-- После аварийного перезапуска: возобновляем работу ТОЛЬКО если она
+-- была запущена, МЭ сканировалась, назначения устройств однозначны.
+if okInit and _G.BEEMASTER_WATCHDOG==true and resumeWanted then
+  local checkOK,reason=pcall(collisionReport)
+  local conflict=checkOK and reason or tostring(reason)
+  if not conflict and #graph>0 and routes.mut and primaryME() and #devices.mut==1 then
+    paused=false
+    nextPlanAt=0
+    nextApiaryPlanAt=0
+    log('WATCHDOG: проверки пройдены, автоматизация возобновлена')
+    alert='После перезапуска: МЭ и оборудование проверены, работа возобновлена'
+  else
+    paused=true
+    alert='После сбоя оставлена ПАУЗА: '..tostring(conflict or 'нет готового мутатрона/рецептов')
+    log(alert)
+  end
+end
+local lastDraw,lastCycle,lastApiaryCheck,lastDetailStep=0,0,0,0
 while not quit do
   local now=computer.uptime()
   local ev,a,x,y=event.pull(0.12,'touch')
@@ -2681,12 +2832,17 @@ while not quit do
       local ok,err=pcall(tap,pressed)
       if not ok then notice('Кнопка: '..tostring(err),false) end
       local gd,er=pcall(draw)
-      if not gd then print('GUI: '..tostring(er));quit=true end
+      if not gd then print('GUI: '..tostring(er));fatalError=tostring(er);quit=true end
       lastDraw=computer.uptime()
       lastUIActivity=lastDraw
     end
   end
   now=computer.uptime()
+  if not initializing and detailPos<=#detailPending and now-lastDetailStep>=2 then
+    lastDetailStep=now
+    local fine,problem=pcall(processDetailQueue)
+    if not fine then log('NBT: '..tostring(problem)) end
+  end
   if not initializing and now-lastCycle>=CFG.tick then
     lastCycle=now
     cycle()
@@ -2701,11 +2857,17 @@ while not quit do
   if now-lastDraw>=drawInterval then
     lastDraw=now
     local ok,err=pcall(draw)
-    if not ok then print('GUI: '..tostring(err));quit=true end
+    if not ok then print('GUI: '..tostring(err));fatalError=tostring(err);quit=true end
   end
 end
-save()
-gpu.setResolution(originalW,originalH)
-gpu.setForeground(COLOR.fg)
-gpu.setBackground(0)
+local saved,saveErr=pcall(save)
+pcall(function()
+  gpu.setResolution(originalW,originalH)
+  gpu.setForeground(COLOR.fg)
+  gpu.setBackground(0)
+end)
+if not saved then print('BeeMaster: ошибка сохранения '..tostring(saveErr)) end
+if fatalError then error('BeeMaster GUI: '..fatalError) end
 print('BeeMaster stopped; saved '..DATA)
+-- Отличаем ручной ВЫХОД от аварии: watchdog не должен перезапускать программу.
+return 'BEEMASTER_USER_EXIT'
