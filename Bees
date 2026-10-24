@@ -21,7 +21,7 @@ local CFG = {
   perApiaryCooldown=15, maxFarmSeconds=4800,
   stuckDeliverySeconds=240, retryParentDelay=150, meRetryDelay=120,
   imprintPollInterval=9, imprintAmbiguityTimeout=75,
-  gcInterval=45, logLines=20,
+  logLines=20,
   minFullScanGap=90, maxNewDetailsPerScan=50,
   strictSpecialBiomes=true,
   allowUnknownClimate=false,
@@ -86,7 +86,6 @@ CFG.nextMEAttemptAt=0
 CFG.recoveries=0
 CFG.lastStalledWarning=0
 local exportFailureCount=0
-CFG.lastGC=0
 local stockWarning=''
 CFG.taskCooldown={}
 CFG.schedulerSummary='Очередь ещё не построена'
@@ -95,15 +94,8 @@ local graphInfo={possible=0,waiting=0,ready=0,example=''}
 CFG.biomeStatus='Ожидание выбора задач'
 CFG.lastBiomeAlert=''
 
--- Не оцениваем свободную RAM и не запрещаем сканировать МЭ из-за порога.
--- Периодическая сборка мусора уменьшает пики памяти перед крупными запросами.
-local function gc(force)
-  local now=computer.uptime()
-  if force or now-CFG.lastGC>=CFG.gcInterval then
-    CFG.lastGC=now
-    collectgarbage('collect')
-  end
-end
+-- OpenOS не предоставляет collectgarbage() в окружении программы.
+-- Сборка мусора Lua автоматическая; на чтение МЭ ограничений RAM нет.
 
 -- Держим не более 20 строк одновременно в RAM и на диске.
 -- Читаем старый журнал построчно, не загружая весь файл в память.
@@ -123,7 +115,7 @@ local function restoreJournal()
   end
 end
 local function log(s)
-  s=unicode.sub(tostring(s),1,210)
+  s=unicode.sub(tostring(s):gsub('[\r\n]+',' '),1,210)
   local now=computer.uptime()
   local last=CFG.logRecentKeys[s]
   if last and now-last<240 then return end
@@ -315,9 +307,7 @@ local function primaryME()
 end
 local function getList(me)
   me=assert(me or primaryME(),'ME not found')
-  -- getAvailableItems создаёт крупную временную таблицу: очищаем мусор ДО неё.
-  -- Пробуем фактическое чтение МЭ независимо от числа свободных КБ.
-  gc(true)
+  -- МЭ опрашивается без искусственного порога свободной RAM.
   local ok,a=invoke(me,'getAvailableItems','NONE')
   if not ok or type(a)~='table' then
     error('getAvailableItems: '..tostring(a))
@@ -377,7 +367,6 @@ local function meInventory(force)
     end
   end
   entries=nil
-  gc(true) -- Освобождаем полный список предметов перед чтением подробных генов.
   local newCatalog={}
   local newlyRead=0
   local seen={}
@@ -1422,7 +1411,6 @@ IMPRINT.stockSnapshotFor = function(route,kind,species)
     end
   end
   items=nil
-  gc(true)
   return counts
 end
 -- Identify the very bee returned by the Imprinter, not any same-species bee
@@ -1515,7 +1503,6 @@ findImprintedReturn = function(prep,route)
     end
   end
   items=nil
-  gc(true)
   -- Output fingerprint from the actual machine is a stronger proof than species.
   if uniqueHash then return uniqueHash end
   if #candidates==1 then return candidates[1] end
@@ -2091,7 +2078,7 @@ local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'20.3  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  paint(16,1,'20.4  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
   local st=initializing and 'СКАНИРОВАНИЕ' or (paused and 'ПАУЗА' or 'РАБОТА')
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
@@ -2673,7 +2660,7 @@ local function startup()
     alert='Незавершённые задания восстановлены. Проверяю фактические слоты перед работой.'
     log(alert)
   end
-  log('BeeMaster 20.3 ME SCAN + LOG20 started')
+  log('BeeMaster 20.4 OC COMPAT + ME SCAN + LOG20 started')
 end
 restoreJournal()
 startup()
@@ -2700,7 +2687,6 @@ while not quit do
     end
   end
   now=computer.uptime()
-  if now-CFG.lastGC>=CFG.gcInterval then gc() end
   if not initializing and now-lastCycle>=CFG.tick then
     lastCycle=now
     cycle()
