@@ -20,9 +20,9 @@ local CFG = {
   maxFailedPerRecipe = 25, maxStoneCrossAttempts = 12,
   perApiaryCooldown=15, maxFarmSeconds=4800,
   stuckDeliverySeconds=240, retryParentDelay=150, meRetryDelay=120,
-  imprintPollInterval=25,
-  gcInterval=30, memoryWarningKB=135, maxLogBytes=48*1024,
-  minFullScanGap=90, minScanFreeKB=1050, maxNewDetailsPerScan=50,
+  imprintPollInterval=9, imprintAmbiguityTimeout=75,
+  gcInterval=45, logLines=20,
+  minFullScanGap=90, maxNewDetailsPerScan=50,
   strictSpecialBiomes=true,
   allowUnknownClimate=false,
   protectStoneMutations=true,
@@ -56,7 +56,7 @@ local guiBg=0x0E1722
 local graph,catalog,available,nameToUid,routes = {},{},{},{},{}
 local paused=true
 local mode,alert='Ожидание','Первый запуск: проверь подключение и нажми СТАРТ'
-local news,failures,known,stage,job,missed,lastScan = {},{}, {}, 'idle', nil, {}, 0
+local failures,known,stage,job = {}, {}, 'idle', nil
 local detailCache, targetSpecies, lastME, lastApiary = {},{},0,0
 CFG.maxMEErrorAt=0
 local pendingRefresh=false
@@ -69,8 +69,8 @@ local apiaryReason='Проверка пасек не выполнялась'
 local lastPhysicalRoute={}
 local pushImprinterOutput
 local findImprintedReturn
+IMPRINT={}
 local deviceActionNote='Выбери устройство, затем роль и свой МЭ-интерфейс над ним.'
-local recentlyScanned=''
 local page='home'
 local recent={}
 local apiJobs={}
@@ -79,7 +79,6 @@ CFG.lastDeliveryReason=''
 local apiStats={completed=0,failed=0,drones=0,princesses=0}
 local created={}
 local lastApiResult=0
-local lastFullGraph=0
 local pendingApiaryRefresh=false
 local nextApiaryPlanAt=0
 local nextMutationPlanAt=0
@@ -88,8 +87,6 @@ CFG.recoveries=0
 CFG.lastStalledWarning=0
 local exportFailureCount=0
 CFG.lastGC=0
-CFG.memStatus='RAM: проверка'
-CFG.lowMemoryEvents=0
 local stockWarning=''
 CFG.taskCooldown={}
 CFG.schedulerSummary='Очередь ещё не построена'
@@ -98,37 +95,44 @@ local graphInfo={possible=0,waiting=0,ready=0,example=''}
 CFG.biomeStatus='Ожидание выбора задач'
 CFG.lastBiomeAlert=''
 
-function releaseMemory(force)
+-- Не оцениваем свободную RAM и не запрещаем сканировать МЭ из-за порога.
+-- Периодическая сборка мусора уменьшает пики памяти перед крупными запросами.
+local function gc(force)
   local now=computer.uptime()
   if force or now-CFG.lastGC>=CFG.gcInterval then
     CFG.lastGC=now
+    collectgarbage('collect')
   end
-  local free,total
-  if type(computer.freeMemory)=='function' then
-    local ok,value=pcall(computer.freeMemory)
-    if ok and type(value)=='number' then free=value end
-  end
-  if type(computer.totalMemory)=='function' then
-    local ok,value=pcall(computer.totalMemory)
-    if ok and type(value)=='number' then total=value end
-  end
-  if free then
-    CFG.memStatus=string.format('RAM %.0f/%.0f KB',free/1024,(total or 0)/1024)
-    if free<CFG.memoryWarningKB*1024 then
-      return false
-    end
-  else
-    CFG.memStatus='RAM: недоступно'
-  end
-  return true
 end
 
+-- Держим не более 20 строк одновременно в RAM и на диске.
+-- Читаем старый журнал построчно, не загружая весь файл в память.
+local function restoreJournal()
+  local f=io.open(LOG,'r')
+  if f then
+    for line in f:lines() do
+      recent[#recent+1]=unicode.sub(line,1,220)
+      if #recent>CFG.logLines then table.remove(recent,1) end
+    end
+    f:close()
+  end
+  local w=io.open(LOG,'w')
+  if w then
+    if #recent>0 then w:write(table.concat(recent,'\n'),'\n') end
+    w:close()
+  end
+end
 local function log(s)
-  s=tostring(s)
+  s=unicode.sub(tostring(s),1,210)
   local now=computer.uptime()
   local last=CFG.logRecentKeys[s]
   if last and now-last<240 then return end
+  if not last then CFG.logKeyCount=(CFG.logKeyCount or 0)+1 end
   CFG.logRecentKeys[s]=now
+  if (CFG.logKeyCount or 0)>32 then
+    CFG.logRecentKeys={[s]=now}
+    CFG.logKeyCount=1
+  end
   if now-(CFG.lastLogCleanup or -120)>=120 then
     CFG.lastLogCleanup=now
     local count=0
@@ -136,20 +140,15 @@ local function log(s)
       if now-stamp>300 then CFG.logRecentKeys[key]=nil
       else count=count+1 end
     end
-    if count>110 then CFG.logRecentKeys={[s]=now} end
+    CFG.logKeyCount=count
   end
   local line=string.format('[%.0f] %s',now,s)
   recent[#recent+1]=line
-  while #recent>35 do table.remove(recent,1) end
-  local f=io.open(LOG,'a')
+  if #recent>CFG.logLines then table.remove(recent,1) end
+  local f=io.open(LOG,'w')
   if f then
-    local size=f:seek('end')
-    if type(size)=='number' and size+#line+2>CFG.maxLogBytes then
-      f:close()
-      f=io.open(LOG,'w')
-      if f then f:write('[',math.floor(now),'] Журнал очищен: предел 48 KB\n') end
-    end
-    if f then f:write(line,'\n');f:close() end
+    f:write(table.concat(recent,'\n'),'\n')
+    f:close()
   end
 end
 local function notice(s,bad)
@@ -226,12 +225,15 @@ local function itemid(v)
   if type(v)~='table' then return '' end
   return tostring(v.name or v.id or (v.fingerprint or {}).id or '')
 end
-local function role(v)
-  local n=itemid(v):lower()
+local function roleId(id)
+  local n=tostring(id or ''):lower()
   if n:find('beeprincess',1,true) then return 'P' end
   if n:find('beedrone',1,true) then return 'D' end
   if n:find('beequeen',1,true) then return 'Q' end
   return nil
+end
+local function role(v)
+  return roleId(itemid(v))
 end
 local function title(v)
   if not v then return '—' end
@@ -313,11 +315,9 @@ local function primaryME()
 end
 local function getList(me)
   me=assert(me or primaryME(),'ME not found')
-  local free=type(computer.freeMemory)=='function' and computer.freeMemory() or nil
-  if free and free<CFG.minScanFreeKB*1024 then
-    error('МЭ НЕ СКАНИРОВАЛАСЬ: свободно '..math.floor(free/1024)..
-      ' КБ RAM. Для большой МЭ нужны дополнительные планки памяти / отдельная МЭ подсеть пчёл')
-  end
+  -- getAvailableItems создаёт крупную временную таблицу: очищаем мусор ДО неё.
+  -- Пробуем фактическое чтение МЭ независимо от числа свободных КБ.
+  gc(true)
   local ok,a=invoke(me,'getAvailableItems','NONE')
   if not ok or type(a)~='table' then
     error('getAvailableItems: '..tostring(a))
@@ -362,13 +362,13 @@ local function meInventory(force)
   for _,v in pairs(entries) do
     if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0 then
       local fp=v.fingerprint
-      local id=norm(fp.id)
+      local id=tostring(fp.id or ''):lower()
       if id:find('gendustry:',1,true) and
          (id:find('labware',1,true) or id:find('genesampleblank',1,true)
             or id:find('genetemplate',1,true)) then
         resources[#resources+1]={fingerprint={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash},size=qty(v)}
       end
-      local kind=role({id=fp.id})
+      local kind=roleId(fp.id)
       if kind then
         beeRows[#beeRows+1]={kind=kind,count=qty(v),fp={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash}}
       elseif id:find('genetemplate',1,true) and fp.nbt_hash then
@@ -377,6 +377,7 @@ local function meInventory(force)
     end
   end
   entries=nil
+  gc(true) -- Освобождаем полный список предметов перед чтением подробных генов.
   local newCatalog={}
   local newlyRead=0
   local seen={}
@@ -451,15 +452,17 @@ local function chooseQueen(uid)
   return nil
 end
 local function getResource(term)
-  local matches={}
-  for _,v in pairs(available) do
-    if type(v)=='table' and qty(v)>0 and type(v.fingerprint)=='table' then
-      local id=norm(v.fingerprint.id)
-      if id:find(term:lower(),1,true) then matches[#matches+1]=v end
+  local selected,best=nil,0
+  term=term:lower()
+  for _,v in ipairs(available) do
+    if v and v.fingerprint then
+      local amount=qty(v)
+      if amount>best and tostring(v.fingerprint.id or ''):lower():find(term,1,true) then
+        selected,best=v,amount
+      end
     end
   end
-  table.sort(matches,function(a,b)return qty(a)>qty(b) end)
-  return matches[1]
+  return selected
 end
 local function graphScan()
   graph={};targetSpecies={}
@@ -557,7 +560,6 @@ function BIOME.allUpgrades(api)
   for i=3,6 do
     local x=stack(api.p,i)
     if x then
-      local id=norm(itemid(x))
       local dmg=tonumber(x.damage or x.dmg)
       ret[#ret+1]=(UPGRADES[dmg] or title(x))..' x'..math.max(1,qty(x))
       if dmg and BIOME.emulations[dmg] then
@@ -571,26 +573,11 @@ function BIOME.allUpgrades(api)
 end
 
 local function scanApiaries()
-  missed={}
-  for i,api in ipairs(devices.api) do
+  for _,api in ipairs(devices.api) do
     local ups,emus,c=BIOME.allUpgrades(api)
     api.upgrades=ups
     api.emulations=emus
     api.emulationCount=c
-    api.queen=stack(api.p,1)
-    api.drone=stack(api.p,2)
-    if c>1 then
-      missed[#missed+1]='Пасека '..i..': НЕСКОЛЬКО ЭМУЛЯЦИЙ, выбери одну'
-    end
-  end
-  for _,m in ipairs(graph) do
-    if type(m.conditions)=='table' and next(m.conditions) then
-      local info=serialization.serialize(m.conditions)
-      if info and #info>0 then
-        missed[#missed+1]='Условие мутации: '..m.result..' '..info:sub(1,45)
-        if #missed>=25 then break end
-      end
-    end
   end
 end
 
@@ -1123,6 +1110,7 @@ local function processImprint(now)
     job.queenFP=bee.fp
     job.imprintPrevCount=meCount(bee.fp)
     job.baseline=queenSnapshot()
+    job.outputFp=nil;job.outputTraits=nil;job.outputSeen=nil;job.returnBaseline=nil
     input(imp,routes.imp,bee.fp,3,true)
     lastPhysicalRoute[imp.addr]=routes.imp.me.addr
     job.lastReturnCheck=0
@@ -1135,6 +1123,13 @@ local function processImprint(now)
       return
     end
     if out then
+      job.outputSeen=true
+      job.outputFp=IMPRINT.outputFingerprint(out) or job.outputFp
+      job.outputTraits=IMPRINT.outputGeneSignature(out) or job.outputTraits
+      local snapOk,snap=pcall(IMPRINT.stockSnapshotFor,routes.imp,'Q',job.result)
+      if snapOk then job.returnBaseline=snap
+      else log('Матка: нет МЭ-снимка перед возвратом: '..tostring(snap)) end
+      save()
       pushImprinterOutput(imp,'Q',job.result)
       out=stack(imp.p,4)
     end
@@ -1151,7 +1146,9 @@ local function processImprint(now)
     if now-(job.lastReturnCheck or 0)>=CFG.imprintPollInterval then
       job.lastReturnCheck=now
       local fp,why=findImprintedReturn({currentSpecies=job.result,
-        currentKind='Q',currentFp=job.queenFP,baseline=job.baseline},routes.imp)
+        currentKind='Q',currentFp=job.queenFP,baseline=job.baseline,
+        returnBaseline=job.returnBaseline,outputFp=job.outputFp,
+        outputTraits=job.outputTraits,outputSeen=job.outputSeen},routes.imp)
       if fp then
         job.queenFP=fp
         job.step='post_queen';stage='post_queen'
@@ -1415,55 +1412,134 @@ local function queueApiaryImprint(task,api)
   save()
   return true
 end
-local function stockSnapshotFor(route,kind,species)
+IMPRINT.stockSnapshotFor = function(route,kind,species)
   local counts={}
   local items=getList(route.me.p)
   for _,v in pairs(items) do
     if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0 and
-       role({id=v.fingerprint.id})==kind then
+       roleId(v.fingerprint.id)==kind then
       counts[fingerprintKey(v.fingerprint)]=qty(v)
     end
   end
+  items=nil
+  gc(true)
   return counts
+end
+-- Identify the very bee returned by the Imprinter, not any same-species bee
+-- that entered AE2 while other apiaries/mutatrons were working.
+IMPRINT.outputFingerprint = function(out)
+  if type(out)~='table' then return nil end
+  local fp=type(out.fingerprint)=='table' and out.fingerprint or out
+  local hash=fp.nbt_hash or fp.nbtHash
+  local id=fp.id or fp.name
+  if hash~=nil and id then
+    return {id=id,dmg=fp.dmg or fp.damage or 0,nbt_hash=hash}
+  end
+  return nil
+end
+
+IMPRINT.GENE_FIELDS={'species','speed','lifespan','fertility','flowering','territory',
+  'effect','nocturnal','caveDwelling','tolerantFlyer','temperatureTolerance',
+  'humidityTolerance','flowers','pollination'}
+function IMPRINT.geneAtom(value)
+  local kind=type(value)
+  if kind=='string' or kind=='number' or kind=='boolean' then return tostring(value) end
+  if kind~='table' then return nil end
+  for _,k in ipairs({'uid','ident','id','name','value','allele'}) do
+    local item=value[k]
+    if type(item)=='string' or type(item)=='number' or type(item)=='boolean' then
+      return tostring(item)
+    end
+  end
+  return nil
+end
+IMPRINT.outputGeneSignature = function(stackItem)
+  local ind=type(stackItem)=='table' and stackItem.individual
+  if type(ind)~='table' then return nil end
+  local result={}
+  for _,level in ipairs({'active','inactive'}) do
+    local genes=ind[level]
+    if type(genes)=='table' then
+      for _,field in ipairs(IMPRINT.GENE_FIELDS) do
+        local val=IMPRINT.geneAtom(genes[field])
+        if val~=nil then result[level..'.'..field]=val end
+      end
+    end
+  end
+  return next(result) and result or nil
+end
+function IMPRINT.genesCompatible(expected,actual)
+  if type(expected)~='table' or type(actual)~='table' then return false end
+  local matches=0
+  for key,value in pairs(expected) do
+    if actual[key]~=nil then
+      if actual[key]~=value then return false end
+      matches=matches+1
+    end
+  end
+  return matches>=3
 end
 findImprintedReturn = function(prep,route)
   if not route or not route.me then return nil,'Не задан МЭ-интерфейс импринтера' end
-  local expected=prep.currentSpecies
-  local wanted=prep.currentKind
-  local ref=prep.currentFp
-  if not ref or not expected or not wanted then return nil,'Нет данных о пчеле для проверки результата' end
-  local before=prep.baseline or {}
+  local expected,wanted,ref=prep.currentSpecies,prep.currentKind,prep.currentFp
+  if not ref or not expected or not wanted then
+    return nil,'Нет данных о пчеле для проверки результата'
+  end
+  -- returnBaseline is captured while the completed bee is STILL IN slot 4.
+  -- Therefore a later +1 is an actual return rather than a random historical delta.
+  local before=prep.returnBaseline or prep.baseline or {}
   local refKey=fingerprintKey(ref)
+  local wantedKey=prep.outputFp and fingerprintKey(prep.outputFp) or nil
   local ok,items=pcall(getList,route.me.p)
   if not ok then return nil,'Ошибка чтения МЭ импринтера: '..tostring(items) end
-  local candidate=nil
-  local matches=0
-  local exact=nil
+  local candidates={}
+  local original=nil
+  local uniqueHash=nil
   for _,v in pairs(items) do
     if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0 and
-       role({id=v.fingerprint.id})==wanted then
+       roleId(v.fingerprint.id)==wanted then
       local fp=v.fingerprint
-      local k=fingerprintKey(fp)
-      local old=before[k] or 0
+      local key=fingerprintKey(fp)
       local count=qty(v)
-      if count>old or (k==refKey and count>=old) then
+      local delta=count-(before[key] or 0)
+      if delta>0 then
         local species=beeSpeciesFor(fp,route.me)
         if species==expected then
-          if count>old then
-            matches=matches+1
-            candidate=fp
-          end
-          if k==refKey and count>=old then exact=fp end
+          candidates[#candidates+1]=fp
+          if key==wantedKey then uniqueHash=fp end
         end
+      end
+      if not prep.returnBaseline and key==refKey and count>=(before[key] or 0) then
+        original=fp
       end
     end
   end
   items=nil
-  if matches>1 then
-    return nil,'В МЭ появилось несколько пчёл вида '..expected..'; нужно различить результат'
+  gc(true)
+  -- Output fingerprint from the actual machine is a stronger proof than species.
+  if uniqueHash then return uniqueHash end
+  if #candidates==1 then return candidates[1] end
+  if #candidates>1 then
+    -- Some OpenPeripheral versions expose bee genes but not NBT hashes.
+    -- Only use genes when they identify exactly ONE result.
+    local matching={}
+    if prep.outputTraits and #candidates<=12 then
+      for _,fp in ipairs(candidates) do
+        local okDetail,detail=invoke(route.me.p,'getItemDetail',fp,false)
+        if okDetail and type(detail)=='table' and
+           IMPRINT.genesCompatible(prep.outputTraits,IMPRINT.outputGeneSignature(detail)) then
+          matching[#matching+1]=fp
+        end
+        detail=nil
+      end
+    end
+    if #matching==1 then return matching[1] end
+    return nil,'НЕОДНОЗНАЧНО: '..#candidates..' новых пчёл '..expected..
+      ', импринтер и другие машины импортируют одновременно'
   end
-  if matches==1 then return candidate end
-  if exact then return exact end
+  -- Old in-progress jobs did not capture the output. Retain the old fallback
+  -- only when there is no competing NEW fingerprint; never steal arbitrary bees.
+  if original and prep.outputSeen and not prep.returnBaseline then return original end
   return nil,nil
 end
 pushImprinterOutput = function(imp, expectedRole, expectedSpecies)
@@ -1582,7 +1658,7 @@ local function processApiaryImprint(now)
     if not species or kind~=role({id=beeFp.id}) then
       apiaryReason='Неверный генетический тип кандидата для импринтера';return
     end
-    local okay,base=pcall(stockSnapshotFor,route,kind,species)
+    local okay,base=pcall(IMPRINT.stockSnapshotFor,route,kind,species)
     if not okay then apiaryReason='Не удалось прочитать запас МЭ перед прививкой: '..tostring(base);return end
     prep.baseline=base;prep.currentFp=live.fingerprint
     prep.currentKind=kind;prep.currentSpecies=species
@@ -1601,6 +1677,16 @@ local function processApiaryImprint(now)
       notice('Импринтер выдал отходы или другой тип пчелы: '..title(out),true);return
     end
     if out then
+      prep.outputSeen=true
+      prep.outputFp=IMPRINT.outputFingerprint(out) or prep.outputFp
+      prep.outputTraits=IMPRINT.outputGeneSignature(out) or prep.outputTraits
+      local snapOk,snap=pcall(IMPRINT.stockSnapshotFor,route,prep.currentKind,prep.currentSpecies)
+      if snapOk then
+        prep.returnBaseline=snap
+      else
+        log('Импринтер: не удалось снять МЭ перед выгрузкой: '..tostring(snap))
+      end
+      save()
       pushImprinterOutput(imp,prep.currentKind,prep.currentSpecies)
       out=stack(imp.p,4)
     end
@@ -1621,9 +1707,23 @@ local function processApiaryImprint(now)
     local fp,why=findImprintedReturn(prep,route)
     if why then
       apiaryReason='Ожидание возврата после прививки: '..tostring(why)
-      if now-(prep.lastWarning or 0)>120 then prep.lastWarning=now;log(apiaryReason) end
+      if now-(prep.lastWarning or 0)>55 then
+        prep.lastWarning=now;log(apiaryReason)
+      end
+      if why:find('НЕОДНОЗНАЧНО:',1,true) then
+        prep.ambiguitySince=prep.ambiguitySince or now
+        if now-prep.ambiguitySince>=CFG.imprintAmbiguityTimeout then
+          -- The output is already in AE2. DO NOT guess a fingerprint.
+          -- Release this reservation and breed other parents instead.
+          releaseStaleApiPrep('В МЭ несколько неразличимых пчёл '..prep.currentSpecies..
+            '. Результат оставлен в МЭ, очередь продолжена; проверь импорт остальных машин')
+        end
+      else
+        prep.ambiguitySince=nil
+      end
       return
     end
+    prep.ambiguitySince=nil
     if fp then
       if prep.part==1 then
         prep.firstFp=fp
@@ -1632,7 +1732,9 @@ local function processApiaryImprint(now)
       if prep.part==2 and prep.secondFp then
         prep.phase='imprint_start'
       else prep.phase='apiary_load' end
-      prep.baseline=nil;prep.currentFp=nil
+      prep.baseline=nil;prep.returnBaseline=nil
+      prep.outputFp=nil;prep.outputTraits=nil;prep.outputSeen=nil
+      prep.ambiguitySince=nil;prep.currentFp=nil
       prep.currentKind=nil;prep.currentSpecies=nil
       apiaryReason=prep.phase=='imprint_start' and 'Первая пчела привита, готовлю трутня' or 'Пчёлы привиты, отправляю в пасеку'
       log('Imprint returned; next phase '..prep.phase)
@@ -1869,13 +1971,6 @@ end
 local function cycle()
   if paused then return end
   local now=computer.uptime()
-  if not releaseMemory(false) then
-    if now-CFG.lowMemoryEvents>180 then
-      CFG.lowMemoryEvents=now
-      log('Мало RAM: '..CFG.memStatus..'. Автоматизация временно пропускает цикл')
-    end
-    return
-  end
   if not primaryME() or not hasVariant('mut') then
     notice('Не хватает подключённого оборудования.',true);return
   end
@@ -1996,7 +2091,7 @@ local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'20.1  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  paint(16,1,'20.3  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
   local st=initializing and 'СКАНИРОВАНИЕ' or (paused and 'ПАУЗА' or 'РАБОТА')
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
@@ -2121,7 +2216,7 @@ local function drawHome()
   local report=paused and alert or (stockWarning~='' and stockWarning or apiaryReason)
   if report=='' then report=alert end
   paint(3,H-5,cut('СТАТУС: '..report,W-6),COLOR.yellow,0x182C3F)
-  paint(3,H-4,cut(rolesLine()..'  |  '..CFG.memStatus..'  |  Восстановлено: '..CFG.recoveries,W-6),COLOR.gray,0x182C3F)
+  paint(3,H-4,cut(rolesLine()..'  |  МЭ: '..(lastME>0 and (math.floor(computer.uptime()-lastME)..'с назад') or 'нет скана')..'  |  Восстановлено: '..CFG.recoveries,W-6),COLOR.gray,0x182C3F)
   fill(1,H-2,W,3,0x102235)
   local bx=3
   button(bx,H-1,paused and 'СТАРТ' or 'ПАУЗА','pause',paused and COLOR.green or COLOR.yellow,0x203B49,14)
@@ -2566,6 +2661,7 @@ local function startup()
     apiPrep.lastChecked=0
     apiPrep.lastWarning=0
     apiPrep.lastFailureSave=0
+    apiPrep.ambiguitySince=nil
   end
   for _,w in pairs(apiJobs) do
     w.started=now
@@ -2577,8 +2673,9 @@ local function startup()
     alert='Незавершённые задания восстановлены. Проверяю фактические слоты перед работой.'
     log(alert)
   end
-  log('BeeMaster 20.1 IMPRINT FIX started')
+  log('BeeMaster 20.3 ME SCAN + LOG20 started')
 end
+restoreJournal()
 startup()
 local okDraw,whyDraw=pcall(draw)
 if not okDraw then print('Ошибка экрана: '..tostring(whyDraw)) end
@@ -2603,7 +2700,7 @@ while not quit do
     end
   end
   now=computer.uptime()
-  if now-CFG.lastGC>=CFG.gcInterval then releaseMemory(true) end
+  if now-CFG.lastGC>=CFG.gcInterval then gc() end
   if not initializing and now-lastCycle>=CFG.tick then
     lastCycle=now
     cycle()
