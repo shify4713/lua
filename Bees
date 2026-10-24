@@ -30,9 +30,9 @@ local COLOR = {bg=0x0E1722, fg=0xE9EDF0, blue=0x54DEDC,
   green=0x70E39B, yellow=0xFFE08C, red=0xFF7583, gray=0x99A8B9}
 local dirs = {'UP','DOWN','NORTH','SOUTH','WEST','EAST'}
 local opposite = {UP='DOWN',DOWN='UP',NORTH='SOUTH',SOUTH='NORTH',WEST='EAST',EAST='WEST'}
-local DATA='/home/beemaster_v18.dat'
-local OLD_DATA='/home/beemaster_v17.dat'
-local LOG='/home/beemaster_v18.log'
+local DATA='/home/beemaster_v19.dat'
+local OLD_DATA='/home/beemaster_v18.dat'
+local LOG='/home/beemaster_v19.log'
 local originalW,originalH=gpu.getResolution()
 local maxW,maxH=gpu.maxResolution()
 local width,height=maxW,maxH
@@ -164,6 +164,7 @@ local function load()
   local f=io.open(DATA,'r')
   local fromOld=false
   if not f then f=io.open(OLD_DATA,'r'); fromOld=(f~=nil) end
+  if not f then f=io.open('/home/beemaster_v17.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v16.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v15.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v14.dat','r'); fromOld=(f~=nil) end
@@ -1883,7 +1884,7 @@ local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'18.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  paint(16,1,'19.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
   local st=initializing and 'СКАНИРОВАНИЕ' or (paused and 'ПАУЗА' or 'РАБОТА')
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
@@ -2032,6 +2033,23 @@ local function meIndex(addr)
   for i,m in ipairs(devices.me) do if m.addr==addr then return i end end
   return nil
 end
+function meOwner(addr,except)
+  local owners={}
+  for _,dev in ipairs(devices.peripherals) do
+    if dev.addr~=except and roleOf(dev)~='OFF' then
+      local b=bindings[dev.addr]
+      local uses=(b and b.me==addr) or
+        (#devices.me==1 and (not b or not b.me) and devices.me[1].addr==addr)
+      if uses then owners[#owners+1]=roleName(roleOf(dev))..' '..dev.addr:sub(1,8) end
+    end
+  end
+  return #owners>0 and table.concat(owners,', ') or nil
+end
+function meUsageCounts()
+  local used=0
+  for _,me in ipairs(devices.me) do if meOwner(me.addr,nil) then used=used+1 end end
+  return used,#devices.me-used
+end
 local function deviceIndex(addr)
   for i,v in ipairs(devices.peripherals) do if v.addr==addr then return i,v end end
   return nil,nil
@@ -2075,7 +2093,8 @@ local function drawSettings()
   end
   if n==0 then paint(5,first,'Машины не найдены. Проверь OC-адаптер и кабели.',COLOR.yellow,0x142233) end
   local sy=math.min(H-10,first+visible+2)
-  paint(5,sy,cut('Найдено: '..#devices.peripherals..' машин • '..#devices.me..' МЭ-интерфейсов',W-12),COLOR.gray,0x142233)
+  local nused,nfree=meUsageCounts()
+  paint(5,sy,cut('Машин: '..#devices.peripherals..' | МЭ: '..#devices.me..' | ЗАНЯТО: '..nused..' | СВОБОДНО: '..nfree,W-12),COLOR.gray,0x142233)
   if #devices.peripherals>visible then
     button(5,H-8,'▲ ВЫШЕ','up',COLOR.blue,0x243D50,14)
     button(21,H-8,'▼ НИЖЕ','down',COLOR.blue,0x243D50,14)
@@ -2131,8 +2150,20 @@ local function drawDetail()
     local chosen=(bindings[obj.addr] or {}).me==me.addr or (#devices.me==1 and not (bindings[obj.addr] or {}).me)
     local bg2=(j%2==0 and 0x182C3F or 0x142B40)
     fill(4,by+j-1,math.min(W-10,105),1,bg2)
-    paint(6,by+j-1,'МЭ '..idx..'  '..me.addr:sub(1,12)..(chosen and '   ← ВЫБРАН' or ''),chosen and COLOR.green or COLOR.gray,bg2)
-    button(math.min(W-21,53),by+j-1,'ВЫБРАТЬ','setme:'..obj.addr..':'..me.addr,COLOR.blue,0x29475C,14)
+    local owner=meOwner(me.addr,obj.addr)
+    local status=chosen and 'ВЫБРАН' or (owner and 'ЗАНЯТ' or 'СВОБОДЕН')
+    local tint=chosen and COLOR.green or (owner and COLOR.yellow or COLOR.gray)
+    paint(6,by+j-1,'МЭ '..idx..' '..me.addr:sub(1,8)..' '..status,tint,bg2)
+    if owner and not chosen then
+      paint(math.min(W-21,53),by+j-1,'[ЗАНЯТ]',COLOR.yellow,bg2)
+    elseif chosen then
+      paint(math.min(W-21,53),by+j-1,'[ВЫБРАН]',COLOR.green,bg2)
+    else
+      button(math.min(W-21,53),by+j-1,'ВЫБРАТЬ','setme:'..obj.addr..':'..me.addr,COLOR.blue,0x29475C,14)
+    end
+    if W>=94 then
+      paint(70,by+j-1,cut(owner and ('УЖЕ ИСПОЛЬЗУЕТ: '..owner) or 'Не используется',math.max(0,W-75)),owner and COLOR.yellow or COLOR.gray,bg2)
+    end
   end
   local cy=by+visible+1
   if #devices.me>visible then
@@ -2142,7 +2173,8 @@ local function drawDetail()
   local testY= H<36 and math.min(H-7,by+visible) or math.min(H-8,cy+2)
   if testY>=by+2 then
     button(5,testY,'ПРОВЕРИТЬ DOWN','test:'..obj.addr,COLOR.green,0x244D46,23)
-    paint(32,testY,cut('Сейчас: '..resolvedMEText(obj),W-35),COLOR.yellow,bg)
+    button(30,testY,'СНЯТЬ МЭ','clearme:'..obj.addr,COLOR.yellow,0x243D50,17)
+    if W>=74 then paint(49,testY,cut('Сейчас: '..resolvedMEText(obj),W-52),COLOR.yellow,bg) end
   end
   fill(2,H-5,W-3,2,0x182C3F)
   paint(3,H-5,cut(deviceActionNote,W-7),COLOR.yellow,0x182C3F)
@@ -2233,11 +2265,10 @@ local function changeME(addr,meAddr)
   local exists=false
   for _,m in ipairs(devices.me) do if m.addr==meAddr then exists=true;break end end
   if not exists then deviceActionNote='Этот МЭ-интерфейс не найден.';return end
-  for k,b in pairs(bindings) do
-    if k~=addr and b.me==meAddr and b.role and b.role~='OFF' then
-      deviceActionNote='МЭ уже назначен другому блоку ('..k:sub(1,8)..'). DOWN единственный.'
-      return
-    end
+  local owner=meOwner(meAddr,addr)
+  if owner then
+    deviceActionNote='МЭ ЗАНЯТ: '..owner..'. Один интерфейс DOWN — одна машина.'
+    return
   end
   bindings[addr]=bindings[addr] or {}
   if not bindings[addr].role then bindings[addr].role=(obj.size==15 and 'API' or 'OFF') end
@@ -2245,6 +2276,24 @@ local function changeME(addr,meAddr)
   rebuildRoutes();save();supplyAt=0
   deviceActionNote='Маршрут сохранён: '..meAddr:sub(1,8)..' → DOWN → '..addr:sub(1,8)
   log('ME route '..meAddr..' DOWN -> '..addr)
+end
+function clearME(addr)
+  if activeMachine(addr) then
+    deviceActionNote='Устройство работает: дождись окончания задачи перед сменой МЭ.'
+    return
+  end
+  local b=bindings[addr]
+  if not b or not b.me then
+    deviceActionNote='Ручной привязки МЭ у этого устройства нет.'
+    return
+  end
+  local before=b.me
+  b.me=nil
+  rebuildRoutes()
+  save()
+  supplyAt=0
+  deviceActionNote='МЭ '..before:sub(1,8)..' освобождён. Выбери другой интерфейс.'
+  log('Unbound ME '..before:sub(1,8)..' from '..addr:sub(1,8))
 end
 local function testMachine(addr)
   local _,target=deviceIndex(addr)
@@ -2368,6 +2417,7 @@ local function tap(key)
   elseif key:sub(1,6)=='setme:' then
     local v=key:sub(7);local addr,meAddr=v:match('^([^:]+):(.+)$')
     if addr then changeME(addr,meAddr) end
+  elseif key:sub(1,8)=='clearme:' then clearME(key:sub(9))
   elseif key:sub(1,5)=='test:' then testMachine(key:sub(6))
   elseif key=='exit' then quit=true end
 end
@@ -2379,7 +2429,7 @@ local function startup()
   if stage~='idle' or next(apiJobs) or apiPrep then
     notice('Восстановлены незавершённые операции. Проверь машины до пуска.',true)
   end
-  log('BeeMaster 18.0 RAM Safe started')
+  log('BeeMaster 19.0 Bindings started')
 end
 startup()
 local okDraw,whyDraw=pcall(draw)
