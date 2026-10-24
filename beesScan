@@ -1,0 +1,219 @@
+-- BeeMaster 22.0 ME Scanner -- Lua 5.2 / OpenOS 1.6.1
+-- Run on the SECOND OC computer (ME interface + modem + maximum RAM).
+local component=require('component')
+local computer=require('computer')
+local event=require('event')
+local ser=require('serialization')
+
+local PORT_SCAN=4481
+local PORT_MASTER=4482
+local PROTO='BEESCAN22'
+local SCAN_EVERY=10
+local DETAILS_PER_SCAN=36
+local LOG='/home/bee_me_scanner.log'
+local args={...}
+local modem=component.modem
+if not modem then error('Нужна сетевая карта (modem) на компьютере сканера') end
+modem.open(PORT_SCAN)
+
+local mes={}
+for addr in component.list('me_interface') do mes[#mes+1]=addr end
+table.sort(mes)
+if #mes==0 then error('МЭ-интерфейс не найден. Подключи ME Interface через OC адаптер') end
+local chosen=mes[1]
+if args[1] and args[1]~='' then
+  chosen=nil
+  for _,addr in ipairs(mes) do
+    if addr:sub(1,#args[1])==args[1] then chosen=addr;break end
+  end
+  if not chosen then
+    print('Доступные МЭ-интерфейсы:')
+    for _,addr in ipairs(mes) do print('  '..addr) end
+    error('Не найден МЭ-адрес '..args[1])
+  end
+end
+local me=component.proxy(chosen)
+local boot=tostring(computer.address and computer.address() or chosen)..':'..tostring(math.floor(computer.uptime()))
+local snapshots={}
+local version=0
+local current=nil
+local detailCache={}
+local lastScan=-SCAN_EVERY
+local lastError='Ожидание первого скана'
+local lastScanAt=0
+local errorCount=0
+local lastPrinted=''
+
+local function info(message)
+  message=tostring(message):gsub('[\r\n]+',' '):sub(1,180)
+  if message==lastPrinted then return end
+  lastPrinted=message
+  print('[ME Scanner] '..message)
+  local rows={}
+  local f=io.open(LOG,'r')
+  if f then
+    for line in f:lines() do rows[#rows+1]=line; if #rows>15 then table.remove(rows,1) end end
+    f:close()
+  end
+  rows[#rows+1]=string.format('[%.0f] %s',computer.uptime(),message)
+  if #rows>15 then table.remove(rows,1) end
+  f=io.open(LOG,'w')
+  if f then f:write(table.concat(rows,'\n'),'\n');f:close() end
+end
+local function send(addr,kind,a,b,c)
+  if not addr then return end
+  if c~=nil then pcall(modem.send,addr,PORT_MASTER,PROTO,kind,a,b,c)
+  elseif b~=nil then pcall(modem.send,addr,PORT_MASTER,PROTO,kind,a,b)
+  elseif a~=nil then pcall(modem.send,addr,PORT_MASTER,PROTO,kind,a)
+  else pcall(modem.send,addr,PORT_MASTER,PROTO,kind) end
+end
+local function roleId(id)
+  local s=tostring(id or ''):lower()
+  if s:find('beeprincess',1,true) then return 'P' end
+  if s:find('beedrone',1,true) then return 'D' end
+  if s:find('beequeen',1,true) then return 'Q' end
+  return nil
+end
+local function key(fp)
+  return tostring(fp.id)..'/'..tostring(fp.dmg)..'/'..tostring(fp.nbt_hash or '-')
+end
+local function compactDetail(x)
+  if type(x)~='table' or type(x.individual)~='table' then return nil end
+  local ind=x.individual
+  local act=type(ind.active)=='table' and ind.active or {}
+  local sp=type(act.species)=='table' and act.species or {}
+  if not ind.ident and not sp.name then return nil end
+  return {individual={
+    ident=ind.ident,
+    displayName=type(ind.displayName)=='string' and ind.displayName:sub(1,90) or nil,
+    isAnalyzed=ind.isAnalyzed,
+    active={temperatureTolerance=act.temperatureTolerance,
+      humidityTolerance=act.humidityTolerance,
+      species={name=sp.name,temperature=sp.temperature,humidity=sp.humidity}}
+  }}
+end
+local function makeSnapshot()
+  -- Only this SECOND computer is allowed to call getAvailableItems.
+  local ok,items,why=pcall(function() return me.getAvailableItems('NONE') end)
+  if not ok then return nil,tostring(items) end
+  if type(items)~='table' then
+    return nil,'getAvailableItems: '..tostring(items)..' '..tostring(why)
+  end
+  local rows={}
+  local present={}
+  local todo={}
+  for _,entry in pairs(items) do
+    if type(entry)=='table' and type(entry.fingerprint)=='table' then
+      local fp=entry.fingerprint
+      local id=tostring(fp.id or '')
+      local amount=tonumber(entry.size or entry.qty) or 0
+      if amount>0 then
+        local kind=roleId(id)
+        local resource=id:lower():find('gendustry:',1,true) and (
+          id:lower():find('labware',1,true) or
+          id:lower():find('genetemplate',1,true) or
+          id:lower():find('genesampleblank',1,true))
+        if kind or resource then
+          local short={id=fp.id,dmg=fp.dmg or 0,nbt_hash=fp.nbt_hash}
+          local idKey=key(short)
+          present[idKey]=true
+          local detail=kind and detailCache[idKey] or nil
+          rows[#rows+1]={kind or 'R',amount,short,detail}
+          if kind and not detail then todo[#todo+1]=short end
+        end
+      end
+    end
+  end
+  -- Release the huge AE2 response before ANY per-item getItemDetail calls.
+  items=nil
+  local checked=0
+  for _,fp in ipairs(todo) do
+    if checked>=DETAILS_PER_SCAN then break end
+    local okDetail,raw=pcall(function() return me.getItemDetail(fp,false) end)
+    if okDetail and type(raw)=='table' then
+      local small=compactDetail(raw)
+      if small then detailCache[key(fp)]=small end
+    end
+    checked=checked+1
+  end
+  todo=nil
+  -- Refresh only known current fingerprints; no unbounded cache growth.
+  for k in pairs(detailCache) do if not present[k] then detailCache[k]=nil end end
+  for _,r in ipairs(rows) do
+    if r[1]~='R' then r[4]=detailCache[key(r[3])] end
+  end
+  return rows,nil
+end
+local function publish(rows)
+  version=version+1
+  current={version=version,rows=rows,ts=computer.uptime()}
+  snapshots[version]=current
+  snapshots[version-2]=nil -- retain the previous snapshot during transfers
+  lastScanAt=current.ts
+  lastError=''
+  errorCount=0
+  local ready=0
+  for _,r in ipairs(rows) do if r[1]=='R' or r[4] then ready=ready+1 end end
+  info('Скан #'..version..': '..#rows..' позиций, распознано '..ready..', период 10 с')
+end
+local function meta()
+  return {boot=boot,version=version,count=current and #current.rows or 0,
+    age=lastScanAt>0 and math.floor(computer.uptime()-lastScanAt) or -1,
+    error=lastError,me=chosen,errors=errorCount,interval=SCAN_EVERY}
+end
+local function handleMessage(localAddr,remote,port,distance,tag,action,x,y)
+  if port~=PORT_SCAN or tag~=PROTO or type(remote)~='string' then return end
+  if action=='HELLO' then
+    send(remote,'META',ser.serialize(meta()))
+  elseif action=='PAGE' then
+    local want=tonumber(x)
+    local start=tonumber(y)
+    local snap=want and snapshots[want]
+    if not snap or not start or start<1 or start>#snap.rows+1 then
+      send(remote,'STALE',ser.serialize(meta()))
+      return
+    end
+    local chunk={}
+    local packet=''
+    local n=0
+    for i=start,math.min(#snap.rows,start+14) do
+      chunk[#chunk+1]=snap.rows[i]
+      local candidate=ser.serialize(chunk)
+      if #candidate>5500 and #chunk>1 then
+        chunk[#chunk]=nil
+        break
+      end
+      packet=candidate
+      n=#chunk
+    end
+    if n==0 then packet=ser.serialize({});n=0 end
+    send(remote,'DATA',want,start,packet)
+  end
+end
+
+info('ME Scanner 22.0 / OpenOS 1.6.1 / Интерфейс '..chosen:sub(1,8))
+info('Модем: порт '..PORT_SCAN..' | Каждые 10 с; BeeMaster получает малые пакеты')
+while true do
+  local now=computer.uptime()
+  if now-lastScan>=SCAN_EVERY then
+    lastScan=now
+    local ok,rows,err=pcall(makeSnapshot)
+    if ok and rows then
+      publish(rows)
+    else
+      lastError=tostring(ok and err or rows)
+      errorCount=errorCount+1
+      info('Ошибка МЭ, сохранён прошлый каталог: '..lastError)
+    end
+  end
+  local e,a,b,c,d,p,action,x,y=event.pull(0.12)
+  if e=='modem_message' then
+    local ok,why=pcall(handleMessage,a,b,c,d,p,action,x,y)
+    if not ok then info('Сетевая ошибка: '..tostring(why)) end
+  elseif e=='interrupted' then
+    info('Остановлено пользователем')
+    break
+  end
+end
+modem.close(PORT_SCAN)
+return 'ME_SCANNER_USER_EXIT'
