@@ -19,6 +19,7 @@ local CFG = {
   allowLastDrone = false,
   maxFailedPerRecipe = 25, maxStoneCrossAttempts = 12,
   perApiaryCooldown=15, maxFarmSeconds=4800,
+  stuckDeliverySeconds=240, retryParentDelay=150, meRetryDelay=120,
   gcInterval=30, memoryWarningKB=135, maxLogBytes=48*1024,
   minFullScanGap=90, minScanFreeKB=1050, maxNewDetailsPerScan=50,
   strictSpecialBiomes=true,
@@ -30,9 +31,9 @@ local COLOR = {bg=0x0E1722, fg=0xE9EDF0, blue=0x54DEDC,
   green=0x70E39B, yellow=0xFFE08C, red=0xFF7583, gray=0x99A8B9}
 local dirs = {'UP','DOWN','NORTH','SOUTH','WEST','EAST'}
 local opposite = {UP='DOWN',DOWN='UP',NORTH='SOUTH',SOUTH='NORTH',WEST='EAST',EAST='WEST'}
-local DATA='/home/beemaster_v19.dat'
-local OLD_DATA='/home/beemaster_v18.dat'
-local LOG='/home/beemaster_v19.log'
+local DATA='/home/beemaster_v20.dat'
+local OLD_DATA='/home/beemaster_v19.dat'
+local LOG='/home/beemaster_v20.log'
 local originalW,originalH=gpu.getResolution()
 local maxW,maxH=gpu.maxResolution()
 local width,height=maxW,maxH
@@ -79,6 +80,9 @@ local lastFullGraph=0
 local pendingApiaryRefresh=false
 local nextApiaryPlanAt=0
 local nextMutationPlanAt=0
+CFG.nextMEAttemptAt=0
+CFG.recoveries=0
+CFG.lastStalledWarning=0
 local exportFailureCount=0
 CFG.lastGC=0
 CFG.memStatus='RAM: проверка'
@@ -164,6 +168,7 @@ local function load()
   local f=io.open(DATA,'r')
   local fromOld=false
   if not f then f=io.open(OLD_DATA,'r'); fromOld=(f~=nil) end
+  if not f then f=io.open('/home/beemaster_v18.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v17.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v16.dat','r'); fromOld=(f~=nil) end
   if not f then f=io.open('/home/beemaster_v15.dat','r'); fromOld=(f~=nil) end
@@ -1354,13 +1359,17 @@ local function loadToApiary(task,forcedApi,strict)
   if task.d then
     local sent,msg=exactMeExport(route,droneLive,1,2,strict)
     if not sent then
-      notice('Пасека получила принцессу, но не получила трутня: '..tostring(msg),true)
+      apiJobs[api.addr]=nil
+      apiaryReason='Пасека получила только принцессу; трутень не доставлен: '..tostring(msg)
+      log(apiaryReason)
       return false,msg
     end
     local z=stack(api.p,1)
     local dz=stack(api.p,2)
     if z and role(z)=='P' and not dz then
-      notice('Не вижу трутня в пасеке после передачи. Проверь подключение!',true)
+      apiJobs[api.addr]=nil
+      apiaryReason='Вход пасеки частично заполнен: трутень не дошёл'
+      log(apiaryReason)
       return false,'Трутень не дошёл'
     end
   end
@@ -1485,16 +1494,23 @@ local function processApiaryImprint(now)
       save()
     else
       apiaryReason='Доставка после импринтера: '..tostring(why)
+      if (stack(api.p,1) or stack(api.p,2)) and not apiJobs[api.addr] then
+        releaseStaleApiPrep('Пасека получила часть родителей. Проверь и освободи её вручную; остальные работают.')
+        return
+      end
       if apiaryReason~=CFG.lastDeliveryReason then
         log(apiaryReason)
         CFG.lastDeliveryReason=apiaryReason
       end
-      if stack(api.p,1) or stack(api.p,2) then
-        notice('Входные слоты пасеки частично заполнены: проверь перед повторной подачей',true)
-      elseif now-prep.deliveryStarted>CFG.timeout then
-        notice('Пчёлы не доставлены за '..CFG.timeout..'с: '..tostring(why),true)
+      if now-prep.deliveryStarted>CFG.stuckDeliverySeconds then
+        if not releaseStaleApiPrep('Не удалось доставить '..apiaryTaskSummary(prep)..': '..tostring(why)..'. Перехожу к другим пасекам') then
+          prep.deliveryStarted=now
+          apiaryReason='Импринтер ещё содержит пчелу: ожидаю освобождения выхода'
+        end
+      elseif now-(prep.lastFailureSave or -40)>40 then
+        prep.lastFailureSave=now
+        save()
       end
-      save()
     end
     return
   end
@@ -1562,7 +1578,11 @@ local function processApiaryImprint(now)
     local inp=stack(imp.p,3)
     if inp or out then
       if now-prep.started>CFG.timeout then
-        notice('Пчела остаётся в импринтере. '..imprintOutputStatus..'. Проверь питание и МЭ.',true)
+        if now-(prep.lastWarning or 0)>180 then
+          prep.lastWarning=now
+          log('Импринтер: пчела всё ещё в машине. '..imprintOutputStatus..'. Проверь питание/импорт')
+        end
+        apiaryReason='Импринтер занят: '..imprintOutputStatus
       end
       return
     end
@@ -1570,7 +1590,11 @@ local function processApiaryImprint(now)
     prep.lastChecked=now
     pendingApiaryRefresh=true
     local fp,why=findImprintedReturn(prep,route)
-    if why then notice(why,true);return end
+    if why then
+      apiaryReason='Ожидание возврата после прививки: '..tostring(why)
+      if now-(prep.lastWarning or 0)>120 then prep.lastWarning=now;log(apiaryReason) end
+      return
+    end
     if fp then
       if prep.part==1 then
         prep.firstFp=fp
@@ -1586,11 +1610,47 @@ local function processApiaryImprint(now)
       pendingApiaryRefresh=true
       save()
     elseif now-prep.started>CFG.timeout then
-      notice('После импринтера пчела не вернулась в МЭ. Проверь импорт',true)
+      local impNow=devices.imp[1]
+      if impNow and (stack(impNow.p,3) or stack(impNow.p,4)) then
+        apiaryReason='Ожидаю выгрузку пчелы из импринтера'
+      else
+        pendingApiaryRefresh=true
+        if now-prep.started>CFG.timeout+CFG.stuckDeliverySeconds then
+          releaseStaleApiPrep('После импринтера нет подтверждённого возврата пчелы в МЭ; проверь импорт')
+        else
+          apiaryReason='После прививки ожидаю обновление каталога МЭ'
+        end
+      end
     end
   end
 end
 
+function releaseStaleApiPrep(reason)
+  local p=apiPrep
+  if not p then return false end
+  local api=liveApiary(p.apiAddr)
+  local imp=devices.imp[1]
+  if imp and (stack(imp.p,3) or stack(imp.p,4)) then
+    apiaryReason='Импринтер занят: ожидаю извлечения результата'
+    return false
+  end
+  local inApi=api and (stack(api.p,1) or stack(api.p,2))
+  apiPrep=nil
+  CFG.lastDeliveryReason=''
+  CFG.taskCooldown[p.uid]=computer.uptime()+CFG.retryParentDelay
+  nextApiaryPlanAt=0
+  pendingApiaryRefresh=true
+  CFG.recoveries=CFG.recoveries+1
+  if inApi then
+    reason='Пасека частично загружена: проверь её вход, повторная загрузка в эту пасеку запрещена'
+  end
+  apiaryReason=reason
+  alert=reason
+  stockWarning=''
+  log('ВОССТАНОВЛЕНИЕ: '..reason..'; освобождена очередь импринтера')
+  save()
+  return true
+end
 local function observeApiaryJobs(now)
   local requestME=false
   local due=now-lastME>=CFG.scanInterval
@@ -1611,8 +1671,10 @@ local function observeApiaryJobs(now)
     end
     if w.importStarted then awaitingImport=true end
     if now-w.started>CFG.maxFarmSeconds then
-      notice('Пасека '..w.targetLabel..' долго не даёт результата. Проверь биом/цветы/питание.',true)
-      return
+      if now-(w.lastWarning or 0)>300 then
+        w.lastWarning=now
+        log('Пасека '..w.targetLabel..' работает долго: проверь биом, цветы и питание')
+      end
     end
   end
   if requestME or (awaitingImport and now-lastME>=CFG.busyScan) or
@@ -1661,7 +1723,11 @@ local function scheduleApiaries()
   if not CFG.useApiary or #devices.api==0 or paused then return end
   local t=computer.uptime()
   if apiPrep then
-    CFG.schedulerSummary='Импринтер готовит пчёл для пасеки; другие задания в очереди'
+    local api=liveApiary(apiPrep.apiAddr)
+    local age=t-(apiPrep.deliveryStarted or apiPrep.started or t)
+    CFG.schedulerSummary='Один импринтер: готовит '..apiaryTaskSummary(apiPrep)..
+      ' для пасеки '..(api and api.addr:sub(1,8) or '?')..
+      (age>80 and (' ('..math.floor(age)..'с)') or '')
     return
   end
   if t<nextApiaryPlanAt then return end
@@ -1780,11 +1846,23 @@ local function cycle()
     notice('Не хватает подключённого оборудования.',true);return
   end
   local ok,err=pcall(function()
-    if (pendingApiaryRefresh or now-lastME>=CFG.scanInterval) and
+    if now>=CFG.nextMEAttemptAt and
+       (pendingApiaryRefresh or now-lastME>=CFG.scanInterval) and
        now-lastME>=CFG.minFullScanGap then
       pendingApiaryRefresh=false
-      meInventory()
-      nextPlanAt=0
+      local good,err=pcall(meInventory)
+      if good then
+        CFG.nextMEAttemptAt=0
+        nextPlanAt=0
+        stockWarning=''
+      else
+        stockWarning='МЭ: '..tostring(err)
+        CFG.nextMEAttemptAt=now+CFG.meRetryDelay
+        if now-CFG.lastStalledWarning>90 then
+          CFG.lastStalledWarning=now
+          log('Сканирование МЭ отложено: '..tostring(err))
+        end
+      end
     end
     supplyAll(now)
     if stage=='mutation' then processMutation(now)
@@ -1795,9 +1873,9 @@ local function cycle()
         nextPlanAt=now+CFG.perApiaryCooldown
         local m=devices.mut[1]
         if stack(m.p,1) or stack(m.p,2) or stack(m.p,3) then
-          notice('Мутатрон занят: проверь его перед запуском.',true);return
-        end
-        if now>=nextMutationPlanAt then planMutation() end
+          mode='Мутатрон занят, пасеки продолжают работу'
+          nextMutationPlanAt=now+30
+        elseif now>=nextMutationPlanAt then planMutation() end
       end
     else notice('Неизвестное состояние '..stage,true);return end
     observeApiaryJobs(now)
@@ -1884,7 +1962,7 @@ local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'19.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  paint(16,1,'20.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
   local st=initializing and 'СКАНИРОВАНИЕ' or (paused and 'ПАУЗА' or 'РАБОТА')
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
@@ -1917,7 +1995,8 @@ local function drawHome()
   for _ in pairs(created) do produced=produced+1 end
   local pct=total>0 and math.floor(100*done/total) or 0
   box(2,5,W-3,5,'КОЛЛЕКЦИЯ ПЧЁЛ',COLOR.green)
-  paint(4,7,'Изучено: '..done..' / '..total..'      Выведено: '..produced..'      Пасек в работе: '..workersCount()..'/'..#devices.api,COLOR.fg,0x142233)
+  paint(4,7,'Изучено: '..done..' / '..total..'   Выведено: '..produced..
+      '   Пасеки: '..workersCount()..'/'..#devices.api..(apiPrep and '  (1 ждёт импринтер)' or ''),COLOR.fg,0x142233)
   meter(4,8,math.min(W-10,75),pct)
   local leftW=math.max(36,math.floor((W-5)*0.54))
   local rightX=leftW+3
@@ -2005,7 +2084,7 @@ local function drawHome()
   local report=not paused and stockWarning~='' and stockWarning or alert
   if report=='' then report=apiaryReason end
   paint(3,H-5,cut('СТАТУС: '..report,W-6),COLOR.yellow,0x182C3F)
-  paint(3,H-4,cut(rolesLine()..'  |  '..CFG.memStatus..'  |  Сбоев передачи: '..exportFailureCount,W-6),COLOR.gray,0x182C3F)
+  paint(3,H-4,cut(rolesLine()..'  |  '..CFG.memStatus..'  |  Восстановлено: '..CFG.recoveries,W-6),COLOR.gray,0x182C3F)
   fill(1,H-2,W,3,0x102235)
   local bx=3
   button(bx,H-1,paused and 'СТАРТ' or 'ПАУЗА','pause',paused and COLOR.green or COLOR.yellow,0x203B49,14)
@@ -2016,6 +2095,10 @@ local function drawHome()
   bx=bx+17
   button(bx,H-1,'ЖУРНАЛ','logs',COLOR.fg,0x203B49,13)
   bx=bx+15
+  if apiPrep and bx+31<W then
+    button(bx,H-1,'СБРОС ОЖИДАНИЯ','resetprep',COLOR.yellow,0x203B49,21)
+    bx=bx+23
+  end
   if bx+12<W then button(bx,H-1,'ВЫХОД','exit',COLOR.red,0x203B49,12) end
 end
 local function roleName(r)
@@ -2381,9 +2464,15 @@ local function tap(key)
       local conflict=collisionReport()
       if conflict then notice(conflict,false);return end
       if #graph==0 then notice('Нет дерева мутаций. Нужна подключённая промышленная пасека.',false);return end
-      paused=false;nextPlanAt=0;notice('АВТОМАТИКА ЗАПУЩЕНА')
+      paused=false;nextPlanAt=0;nextApiaryPlanAt=0;notice('АВТОМАТИКА ЗАПУЩЕНА')
     else paused=true;notice('ПАУЗА: новые операции не запускаются') end
     save()
+  elseif key=='resetprep' then
+    if apiPrep then
+      if not releaseStaleApiPrep('Ручной сброс очереди. Пчёлы в импринтере и пасеках не перемещались.') then
+        notice('Нельзя сбросить: импринтер ещё содержит пчелу. Освободи его выход.',false)
+      end
+    end
   elseif key=='settings' then
     page='settings'
   elseif key=='home' then
@@ -2426,10 +2515,25 @@ local function startup()
   local ok,err=pcall(discover)
   if not ok then notice('Поиск компонентов: '..tostring(err),true) end
   acquireRoute()
-  if stage~='idle' or next(apiJobs) or apiPrep then
-    notice('Восстановлены незавершённые операции. Проверь машины до пуска.',true)
+  local now=computer.uptime()
+  if apiPrep then
+    apiPrep.started=now
+    apiPrep.deliveryStarted=nil
+    apiPrep.lastChecked=0
+    apiPrep.lastWarning=0
+    apiPrep.lastFailureSave=0
   end
-  log('BeeMaster 19.0 Bindings started')
+  for _,w in pairs(apiJobs) do
+    w.started=now
+    w.importStarted=nil
+    w.lastWarning=0
+  end
+  if job then job.started=now end
+  if stage~='idle' or next(apiJobs) or apiPrep then
+    alert='Незавершённые задания восстановлены. Проверяю фактические слоты перед работой.'
+    log(alert)
+  end
+  log('BeeMaster 20.0 Recovery started')
 end
 startup()
 local okDraw,whyDraw=pcall(draw)
