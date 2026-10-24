@@ -4,10 +4,13 @@ local event = require('event')
 local computer = require('computer')
 local unicode = require('unicode')
 local serialization = require('serialization')
+SCAN_PROTOCOL='BEESCAN22'
+SCAN_PORT=4481
+MASTER_PORT=4482
 local gpu = assert(component.gpu, 'GPU missing')
 
 local CFG = {
-  tick = 3, scanInterval = 390, busyScan = 105, apiaryScan = 25,
+  tick = 3, scanInterval = 10, busyScan = 10, apiaryScan = 25,
   timeout = 600, importTimeout = 120, nurseryTimeout = 3600,
   targetLabware = 64, minPrincessReserve = 1,
   minDroneReserve = 4, requireKnownMutation = true,
@@ -22,7 +25,7 @@ local CFG = {
   stuckDeliverySeconds=240, retryParentDelay=150, meRetryDelay=120,
   imprintPollInterval=12, imprintAmbiguityTimeout=120,
   logLines=20,
-  minFullScanGap=180, detailBatch=2, maxSnapshotKeys=500,
+  minFullScanGap=0, detailBatch=0, maxSnapshotKeys=500,
   strictSpecialBiomes=true,
   allowUnknownClimate=false,
   protectStoneMutations=true,
@@ -60,6 +63,23 @@ local mode,alert='Ожидание','Первый запуск: проверь �
 local failures,known,stage,job = {}, {}, 'idle', nil
 local detailCache, targetSpecies, lastME, lastApiary = {},{},0,0
 local selectedMEAddr=nil
+-- Lightweight radio catalog link (full ME inventory is never read on this PC).
+scannerAddress=nil
+scannerBoot=nil
+scannerVersion=0
+scannerStatus='Ожидание ME Scanner'
+scannerLastHello=0
+scannerLastMessage=0
+scannerTransfer=nil
+scannerRows=nil
+scannerPendingVersion=0
+scannerLastApplied=0
+scannerGraphReady=false
+scannerModem=nil
+scannerRequestAt=0
+scannerRemoteME=''
+scannerRemoteErrors=0
+scannerDisconnectedSince=0
 local nextScanRecovery=0
 scanEnabled=false
 scanConfirmUntil=0
@@ -316,80 +336,14 @@ local function rebuildRoutes()
   end
   for _,api in ipairs(devices.api) do routes['api-'..api.addr]=downRoute(api) end
 end
--- Для каталога пчёл используем только МЭ, у которой доступен список.
--- Выбранный адрес остаётся тем же для getItemDetail: отпечатки разных
--- МЭ-сетей нельзя бездумно смешивать.
+-- Scanner holds the large getAvailableItems response on a DIFFERENT computer.
+-- Here local ME interfaces are used only for small operations / physical export.
 local function primaryME()
-  if selectedMEAddr then
-    for _,v in ipairs(devices.me) do
-      if v.addr==selectedMEAddr then return v.p end
-    end
-    selectedMEAddr=nil
-  end
-  local r=routes.mut
-  if r and r.me then return r.me.p end
+  if routes.mut and routes.mut.me then return routes.mut.me.p end
   return devices.me[1] and devices.me[1].p
 end
-
-local function readME(obj)
-  if not obj or not obj.p then return nil,'Нет прокси МЭ' end
-  -- Флажок на диске указывает, что последний запрос оборвал всю VM:
-  -- при повторном старте запускаем только интерфейс (не повторяем запрос).
-  local flag=io.open(SCAN_LOCK,'w')
-  if flag then
-    flag:write('ME '..tostring(obj.addr or '?')..' / full list')
-    flag:close()
-  end
-  local ok,items,why=invoke(obj.p,'getAvailableItems','NONE')
-  -- Если управление вернулось в Lua, удаляем аварийную отметку.
-  os.remove(SCAN_LOCK)
-  if not ok then return nil,tostring(items) end
-  if type(items)~='table' then
-    local detail=tostring(items)..' '..tostring(why or '')
-    if detail:lower():find('memory',1,true) then
-      memoryScanFailures=memoryScanFailures+1
-      CFG.nextMEAttemptAt=computer.uptime()+900
-      stockWarning='МЭ слишком большая для полного ответа, повтор через 15 минут; импринтер продолжает по NBT'
-    end
-    return nil,'getAvailableItems вернул '..tostring(items)..
-      (why and (' ('..tostring(why)..')') or '')
-  end
-  return items,nil
-end
-
--- Без перебора всех МЭ за один цикл: ответ каждого содержит ВЕСЬ склад.
--- Если один интерфейс вернул nil, следующий проверяем только при ручном
--- повторе, чтобы не забить память восемью большими ответами подряд.
-catalogProbeCursor=1
-local function getList(me)
-  if me then
-    local obj={p=me,addr=tostring(me.address or '?')}
-    local items,why=readME(obj)
-    if not items then error('МЭ '..obj.addr:sub(1,8)..': '..tostring(why),2) end
-    return items
-  end
-  if #devices.me==0 then error('МЭ-интерфейсы не найдены',2) end
-  local obj
-  if selectedMEAddr then
-    for _,m in ipairs(devices.me) do
-      if m.addr==selectedMEAddr then obj=m;break end
-    end
-  end
-  if not obj and catalogProbeCursor==1 and routes.mut and routes.mut.me then
-    obj=routes.mut.me
-  end
-  if not obj then obj=devices.me[math.min(#devices.me,catalogProbeCursor)] end
-  local items,why=readME(obj)
-  if not items then
-    selectedMEAddr=nil
-    for i,m in ipairs(devices.me) do
-      if m.addr==obj.addr then catalogProbeCursor=i%#devices.me+1;break end
-    end
-    error('МЭ '..obj.addr:sub(1,8)..': '..tostring(why)..
-      '; следующий интерфейс будет проверен при следующем ручном ОБНОВИТЬ',2)
-  end
-  selectedMEAddr=obj.addr
-  return items
+local function getList()
+  error('Локальный полный опрос МЭ запрещён: используется второй компьютер ME Scanner',2)
 end
 function compactDetail(a)
   if type(a)~='table' then return nil end
@@ -418,7 +372,7 @@ local function fingerprintKey(fp)
   return tostring(fp.id)..'/'..tostring(fp.dmg)..'/'..tostring(fp.nbt_hash or '-')
 end
 -- Каталог обновляется быстро; NBT-детали считываются маленькими партиями
--- ПОСЛЕ освобождения большого ответа getAvailableItems("NONE").
+-- Детали собирает второй компьютер ME Scanner, локальных полных опросов нет.
 function addBeeToCatalog(kind,count,fp,detail)
   local ind=detail and detail.individual
   if type(ind)~='table' then return end
@@ -438,85 +392,190 @@ function addBeeToCatalog(kind,count,fp,detail)
     nameToUid[norm(ind.active.species.name)]=species
   end
 end
-function processDetailQueue()
-  if detailPos>#detailPending then return end
-  local remaining=CFG.detailBatch
-  while detailPos<=#detailPending and remaining>0 do
-    local row=detailPending[detailPos]
-    detailPending[detailPos]=false -- не удерживаем уже обработанные NBT
-    detailPos=detailPos+1
-    local key=fingerprintKey(row.fp)
-    local d=detailCache[key]
-    if not d then
-      d=lookDetail(row.fp)
-      if d then detailCache[key]=d end
-    end
-    if d then addBeeToCatalog(row.kind,row.count,row.fp,d) end
-    remaining=remaining-1
-  end
-  if detailPos>#detailPending then
-    detailPending={};detailPos=1
-    nextApiaryPlanAt=0
-    nextMutationPlanAt=0
-  end
-end
+-- Catalog rows arrive in small, acknowledged radio pages. No local ME scan.
+function processDetailQueue() return end
 local function meInventory(force)
-  local now=computer.uptime()
-  if not force and now<(CFG.nextMEAttemptAt or 0) then
+  if not scannerRows or scannerPendingVersion<=scannerLastApplied then
     return false
   end
-  if not force and lastME>0 and now-lastME<CFG.minFullScanGap then
-    return false
-  end
-  local entries=getList()
-  local rows,resources={},{}
-  local chosenTemplate=nil
-  local templateCount=0
-  -- Обход без getItemDetail: пока большой список МЭ жив, не вызываем
-  -- тяжёлые методы периферии и не сериализуем результаты.
-  for _,v in pairs(entries) do
-    if type(v)=='table' and type(v.fingerprint)=='table' and qty(v)>0 then
-      local fp=v.fingerprint
-      local id=tostring(fp.id or ''):lower()
-      local kind=roleId(fp.id)
-      if kind then
-        rows[#rows+1]={kind=kind,count=qty(v),fp={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash}}
-      elseif id:find('gendustry:',1,true) and
-         (id:find('labware',1,true) or id:find('genesampleblank',1,true) or id:find('genetemplate',1,true)) then
-        local small={id=fp.id,dmg=fp.dmg,nbt_hash=fp.nbt_hash}
-        resources[#resources+1]={fingerprint=small,size=qty(v)}
+  local rows=scannerRows
+  local remoteVersion=scannerPendingVersion
+  -- Build compact catalog from SECOND computer's NBT metadata.
+  local freshCatalog={}
+  local freshAvailable={}
+  local freshDetails={}
+  local filledTemplates=0
+  local oneTemplate=nil
+  local liveKeys={}
+  for _,row in ipairs(rows) do
+    local kind,count,fp,detail=row[1],tonumber(row[2]) or 0,row[3],row[4]
+    if type(fp)=='table' and fp.id and count>0 then
+      local k=fingerprintKey(fp)
+      liveKeys[k]=true
+      if kind=='R' then
+        freshAvailable[#freshAvailable+1]={fingerprint=fp,size=count}
+        local id=tostring(fp.id):lower()
         if id:find('genetemplate',1,true) and fp.nbt_hash then
-          templateCount=templateCount+1
-          chosenTemplate={fp=small}
+          filledTemplates=filledTemplates+1
+          oneTemplate={fp=fp}
+        end
+      elseif (kind=='P' or kind=='D' or kind=='Q') and
+        type(detail)=='table' and type(detail.individual)=='table' then
+        local ind=detail.individual
+        local species=ind.ident or ((ind.active or {}).species or {}).name
+        if species and species~='' then
+          local sp=freshCatalog[species]
+          if not sp then
+            sp={p=0,d=0,q=0,entries={},name=ind.displayName or species}
+            freshCatalog[species]=sp
+          end
+          sp.entries[#sp.entries+1]={role=kind,count=count,fp=fp,detail=detail}
+          local field=kind=='P' and 'p' or (kind=='D' and 'd' or 'q')
+          sp[field]=sp[field]+count
+          freshDetails[k]=detail
+          if kind=='P' or kind=='Q' then known[species]=true end
+          if type(ind.active)=='table' and type(ind.active.species)=='table' then
+            nameToUid[norm(ind.active.species.name)]=species
+          end
         end
       end
     end
   end
-  entries=nil
-  catalog={}
-  local newPending={}
-  local seen={}
-  for _,row in ipairs(rows) do
-    local key=fingerprintKey(row.fp)
-    seen[key]=true
-    local detail=detailCache[key]
-    if detail then addBeeToCatalog(row.kind,row.count,row.fp,detail)
-    else newPending[#newPending+1]=row end
-  end
-  for key in pairs(detailCache) do
-    if not seen[key] then detailCache[key]=nil end
-  end
-  detailPending=newPending;detailPos=1
-  rows=nil;seen=nil
-  available=resources
-  template=(templateCount==1) and chosenTemplate or nil
+  catalog=freshCatalog
+  available=freshAvailable
+  detailCache=freshDetails
+  template=filledTemplates==1 and oneTemplate or nil
+  scannerRows=nil
+  scannerLastApplied=remoteVersion
   lastME=computer.uptime()
-  memoryScanFailures=0
   CFG.nextMEAttemptAt=0
-  if #newPending>0 then
-    log('МЭ: список получен, новые NBT в очереди: '..#newPending)
+  scannerStatus='Каталог #'..remoteVersion..' получен: '..#rows..' позиций'
+  nextPlanAt=0
+  nextApiaryPlanAt=0
+  nextMutationPlanAt=0
+  pendingApiaryRefresh=false
+  stockWarning=''
+  if not scannerGraphReady then
+    scannerGraphReady=true
+    local good,why=pcall(function() graphScan();scanApiaries();acquireRoute() end)
+    if not good then log('Инициализация пасек: '..tostring(why)) end
+  end
+  if resumeWanted and paused and #graph>0 and routes.mut and not initializing then
+    paused=false
+    resumeWanted=false
+    log('Автоматическая работа восстановлена после сетевого каталога')
+  end
+  if remoteVersion==1 or remoteVersion%6==0 then
+    log(scannerStatus)
   end
   return true
+end
+
+-- Modem request/response. Scanner answers with <=5.5KB per packet.
+function sendToScanner(action,a,b)
+  if not scannerModem then return false end
+  local ok
+  if scannerAddress then
+    if a==nil then ok=pcall(scannerModem.send,scannerAddress,SCAN_PORT,SCAN_PROTOCOL,action)
+    elseif b==nil then ok=pcall(scannerModem.send,scannerAddress,SCAN_PORT,SCAN_PROTOCOL,action,a)
+    else ok=pcall(scannerModem.send,scannerAddress,SCAN_PORT,SCAN_PROTOCOL,action,a,b) end
+  else
+    if a==nil then ok=pcall(scannerModem.broadcast,SCAN_PORT,SCAN_PROTOCOL,action)
+    elseif b==nil then ok=pcall(scannerModem.broadcast,SCAN_PORT,SCAN_PROTOCOL,action,a)
+    else ok=pcall(scannerModem.broadcast,SCAN_PORT,SCAN_PROTOCOL,action,a,b) end
+  end
+  return ok
+end
+function connectScanner()
+  local modem=component.modem
+  if not modem then
+    scannerStatus='НЕТ СЕТЕВОЙ КАРТЫ: установи модем на BeeMaster'
+    return false
+  end
+  scannerModem=modem
+  modem.open(MASTER_PORT)
+  sendToScanner('HELLO')
+  scannerLastHello=computer.uptime()
+  return true
+end
+function scannerPacket(localAddress,remoteAddress,port,distance,tag,action,a,b,c)
+  if port~=MASTER_PORT or tag~=SCAN_PROTOCOL then return end
+  if type(remoteAddress)~='string' then return end
+  if scannerAddress and scannerAddress~=remoteAddress then return end
+  if action=='META' or action=='STALE' then
+    if type(a)~='string' or #a>1800 then return end
+    local ok,meta=pcall(serialization.unserialize,a)
+    if not ok or type(meta)~='table' or type(meta.version)~='number' then return end
+    if type(meta.boot)~='string' or (meta.count or 0)>4000 then return end
+    scannerAddress=remoteAddress
+    scannerLastMessage=computer.uptime()
+    scannerStatus=(meta.error and meta.error~='') and ('Сканер: '..tostring(meta.error):sub(1,150)) or 'ME Scanner онлайн'
+    if meta.error and meta.error~='' and (lastME==0 or computer.uptime()-lastME>20) then
+      stockWarning=scannerStatus
+    end
+    scannerRemoteME=tostring(meta.me or ''):sub(1,8)
+    scannerRemoteErrors=tonumber(meta.errors) or 0
+    if scannerBoot~=meta.boot then
+      scannerBoot=meta.boot
+      scannerVersion=0
+      scannerTransfer=nil
+      scannerRows=nil
+      scannerLastApplied=0
+    end
+    if action=='STALE' then scannerTransfer=nil end
+    if meta.version>0 then
+      scannerVersion=math.max(scannerVersion,meta.version)
+      if (not scannerTransfer) and meta.version>scannerLastApplied then
+        scannerTransfer={version=meta.version,total=math.max(0,math.floor(meta.count or 0)),
+          rows={},nextIndex=1,requestIndex=0,lastRequest=0}
+        scannerStatus='Принимаю каталог МЭ #'..meta.version
+      end
+    end
+  elseif action=='DATA' and scannerTransfer and type(c)=='string' and #c<7000 then
+    local transfer=scannerTransfer
+    local vers,start=tonumber(a),tonumber(b)
+    if vers~=transfer.version or start~=transfer.nextIndex then return end
+    local ok,pack=pcall(serialization.unserialize,c)
+    if not ok or type(pack)~='table' or #pack>14 then return end
+    if #pack==0 and start<=transfer.total then return end
+    for _,r in ipairs(pack) do
+      if type(r)~='table' or type(r[3])~='table' or
+        type(r[1])~='string' or type(r[2])~='number' then return end
+    end
+    for _,r in ipairs(pack) do transfer.rows[#transfer.rows+1]=r end
+    transfer.nextIndex=start+#pack
+    transfer.lastRequest=0
+    scannerLastMessage=computer.uptime()
+    if transfer.nextIndex>transfer.total then
+      scannerRows=transfer.rows
+      scannerPendingVersion=transfer.version
+      scannerTransfer=nil
+      scannerStatus='Получен полный каталог МЭ; обновляю пчёл'
+    end
+  end
+end
+function pollScanner(now)
+  if not scannerModem then return end
+  if scannerAddress and scannerLastMessage>0 and now-scannerLastMessage>35 then
+    scannerAddress=nil
+    scannerBoot=nil
+    scannerTransfer=nil
+    scannerStatus='Связь со сканером потеряна; повторный поиск по сети'
+    scannerLastHello=0
+  end
+  if now-scannerLastHello>=2 then
+    scannerLastHello=now
+    sendToScanner('HELLO')
+  end
+  local tr=scannerTransfer
+  if tr then
+    if tr.total==0 then
+      scannerRows={};scannerPendingVersion=tr.version;scannerTransfer=nil
+    elseif tr.lastRequest==0 or now-tr.lastRequest>=2 then
+      tr.lastRequest=now
+      sendToScanner('PAGE',tr.version,tr.nextIndex)
+    end
+  end
 end
 local function queenSnapshot()
   local out={}
@@ -557,7 +616,7 @@ local function getResource(term)
   end
   return selected
 end
-local function graphScan()
+function graphScan()
   graph={};targetSpecies={}
   local provider=nil
   for _,api in ipairs(devices.api) do
@@ -665,7 +724,7 @@ function BIOME.allUpgrades(api)
   return ret,emulations,emuCount
 end
 
-local function scanApiaries()
+function scanApiaries()
   for _,api in ipairs(devices.api) do
     local ups,emus,c=BIOME.allUpgrades(api)
     api.upgrades=ups
@@ -965,7 +1024,7 @@ local function verifiedImprintExport(route,fp,kind,species,target,slot)
   lastPhysicalRoute[target.addr]=route.me.addr
   return true,nil
 end
-local function acquireRoute()
+function acquireRoute()
   rebuildRoutes()
   if not routes.mut then log('МУТ: выбери МЭ-интерфейс в настройках') end
   if #devices.imp>0 and not routes.imp then
@@ -2096,6 +2155,10 @@ end
 local function cycle()
   if paused then return end
   local now=computer.uptime()
+  if lastME==0 or now-lastME>40 then
+    stockWarning='Каталог МЭ устарел: жду второй компьютер (старше 40 с)'
+    return
+  end
   if not primaryME() or not hasVariant('mut') then
     notice('Не хватает подключённого оборудования.',true);return
   end
@@ -2218,11 +2281,11 @@ local function statusBar()
   fill(1,1,width,3,0x142739)
   fill(1,1,1,3,COLOR.blue)
   paint(3,1,'BEE MASTER',COLOR.blue,0x142739)
-  paint(16,1,'21.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
+  paint(16,1,'22.0  |  GENDUSTRY 1.7.10',COLOR.gray,0x142739)
   local st=initializing and 'СКАНИРОВАНИЕ' or (not scanEnabled and 'SAFE MODE' or (paused and 'ПАУЗА' or 'РАБОТА'))
   local color=initializing and COLOR.yellow or (paused and COLOR.yellow or COLOR.green)
   paint(math.max(3,width-ulen(st)-3),1,st,color,0x142739)
-  local what=(initializing and initStatus or (not scanEnabled and 'Безопасный запуск: ОБНОВИТЬ дважды для МЭ' or mode))
+  local what=(initializing and initStatus or (not scanEnabled and 'Нет связи со сканером' or mode))
   if page~='home' then what=what..'   •  Открыто меню: автоматика продолжает работу' end
   paint(3,2,cut(what,width-6),COLOR.fg,0x142739)
   fill(1,3,width,1,0x1C364A)
@@ -2343,7 +2406,7 @@ local function drawHome()
   local report=paused and alert or (stockWarning~='' and stockWarning or apiaryReason)
   if report=='' then report=alert end
   paint(3,H-5,cut('СТАТУС: '..report,W-6),COLOR.yellow,0x182C3F)
-  paint(3,H-4,cut(rolesLine()..'  |  МЭ: '..(lastME>0 and (math.floor(computer.uptime()-lastME)..'с назад') or 'нет скана')..'  |  Восстановлено: '..CFG.recoveries,W-6),COLOR.gray,0x182C3F)
+  paint(3,H-4,cut(rolesLine()..'  |  МЭ: '..(lastME>0 and (math.floor(computer.uptime()-lastME)..'с назад') or 'нет скана')..'  |  Scanner: '..(scannerLastMessage>0 and (math.floor(computer.uptime()-scannerLastMessage)..'с') or 'нет'),W-6),COLOR.gray,0x182C3F)
   fill(1,H-2,W,3,0x102235)
   local bx=3
   button(bx,H-1,paused and 'СТАРТ' or 'ПАУЗА','pause',paused and COLOR.green or COLOR.yellow,0x203B49,14)
@@ -2752,17 +2815,14 @@ local function testMachine(addr)
   end
 end
 local function refreshEverything(reloadComponents)
-  initializing=true;initStatus='Чтение МЭ и генетики'
-  local success,failure=pcall(function()
-    if reloadComponents then discover();rebuildRoutes() end
-    if #devices.me==0 then error('МЭ-интерфейсы не найдены') end
-    meInventory(true)
-    graphScan();scanApiaries();acquireRoute()
-  end)
-  initializing=false
-  if not success then error(tostring(failure),0) end
-  stockWarning=''
-  notice('Инвентаризация завершена. Проверь оборудование.')
+  if reloadComponents then discover();rebuildRoutes() end
+  if not scannerModem then connectScanner() end
+  scannerLastHello=0
+  sendToScanner('HELLO')
+  if scannerRows then meInventory(true) end
+  if lastME==0 then
+    notice('Ожидаю каталог от второго компьютера ME Scanner (порт 4481)',false)
+  end
   return true
 end
 local function collisionReport()
@@ -2846,30 +2906,10 @@ local function tap(key)
   elseif key=='logs' then
     page='logs'
   elseif key=='scan' then
-    local now=computer.uptime()
-    if not scanEnabled and now>scanConfirmUntil then
-      scanConfirmUntil=now+30
-      alert='ВНИМАНИЕ: весь склад МЭ может уронить компьютер! Нажми ОБНОВИТЬ ещё раз в течение 30 с.'
-      log('Ручное подтверждение полного сканирования МЭ запрошено')
-      return
-    end
-    scanConfirmUntil=0
-    local ok,err=pcall(function()
-      if lastME==0 then refreshEverything(false)
-      else meInventory(true);scanApiaries() end
-    end)
-    if not ok then
-      initializing=false
-      scanEnabled=false
-      stockWarning='Ошибка МЭ: '..tostring(err)
-      nextScanRecovery=math.huge
-      notice(stockWarning..'. Автоскан отключён; повтор только вручную.',false)
-    else
-      scanEnabled=true
-      previousScanCrash=false
-      stockWarning=''
-      notice('МЭ просканирована; можно запускать автоматику кнопкой СТАРТ')
-    end
+    scannerLastHello=0
+    sendToScanner('HELLO')
+    if scannerRows then meInventory(true) end
+    notice('Запрошен свежий каталог у ME Scanner (сканирует каждые 10 секунд)',false)
   elseif key=='discover' then
     discover();rebuildRoutes()
     deviceActionNote='Компоненты обновлены. Привязки сохраняются по адресам.'
@@ -2935,46 +2975,35 @@ local function startup()
     alert='Незавершённые задания восстановлены. Проверяю фактические слоты перед работой.'
     log(alert)
   end
-  log('BeeMaster 21.0 / SAFE ME / OC 1.6.1')
+  connectScanner()
+  log('BeeMaster 22.0 / REMOTE ME 10s / OC 1.6.1')
 end
 restoreJournal()
 startup()
 local okDraw,whyDraw=pcall(draw)
 if not okDraw then print('Ошибка экрана: '..tostring(whyDraw)) end
--- SAFE BOOT: ни одного полного запроса к МЭ на старте. Если он ранее
--- обрушил ОС, этот файл останется и покажет предупреждение.
-local prev=io.open(SCAN_LOCK,'r')
-if prev then previousScanCrash=true;prev:close() end
+-- Automatic network catalog; NEVER call getAvailableItems locally.
 initializing=false
-scanEnabled=false
+scanEnabled=true
 nextScanRecovery=math.huge
-if previousScanCrash then
-  alert='БЕЗОПАСНЫЙ ЗАПУСК: прошлый полный запрос МЭ оборвал программу/ОС.'
-  log('SAFE BOOT: найден флаг незавершённого сканирования МЭ. Автоскан отключён.')
-else
-  alert='БЕЗОПАСНЫЙ ЗАПУСК: полный МЭ не сканируется до ручного подтверждения.'
-  log('SAFE BOOT: интерфейс готов. ОБНОВИТЬ дважды = разрешить полный МЭ-скан.')
-end
--- Возобновление работы допускается лишь после ручного успешного МЭ-скана.
--- Watchdog не имеет права автоматически повторять операцию, вызвавшую BSOD.
+alert='Ожидание второго компьютера ME Scanner; сканирование каждые 10 с.'
+log('Сетевой режим: полный МЭ опрашивает только второй компьютер')
 local lastDraw,lastCycle,lastApiaryCheck,lastDetailStep=0,0,0,0
 while not quit do
   local now=computer.uptime()
-  -- При nil от всех интерфейсов сохраняем задания и пробуем снова.
-  -- На паузе не запускаем обработку пасек до первого успешного сканирования.
-  if scanEnabled and lastME==0 and now>=nextScanRecovery and not initializing then
-    nextScanRecovery=now+60
-    local ok,why=pcall(refreshEverything,false)
-    if not ok then
-      initializing=false
-      stockWarning='МЭ ещё недоступна: '..tostring(why)
-      log(stockWarning)
-    else
-      stockWarning=''
-      log('Автоматическое восстановление сканирования МЭ')
-    end
+  pollScanner(now)
+  if scannerRows then
+    local ok,why=pcall(meInventory,true)
+    if not ok then log('Ошибка получения каталога: '..tostring(why));scannerRows=nil end
   end
-  local ev,a,x,y=event.pull(0.12,'touch')
+  if scannerLastMessage>0 and now-scannerLastMessage>35 then
+    stockWarning='Нет ответа от ME Scanner больше 35 с; сохранён предыдущий каталог'
+  end
+  ev,a,x,y,d,p,action,v1,v2,v3=event.pull(0.12)
+  if ev=='modem_message' then
+    local fine,why=pcall(scannerPacket,a,x,y,d,p,action,v1,v2,v3)
+    if not fine then log('Сетевой пакет: '..tostring(why)) end
+  end
   if ev=='touch' and x and y then
     local pressed=nil
     for _,b in ipairs(buttons) do
